@@ -2,10 +2,15 @@
 
 A user-space TCP/IP stack for Linux, built as an experiment in AI-assisted systems engineering.
 
-**What runs today: `tap-read`.** It creates a TAP device inside a network namespace, attaches to
-it, and reports the ethernet frames the kernel puts on it — length per frame, and the raw bytes on
-request. It reads only; ⚠ **sending frames is not implemented yet**, and no byte of a frame is
-interpreted anywhere in `src/`.
+**What runs today: `tap-read`.** It creates and attaches to a TAP device in the current network
+namespace, and reports the ethernet frames the kernel puts on it — length per frame, and the raw
+bytes on request. It reads only; ⚠ **sending frames is not implemented yet**, and no byte of a
+frame is interpreted anywhere in `src/`.
+
+⚠ **The namespace is not `tap-read`'s doing.** It uses whichever network namespace it is started
+in. The checks put a fresh one there with `unshare -Urn`
+([ADR 0001](docs/adr/0001-the-checks-take-their-capability-from-a-user-namespace-not-from-sudo.md)),
+and running `tap-read` outside one would create the device on the machine's real networking.
 
 ⚠ **What may be claimed is [`docs/SPEC.md`](docs/SPEC.md), and only that.**
 
