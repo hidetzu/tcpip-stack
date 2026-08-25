@@ -53,5 +53,56 @@ case_a_device_name_that_is_too_long_is_refused() {
         "a device name that cannot exist"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines a_device_name_that_is_too_long_is_refused" "$@"
+# ⚠ What this catches and what it does not. It catches "What asserts it" naming
+# a case that does not exist. ⚠ It cannot catch a case that exists but does not
+# cover the clause it is named against — ⚠ and that is exactly what happened
+# (`CLAUDE.md` §9). Reading the case is still the reviewer's job.
+case_spec_names_checks_that_exist() {
+    # ⚠ §1 only. §2 is what is deliberately absent and names no checks.
+    sed -n '/^## 1\. What this implements/,/^## 2\./p' docs/SPEC.md |
+        awk -F'|' '
+            /^\|/ {
+                claimed_by = $(NF - 1)
+                if (claimed_by ~ /What asserts it/) next
+                if (claimed_by ~ /^[- ]*$/) next
+                pieces = split(claimed_by, part, "`")
+                # Backticked tokens are the even-numbered pieces.
+                for (i = 2; i <= pieces; i += 2) print part[i]
+            }
+        ' >"$work/claimed.txt"
+
+    named_script=""
+    scripts_seen=0
+    cases_seen=0
+    while read -r token; do
+        case "$token" in
+        tests/*.sh)
+            named_script=$token
+            scripts_seen=$((scripts_seen + 1))
+            if [ ! -x "$named_script" ]; then
+                note_failure "docs/SPEC.md names $named_script, which is not an entry point here"
+            fi
+            ;;
+        *)
+            [ -n "$named_script" ] || continue
+            cases_seen=$((cases_seen + 1))
+            if ! "$named_script" --list | grep -qx -- "$token"; then
+                note_failure "docs/SPEC.md says $named_script asserts $token, and that case does not exist"
+            fi
+            ;;
+        esac
+    done <"$work/claimed.txt"
+
+    # ⚠ The other half. Without this the case stays green if the table is empty,
+    # if the section headings are renamed, or if the parsing quietly matches
+    # nothing (`verify` §5).
+    if [ "$scripts_seen" -eq 0 ] || [ "$cases_seen" -eq 0 ]; then
+        note_failure "read $scripts_seen entry points and $cases_seen case names out of docs/SPEC.md §1, which cannot be right"
+        return
+    fi
+    printf '    checked %d entry points and %d case names named by docs/SPEC.md §1\n' \
+        "$scripts_seen" "$cases_seen"
+}
+
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines a_device_name_that_is_too_long_is_refused spec_names_checks_that_exist" "$@"
 run_selected_cases

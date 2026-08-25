@@ -29,3 +29,4 @@
 | Which checks to run, in what order | `.claude/skills/verify/SKILL.md` |
 | How to review a change (scope, rules, freshness of async results) | `.claude/skills/change-review/SKILL.md` |
 | Whether an issue can be handed over | `.claude/skills/issue-ready/SKILL.md` |
+| ⚠ **What "What asserts it" may name** (a case, never a file) | `docs/SPEC.md` §1, and `CLAUDE.md` §9 for why |

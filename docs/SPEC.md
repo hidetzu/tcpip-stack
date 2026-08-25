@@ -16,6 +16,12 @@ parallel change conflict.**
 ⚠ **A row goes in here only once the behaviour exists and a check asserts it.**
 ⚠ **Planned is not implemented** (`CLAUDE.md` §1).
 
+⚠ **"What asserts it" names a case, not a file.** ⚠ **A file name says where to look; it does not
+say that anything in there asserts this claim** — and a reader takes the column at its word.
+⚠ **Run the case before filling the row in, and read whether it covers every clause of the claim.**
+⚠ **Grounds: this went wrong here** (`CLAUDE.md` §9). ⚠ `tests/static.sh` `spec_names_checks_that_exist`
+catches a case name that does not exist, ⚠ **and nothing catches a case that does not cover the clause.**
+
 | Layer | What is supported | Which RFC, which section | What asserts it |
 |---|---|---|---|
 | Wire | Creating a Linux TAP device, attaching to it, and reading the ethernet frames that arrive on it. Each frame's length is reported, and its bytes on request | Not an RFC. Linux `/dev/net/tun`, `IFF_TAP \| IFF_NO_PI` (`Documentation/networking/tuntap.rst`) | `tests/real.sh`, `tests/foreign.sh` |
