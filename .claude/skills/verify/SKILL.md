@@ -23,36 +23,43 @@ Verify   <- here
 
 ## 0. ⚠ Current state of this file
 
-⚠ **No entry points exist yet.** ⚠ **Nothing is implemented in this repository.**
+⚠ **Three entry points exist**, and they are the ones §1 lists:
+`make check-static`, `make check-real`, `make check-foreign`.
+⚠ **`make check` runs all three, in that order.**
 
-⚠ **So §1 is a contract, not a listing.** ⚠ **It says what has to exist, not what does.**
-⚠ **As each entry point is built, it gets a row — with its measured cost, measured here.**
-⚠ **Never copy a number from another project into this file.**
+⚠ **Each runner announces its own counts.** ⚠ **Copy the announced number into the report** (§7).
+⚠ **Never write a count into a document** (`docs/SPEC.md` says why).
 
-### ⚠ The tier names are provisional (⚠ **open, deliberately**)
+### ⚠ The tier names are still provisional (⚠ **open, deliberately**)
 
-⚠ **`static` / `real` / `foreign` were named before a single test existed.**
+⚠ **`static` / `real` / `foreign` were named before a single test existed**, and
 ⚠ **`real` is the weak one**: it says how true the test is, not what it needs.
 
-⚠ **Two questions are being conflated, and they are separate axes:**
+⚠ **Two questions were being conflated. They have now been measured, and the second one has a
+different answer from the one the names assumed** (`docs/SPEC.md` §3, 2026-08-26):
 
 ```text
-                needs an external network?   needs elevated capability?
-static                     no                            no
-bring up a TAP + netns     no                        ⚠ probably yes
-talk to the kernel stack   no                        ⚠ probably yes
+                            needs an external network?   needs a privilege the developer lacks?
+static                                 no                                  no
+bring up a TAP + netns                 no                     ⚠ no — the capability comes from
+talk to the kernel stack               no                       a user namespace it creates itself
 ```
 
-⚠ **Creating a TAP device and a network namespace is itself privileged.**
-⚠ **So "runs without going outside" and "runs without privileges" are not the same question,**
-⚠ **and a tier name that answers only one of them will mislead.**
+⚠ **Creating a TAP device does need `CAP_NET_ADMIN`** — ⚠ **but not from `sudo`.**
+`unshare -Urn` supplies it to an ordinary user
+(`docs/adr/0001-the-checks-take-their-capability-from-a-user-namespace-not-from-sudo.md`).
 
-⚠ **`static` / `isolated` / `interop` may be the better names.** ⚠ **This is not being changed now.**
-⚠ **Build the first TAP test, observe what it actually needs, and then decide** — deciding a
-taxonomy before running anything is exactly the mistake this repository exists to avoid
-(`CLAUDE.md` §7: measure before polishing).
+⚠ **So "runs without going outside" and "runs without a privilege the developer lacks" are both
+`no` for all three tiers**, and neither axis separates them. ⚠ **What separates them is who the
+other end is**: nothing is running at all (`static`), the device and us and no one else (`real`),
+or the Linux kernel (`foreign`).
 
-⚠ **Until then, the "needs" columns in §1 say `probably`, and `probably` is not a measurement.**
+⚠ **`static` / `isolated` / `interop` may still be the better names.** ⚠ **This is not being changed
+here.** ⚠ **The measurement that was being waited for now exists**, and the decision is the owner's
+to take (hidetzu/tcpip-stack#2 left it deliberately out of scope).
+
+⚠ **Where unprivileged user namespaces are disabled, `real` and `foreign` run zero cases.**
+⚠ **That is `NOT-VERIFIED`, never a pass** (§4, §6). ⚠ **Both runners say so and stop.**
 
 ---
 
@@ -60,11 +67,15 @@ taxonomy before running anything is exactly the mistake this repository exists t
 
 ⚠ **Every tier must exist.** ⚠ **They fail for different reasons, and the difference is the point.**
 
-| Tier (⚠ name provisional) | What it sees | External network? | Elevated capability? | Measured cost |
+| Tier (⚠ name provisional) | What it sees | External network? | A privilege the developer lacks? | Measured cost |
 |---|---|---|---|---|
-| **static** | What can be known by reading: build, warnings, sanitizers, lint | ⚠ **no** | ⚠ **no** | _(not built yet)_ |
-| **real** | ⚠ **Bring up a TAP device in a namespace and put actual packets through it** | ⚠ **no** | ⚠ probably — ⚠ **not measured** | _(not built yet)_ |
-| **foreign** | ⚠ **The other end is something we did not write** — the kernel stack, `ping`, `tcpdump` | ⚠ **no** | ⚠ probably — ⚠ **not measured** | _(not built yet)_ |
+| **static** `make check-static` | What can be known by reading: build with `-Werror`, an ASan/UBSan build, and the Report layer against a captured frame | ⚠ **no** | ⚠ **no** | ⚠ `docs/SPEC.md` §3 |
+| **real** `make check-real` | ⚠ **A TAP device brought up in a namespace, with actual packets through it.** No other participant | ⚠ **no** | ⚠ **no** — `unshare -Urn` | ⚠ `docs/SPEC.md` §3 |
+| **foreign** `make check-foreign` | ⚠ **The other end is the Linux kernel**, which is not something we wrote | ⚠ **no** | ⚠ **no** — `unshare -Urn` | ⚠ `docs/SPEC.md` §3 |
+
+⚠ **The costs live in `docs/SPEC.md` §3 and only there.** ⚠ **A measured number written in two
+places goes stale in one of them** (`CLAUDE.md` §6), and `SPEC.md` §3 is the file that owns
+measurements, with their date and conditions.
 
 ⚠ **None of the three needs a network beyond this machine.** ⚠ **That is on purpose** — a check
 whose result depends on somebody else's uptime cannot assert our correctness (§4).
@@ -74,6 +85,11 @@ whose result depends on somebody else's uptime cannot assert our correctness (§
 inherited from another project, and is not yet a measurement here.** ⚠ **Replace this sentence
 with a measurement once there is one.**
 
+⚠ **One data point, and it points the other way.** Building the first TAP harness
+(hidetzu/tcpip-stack#2), ⚠ **the defect that was actually found was caught by `static`** — a
+pointer handed to `open_memstream` that belonged to a dead local, found by the sanitizer build.
+⚠ **One defect is not a rate.** ⚠ **Do not turn this into a claim about which tier catches more.**
+
 ### ⚠ Every entry point must be able to run in part
 
 ⚠ **A check suite that can only run whole gets skipped.** So each tier needs:
@@ -82,6 +98,14 @@ with a measurement once there is one.**
 run one named case only
 count without running        <- ⚠ must not load anything heavy
 report which subset it ran, on its first line of output
+```
+
+⚠ **All three do this today:**
+
+```bash
+make check-static CHECK_ARGS="--list"                    # the case names
+make check-real   CHECK_ARGS="--count"                   # ⚠ counts without building anything
+make check-foreign CHECK_ARGS="--case an_arp_request_the_kernel_generated_is_read_intact"
 ```
 
 ⚠ **The runner announces what it ran and how many.** ⚠ **Never write the count into a document**

@@ -1,0 +1,21 @@
+# One ARP request, 42 bytes, as the Linux kernel put it on a TAP device.
+#
+# ⚠ Captured, not written by hand. If this file is ever regenerated, capture it
+# again — a frame typed out from memory is not a fixture (`CLAUDE.md` §1).
+#
+# How it was captured:
+#   Arch Linux, kernel 7.0.2-arch1-1, x86_64, 2026-08-26
+#   unshare -Urn (no sudo), tap0 with the default MTU of 1500
+#   ip addr add 10.0.0.1/24 dev tap0; ip link set tap0 up
+#   ping -c 3 -i 0.3 -W 1 10.0.0.2
+#   the first frame read whose bytes 12..13 were 08 06
+#
+# The source hardware address is whatever the kernel picked for tap0 on that
+# run; it is different on the next one, which is why this file is a recording
+# and the checks never expect it to be reproduced.
+#
+# ⚠ Nothing in this repository parses these bytes yet. The check that uses this
+# file asserts how they are printed, not what they mean.
+ff ff ff ff ff ff 9e 28 ea ff 03 06 08 06 00 01
+08 00 06 04 00 01 9e 28 ea ff 03 06 0a 00 00 01
+00 00 00 00 00 00 0a 00 00 02
