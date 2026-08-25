@@ -20,9 +20,9 @@ parallel change conflict.**
 |---|---|---|---|
 | Wire | Creating a Linux TAP device, attaching to it, and reading the ethernet frames that arrive on it. Each frame's length is reported, and its bytes on request | Not an RFC. Linux `/dev/net/tun`, `IFF_TAP \| IFF_NO_PI` (`Documentation/networking/tuntap.rst`) | `tests/real.sh`, `tests/foreign.sh` |
 | Wire | The device is created when the fd is taken and is gone when the fd is released. ⚠ Nothing persists between runs | same | `tests/real.sh` `the_interface_exists_only_while_it_is_attached` |
-| Report | A frame read, a read that could not be made, and a timer running out are three different outcomes, each with its own line and its own counter. ⚠ A timer running out and being unable to use the device each leave their own exit code | `CLAUDE.md` §1, §4-1 | `tests/static.sh` `report_lines`, `tests/real.sh` |
+| Report | A frame read and a timer running out are different outcomes, each with its own line. ⚠ A timer running out and being unable to use the device each leave their own exit code | `CLAUDE.md` §1, §4-1 | `tests/static.sh` `report_lines`, `tests/real.sh` `a_timer_running_out_has_its_own_exit_code` |
 | Wire | ⚠ A request to stop reaches a reader that is waiting with no time limit, and what was read up to then is reported | Not an RFC. `ppoll(2)` with the stop signals blocked around the loop | `tests/real.sh` `a_stop_request_reaches_a_reader_that_is_waiting` |
-| Report | ⚠ A frame that exactly filled the read buffer is reported as a length we do not know, not as a measurement | `CLAUDE.md` §1 | `tests/static.sh` `report_lines` |
+| Report | ⚠ A frame that exactly filled the read buffer is reported as a length we do not know, not as a measurement | `CLAUDE.md` §1 | `tests/static.sh` `report_lines`, `tests/foreign.sh` `a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length` |
 
 ## 2. What this deliberately does not implement
 
@@ -53,5 +53,5 @@ Arch Linux, kernel `7.0.2-arch1-1`, x86_64, gcc 15.2.1, tap MTU 1500, namespace 
 | Whether creating a TAP device needs `sudo` | ⚠ **no**, inside `unshare -Urn` | 2026-08-26 | `ip tuntap add` and `ioctl(TUNSETIFF)`, both from uid 1000 |
 | Cost of `make check-static` | 703 ms from a clean tree; 23 ms and 23 ms with the build already done | 2026-08-26 | 3 runs, all three values listed |
 | Cost of `make check-real` | 479 / 487 / 463 ms | 2026-08-26 | 3 runs, all three values listed |
-| Cost of `make check-foreign` | 1327 / 1328 / 1326 ms | 2026-08-26 | 3 runs, all three values listed. `ping -c 2 -i 0.3` dominates |
+| Cost of `make check-foreign` | 2838 / 2659 / 2642 ms | 2026-08-26 | 3 runs, all three values listed. Two cases, each with its own namespace and its own `ping -c 2 -i 0.3` |
 | Which ethertype the kernel put on a fresh tap first | ARP first in 3 runs, IPv6 first in 2 | 2026-08-26 | 5 runs of the same script. ⚠ **Why no check asserts which frame comes first** |

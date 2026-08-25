@@ -46,6 +46,71 @@ frames_as_hex() {
     ' "$1"
 }
 
+# ⚠ The buffer size is read out of the header rather than written here a second
+# time: if it changes, this check follows it instead of quietly stopping to
+# exercise the path (`CLAUDE.md` §3).
+read_buffer_bytes() {
+    awk '/^#define TAP_FRAME_BUFFER_BYTES/ { print $3 }' src/tap.h
+}
+
+# ⚠ read(2) on a TAP fd hands back a truncated frame and discards the rest — it
+# does not fail and it does not say it truncated. So a read that returns exactly
+# the buffer size is a length we do not know, and it has to be reported as that
+# rather than as a measurement (`CLAUDE.md` §1).
+#
+# ⚠ The kernel is what produces the oversized frame: the MTU goes above the read
+# buffer and it is given something large to send. Nothing is added to src/ to
+# make this reachable.
+inside_a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length() {
+    buffer_bytes=$(read_buffer_bytes)
+    if [ -z "$buffer_bytes" ]; then
+        note_failure "could not read TAP_FRAME_BUFFER_BYTES out of src/tap.h"
+        return
+    fi
+
+    "$TAP_READ" --dev tap0 --count 4 --timeout 3000 \
+        >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while tap-read was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+
+    ip link set tap0 mtu $((buffer_bytes * 2))
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+    # Told where 10.0.0.2 is, so the kernel sends the echo request itself instead
+    # of stopping at an ARP request nobody answers.
+    ip neigh add 10.0.0.2 lladdr 02:00:00:00:00:02 dev tap0
+    ping -c 2 -i 0.3 -W 1 -s $((buffer_bytes + 512)) 10.0.0.2 >/dev/null 2>&1 || true
+
+    wait "$reader"
+    reader_exit=$?
+    if [ "$reader_exit" -ne 0 ] && [ "$reader_exit" -ne 2 ]; then
+        note_failure "tap-read stopped with exit code $reader_exit"
+        sed 's/^/      /' "$work/err.txt" >&2
+        return
+    fi
+
+    if ! grep -q "bytes (filled the buffer; it may have been longer)" "$work/out.txt"; then
+        note_failure "no frame was reported as having filled the read buffer"
+        printf '    what was read:\n' >&2
+        sed 's/^/      /' "$work/out.txt" >&2
+        return
+    fi
+
+    # ⚠ The other half. A check that only asks for the marker stays green if
+    # every frame is marked (`verify` §5).
+    if ! grep -q '^frame [0-9][0-9]*  [0-9][0-9]* bytes$' "$work/out.txt"; then
+        note_failure "every frame was reported as having filled the buffer, which cannot be right"
+        printf '    what was read:\n' >&2
+        sed 's/^/      /' "$work/out.txt" >&2
+    fi
+}
+
 inside_an_arp_request_the_kernel_generated_is_read_intact() {
     "$TAP_READ" --dev tap0 --count 3 --timeout 3000 --hex \
         >"$work/out.txt" 2>"$work/err.txt" &
@@ -117,8 +182,11 @@ in_namespace() {
 case_an_arp_request_the_kernel_generated_is_read_intact() {
     in_namespace an_arp_request_the_kernel_generated_is_read_intact
 }
+case_a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length() {
+    in_namespace a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length
+}
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)
