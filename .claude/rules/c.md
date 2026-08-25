@@ -2,10 +2,35 @@
 
 ⚠ **`MUST` = required, `SHOULD` = default, `MAY` = optional.**
 
-⚠ **These are inherited as rules, not as evidence.** ⚠ **Nothing here has been paid for yet
-in this repository.** ⚠ **When one of them is paid for, it earns a row in `CLAUDE.md` §9 and a test.**
+## ⚠ Two kinds of rule, and they are not interchangeable
+
+```text
+Engineering constraint          Learned pitfall
+grounded in the C standard,     something this repository
+the protocol, or the fact       actually paid for
+that the input is hostile              |
+        |                              |
+binds from the first line       lives in CLAUDE.md §9,
+of code                         with the test that stops
+        |                       it happening again
+lives here, with its grounds
+```
+
+⚠ **Everything in this file is an engineering constraint.**
+⚠ **It binds now.** ⚠ **It does not wait for an accident here to earn its place.**
+⚠ **Each section states its grounds** — cite those, never an anecdote.
+
+⚠ **Never demote a constraint to "we will see" because nothing has gone wrong yet.**
+⚠ **Never promote one into `CLAUDE.md` §9 by inventing an incident.**
+⚠ **§9 starts empty and stays empty until something is genuinely paid for.**
+
+⚠ **A learned pitfall can add a rule here.** ⚠ **When it does, the grounds it cites is the
+incident, and §9 keeps the row.** ⚠ **The two records point at each other; neither replaces the other.**
 
 ## Responsibility
+
+⚠ **Grounds: [`layers.md`](layers.md).** A packet that has not been validated
+must not reach code that decides anything.
 
 ```text
 read  →  parse  →  decide  →  emit
@@ -19,6 +44,9 @@ read  →  parse  →  decide  →  emit
 
 ## Memory and lifetime
 
+⚠ **Grounds: the input is hostile.** Every length and offset in a packet is an assertion
+by whoever sent it, and the sender may be lying.
+
 - MUST: ⚠ **Every allocation has one named owner.** ⚠ Say who frees it, in a comment, at the point
   it is allocated.
 - MUST NOT: ⚠ **Never return a pointer into a buffer whose lifetime is shorter than the caller's use.**
@@ -26,6 +54,10 @@ read  →  parse  →  decide  →  emit
 - MUST: ⚠ **Bounds are checked against what was actually read**, never against a header's claim.
 
 ## Undefined behaviour
+
+⚠ **Grounds: the C standard.** ⚠ **These are not opinions and not stylistic preferences.**
+⚠ **A program with undefined behaviour has no defined output to be right about**, whatever it
+printed the last time it ran.
 
 - MUST: ⚠ **UB is not a measurement.** ⚠ **Code that works at `-O0` and breaks at `-O2` was never
   correct** — the optimiser did not break it, it exposed it.
@@ -36,6 +68,9 @@ read  →  parse  →  decide  →  emit
 
 ## Errors and absence
 
+⚠ **Grounds: `CLAUDE.md` §1.** ⚠ **An uncounted drop is indistinguishable from a packet that
+was never sent**, and the difference is the whole subject of this project.
+
 - MUST: ⚠ **Distinguish "not there" from "could not be obtained"** (owner: `CLAUDE.md` §1).
 - MUST: ⚠ **Never swallow an error.** ⚠ Leave it in a form that can be followed.
 - MUST: ⚠ **One missing auxiliary thing must not take the whole stack down.**
@@ -43,6 +78,9 @@ read  →  parse  →  decide  →  emit
   drop looks exactly like a packet that was never sent.**
 
 ## Naming
+
+⚠ **Grounds: [`layers.md`](layers.md).** The RFC already named everything here.
+A name that differs from the RFC's is a claim, and it has to be justified.
 
 - MUST: ⚠ **Borrow the RFC's names, exactly** ([`layers.md`](layers.md)).
 - MUST: Function names say ⚠ **what they do**.

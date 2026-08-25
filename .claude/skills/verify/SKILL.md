@@ -29,17 +29,45 @@ Verify   <- here
 ⚠ **As each entry point is built, it gets a row — with its measured cost, measured here.**
 ⚠ **Never copy a number from another project into this file.**
 
+### ⚠ The tier names are provisional (⚠ **open, deliberately**)
+
+⚠ **`static` / `real` / `foreign` were named before a single test existed.**
+⚠ **`real` is the weak one**: it says how true the test is, not what it needs.
+
+⚠ **Two questions are being conflated, and they are separate axes:**
+
+```text
+                needs an external network?   needs elevated capability?
+static                     no                            no
+bring up a TAP + netns     no                        ⚠ probably yes
+talk to the kernel stack   no                        ⚠ probably yes
+```
+
+⚠ **Creating a TAP device and a network namespace is itself privileged.**
+⚠ **So "runs without going outside" and "runs without privileges" are not the same question,**
+⚠ **and a tier name that answers only one of them will mislead.**
+
+⚠ **`static` / `isolated` / `interop` may be the better names.** ⚠ **This is not being changed now.**
+⚠ **Build the first TAP test, observe what it actually needs, and then decide** — deciding a
+taxonomy before running anything is exactly the mistake this repository exists to avoid
+(`CLAUDE.md` §7: measure before polishing).
+
+⚠ **Until then, the "needs" columns in §1 say `probably`, and `probably` is not a measurement.**
+
 ---
 
 ## 1. The three tiers (⚠ **the contract**)
 
 ⚠ **Every tier must exist.** ⚠ **They fail for different reasons, and the difference is the point.**
 
-| Tier | What it sees | Goes outside? | Measured cost |
-|---|---|---|---|
-| **static** | What can be known by reading: build, warnings, sanitizers, lint | ⚠ **no** | _(not built yet)_ |
-| **real** | ⚠ **Bring up a TAP device in a namespace and put actual packets through it** | ⚠ no (namespace only) | _(not built yet)_ |
-| **foreign** | ⚠ **The other end is something we did not write** — the kernel stack, `ping`, `tcpdump` | ⚠ **needs privileges** | _(not built yet)_ |
+| Tier (⚠ name provisional) | What it sees | External network? | Elevated capability? | Measured cost |
+|---|---|---|---|---|
+| **static** | What can be known by reading: build, warnings, sanitizers, lint | ⚠ **no** | ⚠ **no** | _(not built yet)_ |
+| **real** | ⚠ **Bring up a TAP device in a namespace and put actual packets through it** | ⚠ **no** | ⚠ probably — ⚠ **not measured** | _(not built yet)_ |
+| **foreign** | ⚠ **The other end is something we did not write** — the kernel stack, `ping`, `tcpdump` | ⚠ **no** | ⚠ probably — ⚠ **not measured** | _(not built yet)_ |
+
+⚠ **None of the three needs a network beyond this machine.** ⚠ **That is on purpose** — a check
+whose result depends on somebody else's uptime cannot assert our correctness (§4).
 
 ⚠ **A clean build proves nothing about the wire.**
 ⚠ **Expect the real tier to catch most of the actual defects** — but ⚠ **that expectation is

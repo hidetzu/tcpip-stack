@@ -29,6 +29,11 @@ Here the right answer is pinned down by an RFC and by what actually appears on t
 ⚠ **The rules below were inherited as rules, not as evidence.**
 ⚠ **Every measured number and every pitfall has to be earned here, in this repository** (§6, §9).
 
+⚠ **Inherited does not mean provisional.** A rule grounded in the C standard, in a protocol, or
+in the fact that packets arrive from strangers ⚠ **binds from the first line of code** — it is
+not waiting for an accident here to prove it. ⚠ **Those live in `.claude/rules/`, each with its
+grounds.** ⚠ **§9 is the other thing entirely: what this repository actually paid for.**
+
 ---
 
 ## 1. The first principle
@@ -207,8 +212,16 @@ Ask only where **being wrong cannot be walked back**.
 project, not something plausible, not something an AI expects to be true.
 ⚠ **A pitfall is a measurement** (§6): it names what happened, and what to do instead.
 
+⚠ **This is not where engineering constraints go.** A rule that holds because of the C standard,
+because of a protocol, or because the input is hostile ⚠ **belongs in `.claude/rules/`, and binds
+already** ([`rules/c.md`](.claude/rules/c.md) sets out the distinction).
+⚠ **Never manufacture an incident to move a constraint in here**, and
+⚠ **never soften a constraint on the grounds that this table has no row for it yet.**
+
 ⚠ **When you fill a row in, also leave the test behind** (§2). A row with no test is a note;
 a row with a test is a wall.
+⚠ **If the incident also produces a new rule, the rule goes to `.claude/rules/` citing this row.**
+⚠ **Both records stay. Neither replaces the other.**
 
 | What happened | What to do instead |
 |---|---|
