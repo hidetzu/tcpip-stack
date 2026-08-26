@@ -1,0 +1,52 @@
+# The checks, on a runner that is not the developer's machine.
+#
+# ⚠ Nothing here re-implements a check. Which checks exist, what they assert and
+# in what order they run belong to the test tree and to
+# `.claude/skills/verify/SKILL.md`; this file only starts them and reports which
+# ones ran. ⚠ A build command written here as well would be the same decision in
+# two places (`CLAUDE.md` §3).
+#
+# ⚠ ONLY THE STATIC TIER RUNS HERE, and that is a decision, not an oversight
+# (ADR 0004). ⚠ `real` and `foreign` need `unshare -Urn`, and a GitHub-hosted
+# runner refuses it: measured on 2026-08-26, image ubuntu-24.04, kernel
+# 6.17.0-1022-azure — user namespaces are enabled
+# (kernel.unprivileged_userns_clone = 1) and ⚠ AppArmor refuses them anyway
+# (kernel.apparmor_restrict_unprivileged_userns = 1).
+#
+# ⚠ Do not add them back with `continue-on-error`. Both runners report zero
+# cases and exit non-zero there, and a tier that ran zero cases is NOT-VERIFIED,
+# ⚠ never a pass (`verify` §6). ⚠ A tick over a tier that did not run is the one
+# thing this repository must never print.
+#
+# ⚠ So a green tick here means the static tier passed. ⚠ It does not mean the
+# stack was exercised against a device — that still only happens where
+# unprivileged user namespaces are permitted (ADR 0001, ADR 0004).
+
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    # ⚠ The tier that needs no fd, no clock, no namespace and no privilege. It
+    # runs anywhere, so there is no honest reason for it not to run here.
+    name: static
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠ A result carries the conditions it was measured under (`CLAUDE.md` §6),
+      # and a runner is not the machine `docs/SPEC.md` §3 was measured on.
+      - name: What this ran on
+        run: |
+          uname -srvm
+          cc --version | head -1
+          make --version | head -1
+
+      - run: make check-static

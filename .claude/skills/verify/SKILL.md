@@ -188,6 +188,10 @@ Running before `git add` and calling it green is a real way to be wrong.
 ⚠ **Some tiers cannot run everywhere.** In particular, ⚠ **anything needing privileges or secrets
 does not run on a PR from a fork.**
 
+⚠ **In this repository, CI runs `static` and only `static`** (ADR 0004 says why, with the
+measurement). ⚠ **A green tick on a PR is one tier of three.** ⚠ **`real` and `foreign` still have to
+be run before the PR, and the report says where they ran.**
+
 ⚠ **When a tier did not run, that is `NOT-VERIFIED`, not `PASS`.**
 
 ⚠ **Not every change needs every tier.** ⚠ **But the rule for deciding lives in one place, in code,

@@ -92,6 +92,14 @@ make check-real    CHECK_ARGS="--case count_zero_reads_nothing"
 ⚠ **Where unprivileged user namespaces are disabled, two of the three tiers run zero cases and say
 so** — that is `NOT-VERIFIED`, never a pass.
 
+⚠ **CI runs the static tier, and only that** — the build with `-Werror`, the ASan/UBSan build, the
+Report and Parse layers against the captured frame, and the `docs/SPEC.md` §1 check. A GitHub-hosted
+runner refuses `unshare -Urn` (AppArmor, measured 2026-08-26), so `check-real` and `check-foreign`
+run where unprivileged user namespaces are permitted — today, a developer's machine
+([ADR 0004](docs/adr/0004-ci-runs-the-static-tier-only.md)).
+⚠ **A green tick therefore means the static tier passed. It does not mean the stack was exercised
+against a device.**
+
 ## Environment
 
 Linux is the source of truth for development. The stack talks to the kernel through
