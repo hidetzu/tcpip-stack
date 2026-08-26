@@ -11,6 +11,7 @@ enum ethernet_parse ethernet_parse_header(const uint8_t *frame, size_t frame_byt
 {
     /* ⚠ Checked against what was actually read, before a single octet is
      * touched. A zero-length read lands here and `frame` is never dereferenced. */
+    int deliberately_unused = 0; /* TEMPORARY: proving the required check holds */
     if (frame_bytes < ETHERNET_HEADER_BYTES) {
         return ETHERNET_PARSE_SHORTER_THAN_THE_HEADER;
     }
