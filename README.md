@@ -2,15 +2,15 @@
 
 A user-space TCP/IP stack for Linux, built as an experiment in AI-assisted systems engineering.
 
-**What runs today: `tap-read`.** It creates and attaches to a TAP device in the current network
+**What runs today: `tcpip-stack`.** It creates and attaches to a TAP device in the current network
 namespace, and reports the ethernet frames the kernel puts on it — length per frame, and the raw
-bytes on request. ⚠ **`tap-read` itself only reads.** The wire underneath it can hand a frame to the
-device — and ⚠ **nothing yet decides what to send**, so the program has no reason to.
+bytes on request. ⚠ **`tcpip-stack` itself only reads.** The wire underneath it can hand a frame
+to the device — and ⚠ **nothing yet decides what to send**, so the program has no reason to.
 
-⚠ **The namespace is not `tap-read`'s doing.** It uses whichever network namespace it is started
-in. The checks put a fresh one there with `unshare -Urn`
+⚠ **The namespace is not `tcpip-stack`'s doing.** It uses whichever network namespace it is
+started in. The checks put a fresh one there with `unshare -Urn`
 ([ADR 0001](docs/adr/0001-the-checks-take-their-capability-from-a-user-namespace-not-from-sudo.md)),
-and running `tap-read` outside one would create the device on the machine's real networking.
+and running `tcpip-stack` outside one would create the device on the machine's real networking.
 
 ⚠ **What may be claimed is [`docs/SPEC.md`](docs/SPEC.md), and only that.**
 
@@ -41,7 +41,7 @@ still holds where the right answer is written down in an RFC and visible on the 
 ## Running it
 
 ```bash
-make                 # build/tap-read
+make                 # build/tcpip-stack
 make check           # all three tiers
 ```
 
@@ -51,7 +51,7 @@ kernel picked for `tap0` on that run):
 
 ```sh
 unshare -Urn sh -c '
-  ./build/tap-read --count 1 --hex &
+  ./build/tcpip-stack --count 1 --hex &
   until ip link show tap0 >/dev/null 2>&1; do sleep 0.05; done
   ip addr add 10.0.0.1/24 dev tap0
   ip link set tap0 up
@@ -69,7 +69,7 @@ frame 1  42 bytes
 read 1 frame, 0 read errors
 ```
 
-⚠ **`tap-read` does not know that is an ARP request.** It reports a length and the bytes.
+⚠ **`tcpip-stack` does not know that is an ARP request.** It reports a length and the bytes.
 
 There is a Parse layer now. `src/ethernet.c` reads the 14-octet ethernet header — destination
 address, source address, length/type

@@ -19,9 +19,9 @@ SANITIZE := -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-r
 
 HEADERS      := src/tap.h src/report.h src/ethernet.h src/arp.h
 LIB_SOURCES  := src/tap.c src/report.c
-MAIN_SOURCE  := src/tap_read.c
+MAIN_SOURCE  := src/tcpip_stack.c
 
-# ⚠ The Parse layer is deliberately not linked into tap-read: nothing in the
+# ⚠ The Parse layer is deliberately not linked into tcpip-stack: nothing in the
 # program calls it yet, and dead code in the product is worse than a layer
 # waiting for its consumer (hidetzu/tcpip-stack#10 is what will print what it
 # finds). ⚠ It is still compiled at -O2 with -Werror and the sanitizers, by the
@@ -43,8 +43,8 @@ TEST_REPORT_SOURCE   := tests/test_report.c
 TEST_ETHERNET_SOURCE := tests/test_ethernet.c
 TEST_ARP_SOURCE      := tests/test_arp.c
 
-TAP_READ            := $(BUILD)/tap-read
-TAP_READ_SANITIZED  := $(BUILD)/tap-read.sanitized
+TCPIP_STACK         := $(BUILD)/tcpip-stack
+TCPIP_STACK_SANITIZED := $(BUILD)/tcpip-stack.sanitized
 TEST_REPORT         := $(BUILD)/test_report.sanitized
 TEST_ETHERNET       := $(BUILD)/test_ethernet.sanitized
 TEST_ARP            := $(BUILD)/test_arp.sanitized
@@ -58,17 +58,17 @@ CHECK_ARGS ?=
 
 all: build
 
-build: $(TAP_READ)
+build: $(TCPIP_STACK)
 
-build-sanitized: $(TAP_READ_SANITIZED) $(TEST_REPORT) $(TEST_ETHERNET) $(TEST_ARP)
+build-sanitized: $(TCPIP_STACK_SANITIZED) $(TEST_REPORT) $(TEST_ETHERNET) $(TEST_ARP)
 
 build-harness: $(SEND_ONE_FRAME)
 
-$(TAP_READ): $(MAIN_SOURCE) $(LIB_SOURCES) $(HEADERS)
+$(TCPIP_STACK): $(MAIN_SOURCE) $(LIB_SOURCES) $(HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(STD) $(WARN) $(OPT) -Isrc -o $@ $(MAIN_SOURCE) $(LIB_SOURCES)
 
-$(TAP_READ_SANITIZED): $(MAIN_SOURCE) $(LIB_SOURCES) $(HEADERS)
+$(TCPIP_STACK_SANITIZED): $(MAIN_SOURCE) $(LIB_SOURCES) $(HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -o $@ $(MAIN_SOURCE) $(LIB_SOURCES)
 

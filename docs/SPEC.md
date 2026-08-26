@@ -45,9 +45,9 @@ they are different things and the difference is stated, not implied.
 
 | Not implemented | Deliberate? | Why |
 |---|---|---|
-| `tap-read` sending a frame | yes | Wire can hand a frame to the device (§1); ⚠ the program still only reads, and nothing decides what to send (hidetzu/tcpip-stack#18, #19) |
+| `tcpip-stack` sending a frame | yes | Wire can hand a frame to the device (§1); ⚠ the program still only reads, and nothing decides what to send (hidetzu/tcpip-stack#18, #19) |
 | Interpreting a frame's payload | yes | The Parse layer reads the 14-octet header and stops there. What rides above ethernet has its own row below |
-| `tap-read` saying what a frame's header holds | yes | The Parse layer exists and nothing prints what it found yet (hidetzu/tcpip-stack#10). ⚠ `tap-read` still reports lengths and bytes and names no protocol |
+| `tcpip-stack` saying what a frame's header holds | yes | The Parse layer exists and nothing prints what it found yet (hidetzu/tcpip-stack#10). ⚠ `tcpip-stack` still reports lengths and bytes and names no protocol |
 | Reading an 802.1Q VLAN tag | yes | ⚠ `0x8100` is read as any other length/type value and the tag itself is not read (ADR 0003). ⚠ So for a tagged frame that value does not name what the frame carries |
 | ⚠ A count of frames the kernel dropped | yes | ⚠ The harness cannot observe it. A drop happens in the kernel's queue, and printing a number we did not measure is a guess dressed as one (`CLAUDE.md` §1) |
 | TUN (layer 3) mode | yes | The first milestone is ethernet, so the harness attaches as a TAP |
