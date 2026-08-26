@@ -4,7 +4,8 @@ A user-space TCP/IP stack for Linux, built as an experiment in AI-assisted syste
 
 **What runs today: `tap-read`.** It creates and attaches to a TAP device in the current network
 namespace, and reports the ethernet frames the kernel puts on it — length per frame, and the raw
-bytes on request. It reads only; ⚠ **sending frames is not implemented yet**.
+bytes on request. ⚠ **`tap-read` itself only reads.** The wire underneath it can hand a frame to the
+device — and ⚠ **nothing yet decides what to send**, so the program has no reason to.
 
 ⚠ **The namespace is not `tap-read`'s doing.** It uses whichever network namespace it is started
 in. The checks put a fresh one there with `unshare -Urn`
@@ -80,7 +81,9 @@ Each keeps a malformed packet, one whose shape it cannot place, and one it can r
 on as three separate answers.
 
 ⚠ **Nothing prints what they find yet**, which is why the run above says only a length, and
-⚠ **nothing decides or sends** — answering an ARP request is still to come.
+⚠ **nothing decides** — answering an ARP request is still to come. The sending half of the wire is
+there and proved against the kernel's own counters for the device; ⚠ **what to put in a frame is
+what is missing.**
 
 The three tiers differ in who the other end is: nobody (`check-static`), the device and us
 (`check-real`), and the Linux kernel (`check-foreign`). Each runs one named case on its own and

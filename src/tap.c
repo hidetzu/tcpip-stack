@@ -113,3 +113,16 @@ ssize_t tap_read_frame(int fd, uint8_t *buffer, size_t buffer_bytes,
     }
     return bytes_read;
 }
+
+ssize_t tap_write_frame(int fd, const uint8_t *frame, size_t frame_bytes,
+                        struct tap_failure *failure)
+{
+    set_failure(failure, TAP_STEP_NONE, 0);
+
+    ssize_t written = write(fd, frame, frame_bytes);
+    if (written < 0) {
+        set_failure(failure, TAP_STEP_WRITE, errno);
+        return -1;
+    }
+    return written;
+}

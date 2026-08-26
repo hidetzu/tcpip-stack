@@ -31,6 +31,12 @@ PARSE_SOURCES := src/ethernet.c src/arp.c
 # ⚠ verify §1's contract — one named case, counting without loading anything
 # heavy, the first line saying which subset ran — is implemented once, in
 # tests/check.c, and linked into every static-tier binary (`CLAUDE.md` §3).
+# ⚠ A real-tier driver, and it is harness rather than product: tests/ never
+# src/, and nothing in the shipped binary calls it (`CLAUDE.md` §3). It has its
+# own target so the real tier does not have to build the static tier's binaries
+# to get at it.
+SEND_ONE_FRAME_SOURCE := tests/send_one_frame.c
+
 CHECK_SOURCES        := tests/check.c
 CHECK_HEADERS        := tests/check.h
 TEST_REPORT_SOURCE   := tests/test_report.c
@@ -42,18 +48,21 @@ TAP_READ_SANITIZED  := $(BUILD)/tap-read.sanitized
 TEST_REPORT         := $(BUILD)/test_report.sanitized
 TEST_ETHERNET       := $(BUILD)/test_ethernet.sanitized
 TEST_ARP            := $(BUILD)/test_arp.sanitized
+SEND_ONE_FRAME      := $(BUILD)/send-one-frame
 
 # Passed through to a check script, so one named case can be run on its own:
 #   make check-static CHECK_ARGS="--case report_lines"
 CHECK_ARGS ?=
 
-.PHONY: all build build-sanitized check check-static check-real check-foreign clean
+.PHONY: all build build-sanitized build-harness check check-static check-real check-foreign clean
 
 all: build
 
 build: $(TAP_READ)
 
 build-sanitized: $(TAP_READ_SANITIZED) $(TEST_REPORT) $(TEST_ETHERNET) $(TEST_ARP)
+
+build-harness: $(SEND_ONE_FRAME)
 
 $(TAP_READ): $(MAIN_SOURCE) $(LIB_SOURCES) $(HEADERS)
 	@mkdir -p $(@D)
@@ -77,6 +86,11 @@ $(TEST_ARP): $(TEST_ARP_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES) $(HEADERS) $(C
 	@mkdir -p $(@D)
 	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -Itests -o $@ \
 		$(TEST_ARP_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES)
+
+$(SEND_ONE_FRAME): $(SEND_ONE_FRAME_SOURCE) $(LIB_SOURCES) $(HEADERS)
+	@mkdir -p $(@D)
+	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -o $@ \
+		$(SEND_ONE_FRAME_SOURCE) $(LIB_SOURCES)
 
 check: check-static check-real check-foreign
 

@@ -46,6 +46,35 @@ read_consecutive_read_failures_allowed() {
     awk '/^#define CONSECUTIVE_READ_FAILURES_ALLOWED/ { print $3 }' src/tap_read.c
 }
 
+SEND_ONE_FRAME=./build/send-one-frame
+
+# The kernel's own counters for the device, as one line:
+# "<rx_bytes> <rx_packets> <rx_dropped>".
+#
+# ⚠ This is what says a frame arrived. ⚠ write(2) returning a number says only
+# that we handed it over (`CLAUDE.md` §1, in the sending direction).
+#
+# ⚠ ip(8) and not /sys/class/net: sysfs is not remounted by `unshare -Urn`, so
+# inside the namespace it shows the host's devices and not this one's — reading
+# it there fails with "No such file or directory" (measured 2026-08-26).
+# ⚠ ip asks the kernel over netlink, which is namespace-aware.
+tap_received() {
+    ip -s link show "$1" | awk '/RX:/ { getline; print $1, $2, $4 }'
+}
+
+# Waits for a line to appear in a file something else is still writing to.
+wait_for_line() {  # file text
+    i=0
+    while [ "$i" -lt 60 ]; do
+        if grep -qF -- "$2" "$1" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.05
+        i=$((i + 1))
+    done
+    return 1
+}
+
 # ---- the cases, as they run inside the namespace -------------------------
 
 inside_the_interface_exists_only_while_it_is_attached() {
@@ -214,6 +243,138 @@ read 0 frames, $allowed read errors" "a read that could not be made"
         "$(sed -n '1s/^frame [0-9][0-9]*  could not be read: //p' "$work/err.txt")"
 }
 
+# ⚠ A frame handed to the device reaches the kernel, and the kernel's own
+# counters are what say so. ⚠ write(2) returning 60 says we handed over 60; it
+# does not say 60 octets reached anybody.
+#
+# ⚠ The length/type is one the kernel does not handle, on purpose. So RX moves
+# and the frames are dropped after arriving — ⚠ "it arrived" and "the kernel
+# acted on it" stay two different facts, and the check can see both.
+inside_a_frame_handed_over_reaches_the_kernel() {
+    frames=3
+    octets=60
+
+    # ⚠ The driver waits on stdin, so the counters are read while the device
+    # exists and before anything is written. A sleep here would be a guess.
+    fifo="$work/fifo"
+    mkfifo "$fifo" || { note_failure "could not make a fifo"; return; }
+    "$SEND_ONE_FRAME" --dev tap0 --count "$frames" --bytes "$octets" \
+        <"$fifo" >"$work/out.txt" 2>"$work/err.txt" &
+    sender=$!
+    exec 9>"$fifo"
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the sender was attached"
+        exec 9>&-
+        kill "$sender" 2>/dev/null
+        wait "$sender" 2>/dev/null
+        return
+    fi
+    ip link set tap0 up
+
+    before=$(tap_received tap0)
+    printf '\n' >&9
+
+    # ⚠ The counters are read while the sender still holds the device. It is
+    # gone the moment that fd closes (`docs/SPEC.md` §1), so waiting for the
+    # process to exit first would leave nothing to count.
+    if ! wait_for_line "$work/out.txt" "handed over"; then
+        note_failure "the sender never said what it handed over"
+        exec 9>&-
+        kill "$sender" 2>/dev/null
+        wait "$sender" 2>/dev/null
+        return
+    fi
+    after=$(tap_received tap0)
+
+    printf '\n' >&9
+    wait "$sender"
+    assert_exit_code 0 $? "handing frames over"
+    exec 9>&-
+
+    before_bytes=$(printf '%s' "$before" | cut -d' ' -f1)
+    before_packets=$(printf '%s' "$before" | cut -d' ' -f2)
+    after_bytes=$(printf '%s' "$after" | cut -d' ' -f1)
+    after_packets=$(printf '%s' "$after" | cut -d' ' -f2)
+    moved_bytes=$((after_bytes - before_bytes))
+    moved_packets=$((after_packets - before_packets))
+
+    if [ "$moved_packets" -ne "$frames" ] || [ "$moved_bytes" -ne $((frames * octets)) ]; then
+        note_failure "the kernel received $moved_packets frames and $moved_bytes octets, not $frames and $((frames * octets))"
+        printf '    what the sender said:\n' >&2
+        sed 's/^/      /' "$work/out.txt" >&2
+        return
+    fi
+
+    assert_file_contains "$work/out.txt" \
+        "handed over $frames frames, $((frames * octets)) octets, 0 could not be handed over, 0 short, 0 with the wrong step" \
+        "handing frames over"
+
+    # ⚠ Recorded, never asserted: what the kernel did with them afterwards is
+    # its business, and this check is about arrival (`verify` §4).
+    printf '    the kernel then dropped %s of them\n' \
+        "$(printf '%s' "$after" | cut -d' ' -f3)"
+}
+
+# ⚠ A write that could not be made is not a frame sent. ⚠ Counting it as one
+# would make a frame that never left look exactly like one that did.
+#
+# ⚠ The failure is produced the same way hidetzu/tcpip-stack#4 produced a failing
+# read: `ip link del` detaches every fd attached to the device. ⚠ The kernel
+# produces the failure; the harness only takes the device away.
+inside_a_write_that_could_not_be_made_is_not_a_frame_sent() {
+    fifo="$work/fifo"
+    mkfifo "$fifo" || { note_failure "could not make a fifo"; return; }
+    "$SEND_ONE_FRAME" --dev tap0 --count 2 --bytes 60 \
+        <"$fifo" >"$work/out.txt" 2>"$work/err.txt" &
+    sender=$!
+    exec 9>"$fifo"
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the sender was attached"
+        exec 9>&-
+        kill "$sender" 2>/dev/null
+        wait "$sender" 2>/dev/null
+        return
+    fi
+
+    # ⚠ If the device could not be taken away, no write was ever made to fail
+    # and nothing below is a statement about our code (`verify` §4).
+    if ! ip link del tap0; then
+        note_failure "tap0 could not be removed, so no write was ever made to fail"
+        exec 9>&-
+        kill "$sender" 2>/dev/null
+        wait "$sender" 2>/dev/null
+        return
+    fi
+
+    printf '\n' >&9
+    if ! wait_for_line "$work/out.txt" "handed over"; then
+        note_failure "the sender never said what it handed over"
+        exec 9>&-
+        kill "$sender" 2>/dev/null
+        wait "$sender" 2>/dev/null
+        return
+    fi
+    printf '\n' >&9
+    wait "$sender"
+    sender_exit=$?
+    exec 9>&-
+
+    assert_exit_code 1 "$sender_exit" "a write that could not be made"
+
+    # ⚠ Nothing was handed over, and the failures are counted somewhere else.
+    # ⚠ If one counter served both, this line would say "handed over 2 frames".
+    assert_file_contains "$work/out.txt" \
+        "handed over 0 frames, 0 octets, 2 could not be handed over, 0 short, 0 with the wrong step" \
+        "a write that could not be made"
+
+    # ⚠ Recorded, never asserted: which errno the kernel chose
+    # (`.claude/rules/testing.md`).
+    printf '    the writes came back with: errno %s\n' \
+        "$(sed -n 's/^could not hand it over: errno //p' "$work/out.txt" | head -1)"
+}
+
 # ---- outer: each case gets its own namespace -----------------------------
 
 in_namespace() {
@@ -238,8 +399,14 @@ case_a_second_attach_to_the_same_device_is_refused() {
 case_a_read_that_could_not_be_made_is_its_own_outcome() {
     in_namespace a_read_that_could_not_be_made_is_its_own_outcome
 }
+case_a_frame_handed_over_reaches_the_kernel() {
+    in_namespace a_frame_handed_over_reaches_the_kernel
+}
+case_a_write_that_could_not_be_made_is_not_a_frame_sent() {
+    in_namespace a_write_that_could_not_be_made_is_not_a_frame_sent
+}
 
-ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused a_read_that_could_not_be_made_is_its_own_outcome"
+ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused a_read_that_could_not_be_made_is_its_own_outcome a_frame_handed_over_reaches_the_kernel a_write_that_could_not_be_made_is_not_a_frame_sent"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)
@@ -254,7 +421,7 @@ fi
 # cheap (`.claude/skills/verify/SKILL.md` §1).
 select_cases real "$ALL_CASES" "$@"
 
-$MAKE -s build || exit 2
+$MAKE -s build build-harness || exit 2
 
 # ⚠ If the namespace cannot be built, zero cases ran. That is NOT-VERIFIED, and
 # it is not a statement about this change (`verify` §4).

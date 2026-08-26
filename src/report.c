@@ -105,6 +105,7 @@ void report_attach_failure(FILE *out, const char *device_name,
     case TAP_STEP_NONE:
     case TAP_STEP_WAIT:
     case TAP_STEP_READ:
+    case TAP_STEP_WRITE:
         break;
     }
     /* ⚠ Reached only if a step is added above without a sentence for it. Say
