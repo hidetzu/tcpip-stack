@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "arp_responder.h"
 #include "tap.h"
 
 void report_listening(FILE *out, const char *device_name);
@@ -41,6 +42,22 @@ void report_attach_failure(FILE *out, const char *device_name,
 
 void report_wait_failure(FILE *out, const char *device_name,
                          const struct tap_failure *failure);
+
+/* What was decided about one ARP packet, and why.
+ *
+ * ⚠ The decision and the reason are separate things and the line says both
+ * (hidetzu/tcpip-stack#19 Owner Decision 2). ⚠ The reason is a sentence and
+ * never the internal name: `unhandled-opcode` on a terminal is the `ERR_STATE_3`
+ * `CLAUDE.md` §4 forbids.
+ *
+ * ⚠ Nothing here blames the sender for something that is ours: "its opcode is
+ * not one we act on" is about us (`CLAUDE.md` §4-1). */
+void report_arp_outcome(FILE *out, const struct arp_outcome *outcome,
+                        const uint8_t *our_protocol_address);
+
+/* ⚠ Each reason counted on its own, so a packet we could not read never looks
+ * like one that was simply not addressed to us. */
+void report_arp_summary(FILE *out, const struct arp_counts *counts);
 
 void report_usage(FILE *out, const char *program_name);
 

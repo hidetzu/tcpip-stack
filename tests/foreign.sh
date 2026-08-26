@@ -180,6 +180,76 @@ inside_an_arp_request_the_kernel_generated_is_read_intact() {
     fi
 }
 
+# ⚠ The milestone's proof. The other end is the Linux kernel, and what says we
+# answered is not our own output — it is ⚠ the kernel's neighbour table
+# (`.claude/rules/layers.md`, question 3).
+#
+# ⚠ Both halves in one namespace: the address we answer for becomes resolved to
+# OUR hardware address, and one we do not answer for stays unresolved. ⚠ A stack
+# that answered everything would pass the first half alone (`verify` §5).
+#
+# ⚠ ping is not waited on. Measured 2026-08-27: it reports 100% loss either way,
+# because ARP is answered and ⚠ nothing answers an ICMP echo yet. A check that
+# waited on ping would fail for a reason that has nothing to do with this.
+#
+# ⚠ The table is read while the program still holds the device. It is gone the
+# moment that fd closes (`docs/SPEC.md` §1), and there is then nothing to read.
+inside_the_kernel_believes_the_address_we_answered_for() {
+    ours=10.0.0.2
+    not_ours=10.0.0.9
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --timeout 4000 \
+        >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+    # ⚠ Give the kernel a reason to ask for each address. Whether the ping
+    # succeeds is not ours to assert — nothing answers an echo request yet.
+    ping -c 2 -i 0.3 -W 1 "$ours" >/dev/null 2>&1 || true
+    ping -c 1 -i 0.3 -W 1 "$not_ours" >/dev/null 2>&1 || true
+
+    ip neigh show dev tap0 >"$work/neigh.txt"
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    # ⚠ The address that came back is asserted, not merely that the entry
+    # stopped being INCOMPLETE. A stack that answered with somebody else's
+    # hardware address would pass the weaker check.
+    if ! grep -q "^$ours lladdr $our_mac " "$work/neigh.txt"; then
+        note_failure "the kernel did not learn $our_mac for $ours"
+        printf '    what the kernel believes:\n' >&2
+        sed 's/^/      /' "$work/neigh.txt" >&2
+        printf '    what the stack said:\n' >&2
+        sed 's/^/      /' "$work/out.txt" >&2
+        return
+    fi
+
+    # ⚠ The other half.
+    if grep -q "^$not_ours lladdr " "$work/neigh.txt"; then
+        note_failure "the kernel learned an address for $not_ours, which we do not answer for"
+        sed 's/^/      /' "$work/neigh.txt" >&2
+        return
+    fi
+
+    # ⚠ Declining is counted, so "we declined" can never be mistaken for
+    # "nothing arrived" (`.claude/rules/c.md`).
+    assert_file_contains "$work/out.txt" "1 was not for us" "declining is counted"
+    assert_file_contains "$work/out.txt" \
+        "no answer: it asked for $not_ours, which is not an address we answer for" \
+        "declining says which address"
+
+    printf '    the kernel believes: %s\n' "$(grep "^$ours" "$work/neigh.txt")"
+}
+
 in_namespace() {
     if ! unshare -Urn "$0" --inside "$1"; then
         current_case_ok=0
@@ -192,8 +262,11 @@ case_an_arp_request_the_kernel_generated_is_read_intact() {
 case_a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length() {
     in_namespace a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length
 }
+case_the_kernel_believes_the_address_we_answered_for() {
+    in_namespace the_kernel_believes_the_address_we_answered_for
+}
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)
