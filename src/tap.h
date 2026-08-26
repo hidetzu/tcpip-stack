@@ -38,7 +38,8 @@ enum tap_step {
     TAP_STEP_OPEN,   /* open("/dev/net/tun") */
     TAP_STEP_ATTACH, /* ioctl(TUNSETIFF) */
     TAP_STEP_WAIT,   /* poll(2) */
-    TAP_STEP_READ    /* read(2) */
+    TAP_STEP_READ,   /* read(2) */
+    TAP_STEP_WRITE   /* write(2) */
 };
 
 struct tap_failure {
@@ -85,5 +86,31 @@ enum tap_wait tap_wait_readable(int fd, int timeout_ms,
  * anything a frame claims about itself (`.claude/rules/c.md`). */
 ssize_t tap_read_frame(int fd, uint8_t *buffer, size_t buffer_bytes,
                        struct tap_failure *failure);
+
+/* Hand one frame to the device.
+ *
+ * Returns the number of octets the kernel took, or -1 with *failure set.
+ * ⚠ The frame is the caller's and is not kept.
+ *
+ * ⚠ What write(2) does on this fd, measured rather than assumed
+ * (hidetzu/tcpip-stack#17 AC 4). Arch Linux, kernel 7.0.2-arch1-1, x86_64,
+ * unshare -Urn as uid 1000, tap0 up with the default MTU of 1500, 2026-08-26:
+ *
+ *     0, 1, 13 octets     -1, EINVAL — ⚠ fewer than an ethernet header is
+ *                         refused outright, not written in part
+ *     14 .. 8192 octets   ⚠ exactly what was asked for, every size tried,
+ *                         including 1515, 1518, 2048, 4096 and 8192, which are
+ *                         above the MTU
+ *
+ * ⚠ No short write was observed at any size. ⚠ That is an observation and not a
+ * proof that none can happen (`CLAUDE.md` §1) — so a caller must still compare
+ * what came back with what it asked for, and this function does not pretend the
+ * question is settled.
+ *
+ * ⚠ A frame that was not handed over is not a frame sent. The caller counts
+ * what actually left, never what it intended to send
+ * (`.claude/rules/c.md`: an uncounted drop is invisible). */
+ssize_t tap_write_frame(int fd, const uint8_t *frame, size_t frame_bytes,
+                        struct tap_failure *failure);
 
 #endif /* TAP_H */
