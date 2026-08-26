@@ -26,9 +26,12 @@ wait_for_interface() {
 
 # Turns the reported output back into one line per frame: "<length> <hex>".
 #
-# ⚠ This reads the bytes of a frame, and since hidetzu/tcpip-stack#9 so does
-# src/ethernet.c. ⚠ That makes them two implementations of the same question
-# (`CLAUDE.md` §3), and the debt is real and unpaid.
+# ⚠ This reads the bytes of a frame, and so does src/ — the ethernet header
+# since hidetzu/tcpip-stack#9, and ⚠ the ARP fields this case picks apart by
+# hand since hidetzu/tcpip-stack#16 (src/arp.c reads ar$spa and ar$tpa, which is
+# exactly what the offsets below are doing). ⚠ That makes them two
+# implementations of the same question (`CLAUDE.md` §3), and the debt is real
+# and unpaid.
 #
 # ⚠ Paying it off is hidetzu/tcpip-stack#11, deliberately not done here: the
 # obvious fix — letting the parser pick the frame out — turns the one tier whose

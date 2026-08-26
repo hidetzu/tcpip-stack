@@ -34,6 +34,7 @@ the reviewer's job, and that is the half this table got wrong.**
 | Report | ⚠ A frame that exactly filled the read buffer is reported as a length we do not know, not as a measurement | `CLAUDE.md` §1 | `tests/static.sh` `report_lines`, `tests/foreign.sh` `a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length` |
 | Report | ⚠ A read that could not be made is reported as its own outcome: its own line, and counted apart from the frames that were read | `CLAUDE.md` §1 | `tests/real.sh` `a_read_that_could_not_be_made_is_its_own_outcome` |
 | Parse | ⚠ The 14-octet ethernet header is read in host terms: destination address, source address, length/type. ⚠ Malformed, an IEEE 802.3 Length, and a value the standard does not define are three separate answers, and the addresses are still handed back for the two that decline the frame | Not an RFC. IEEE 802.3, the MAC frame format. ⚠ What the standard says about `0x05DD`..`0x05FF` is not confirmed here (ADR 0003) | `tests/static.sh` `ethernet_header` |
+| Parse | ⚠ The fixed part of an ARP packet is read in host terms: `ar$hrd`, `ar$pro`, `ar$hln`, `ar$pln`, `ar$op` and the four addresses. ⚠ Malformed, address spaces we cannot place, and an opcode we do not act on are three separate outcomes, and the fixed fields are still handed back for the two that decline the packet | RFC 826. ⚠ Read on 2026-08-26 and cross-checked against a second copy; ADR 0005 records what was read and what was not taken from it. ⚠ RFC 826 uses no RFC 2119 keywords | `tests/static.sh` `arp_packet` |
 
 ## 2. What this deliberately does not implement
 
@@ -48,7 +49,9 @@ they are different things and the difference is stated, not implied.
 | Reading an 802.1Q VLAN tag | yes | ⚠ `0x8100` is read as any other length/type value and the tag itself is not read (ADR 0003). ⚠ So for a tagged frame that value does not name what the frame carries |
 | ⚠ A count of frames the kernel dropped | yes | ⚠ The harness cannot observe it. A drop happens in the kernel's queue, and printing a number we did not measure is a guess dressed as one (`CLAUDE.md` §1) |
 | TUN (layer 3) mode | yes | The first milestone is ethernet, so the harness attaches as a TAP |
-| ARP, IPv4, ICMP | ⚠ **no** | ⚠ Not yet written. Not a decision — the first milestone is to answer a ping |
+| Answering an ARP request | ⚠ **no** | ⚠ Not yet written. The packet can be read (§1); ⚠ nothing decides whether it is for us and nothing sends (hidetzu/tcpip-stack#17, #18, #19) |
+| An ARP cache | ⚠ **no** | ⚠ Not yet written. Reading a packet needs nothing remembered |
+| IPv4, ICMP | ⚠ **no** | ⚠ Not yet written. Not a decision — the first milestone is to answer a ping |
 
 ## 3. Measured numbers
 
@@ -64,7 +67,7 @@ Arch Linux, kernel `7.0.2-arch1-1`, x86_64, gcc 15.2.1, tap MTU 1500, namespace 
 | What was measured | Value | When | Under what conditions |
 |---|---|---|---|
 | Whether creating a TAP device needs `sudo` | ⚠ **no**, inside `unshare -Urn` | 2026-08-26 | `ip tuntap add` and `ioctl(TUNSETIFF)`, both from uid 1000 |
-| Cost of `make check-static` | 1033 ms from a clean tree; 68 ms and 68 ms with the build already done | 2026-08-26 | 3 runs, all three values listed. Six cases, two of them C binaries built with the sanitizers |
+| Cost of `make check-static` | 1444 ms from a clean tree; 84 ms and 83 ms with the build already done | 2026-08-26 | 3 runs, all three values listed. Seven cases, three of them C binaries built with the sanitizers |
 | Cost of `make check-real` | 507 / 519 / 489 ms | 2026-08-26 | 3 runs, all three values listed, with the build already done. Six cases, each with its own namespace |
 | Cost of `make check-foreign` | 2838 / 2659 / 2642 ms | 2026-08-26 | 3 runs, all three values listed. Two cases, each with its own namespace and its own `ping -c 2 -i 0.3` |
 | Which ethertype the kernel put on a fresh tap first | ARP first in 3 runs, IPv6 first in 2 | 2026-08-26 | 5 runs of the same script. ⚠ **Why no check asserts which frame comes first** |
