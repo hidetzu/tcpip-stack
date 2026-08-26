@@ -244,6 +244,38 @@ static bool case_the_arp_summary_counts_each_reason_on_its_own(void)
     return ok;
 }
 
+
+/* ⚠ The wait reported an error on the fd instead of a frame, and there is no
+ * errno — ppoll succeeded (hidetzu/tcpip-stack#8 Owner Decision 1). ⚠ Measured:
+ * reusing the older sentence here prints "waiting for a frame failed: Success",
+ * because strerror(0) is "Success". */
+static bool case_the_device_going_away_names_no_errno(void)
+{
+    struct produced produced;
+    produced_open(&produced);
+    report_device_gone(produced.out, "tap0");
+    bool ok = matches("the device stopped being usable", &produced,
+                      "could not keep listening on tap0: the device stopped being usable.\n"
+                      "  Waiting for a frame will not help. Nothing here can say why.\n");
+    produced_close(&produced);
+    return ok;
+}
+
+/* ⚠ A read that could not be made gets a line of its own. ⚠ This had no case at
+ * all until hidetzu/tcpip-stack#8 — the behaviour was checked only through the
+ * program, and that route is gone. */
+static bool case_a_read_that_could_not_be_made_has_its_own_line(void)
+{
+    struct tap_failure could_not_read = { TAP_STEP_READ, EBADFD };
+    struct produced produced;
+    produced_open(&produced);
+    report_read_failure(produced.out, 7, &could_not_read);
+    bool ok = matches("a read that could not be made", &produced,
+                      "frame 7  could not be read: File descriptor in bad state\n");
+    produced_close(&produced);
+    return ok;
+}
+
 /* ---- running them ------------------------------------------------------ */
 
 static const struct test_case cases[] = {
@@ -258,6 +290,9 @@ static const struct test_case cases[] = {
       case_the_arp_result_says_the_decision_and_the_reason },
     { "the_arp_summary_counts_each_reason_on_its_own",
       case_the_arp_summary_counts_each_reason_on_its_own },
+    { "the_device_going_away_names_no_errno", case_the_device_going_away_names_no_errno },
+    { "a_read_that_could_not_be_made_has_its_own_line",
+      case_a_read_that_could_not_be_made_has_its_own_line },
 };
 
 #define CASE_COUNT (sizeof cases / sizeof cases[0])

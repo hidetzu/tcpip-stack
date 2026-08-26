@@ -43,6 +43,15 @@ void report_attach_failure(FILE *out, const char *device_name,
 void report_wait_failure(FILE *out, const char *device_name,
                          const struct tap_failure *failure);
 
+/* ⚠ The wait reported an error on the fd instead of a frame, and there is no
+ * errno to name — ppoll succeeded (hidetzu/tcpip-stack#8 Owner Decision 1).
+ *
+ * ⚠ It says what the reader's next move is — waiting will not help — and
+ * ⚠ claims no cause: POLLERR was only ever produced here by removing the
+ * device, and nothing has measured that it cannot arise another way
+ * (`CLAUDE.md` §1, §4-1). */
+void report_device_gone(FILE *out, const char *device_name);
+
 /* What was decided about one ARP packet, and why.
  *
  * ⚠ The decision and the reason are separate things and the line says both
