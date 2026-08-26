@@ -53,55 +53,110 @@ case_a_device_name_that_is_too_long_is_refused() {
         "a device name that cannot exist"
 }
 
-# ⚠ What this catches and what it does not. It catches "What asserts it" naming
-# a case that does not exist. ⚠ It cannot catch a case that exists but does not
-# cover the clause it is named against — ⚠ and that is exactly what happened
-# (`CLAUDE.md` §9). Reading the case is still the reviewer's job.
+# ⚠ What this catches and what it does not.
+#
+# It catches: a "What asserts it" column that names an entry point and no case,
+# one that names nothing at all, a case name that does not exist, and a case
+# named with no entry point in front of it to attribute it to.
+#
+# ⚠ It cannot catch a case that exists and does not cover the clause it is named
+# against — ⚠ and that is exactly what happened (`CLAUDE.md` §9). Reading the
+# case is still the reviewer's job.
+spec_row_now=""
+spec_row_layer=""
+spec_row_entry_points=0
+spec_row_cases=0
+
+# ⚠ The "names a file but no case" rule can only be judged once the whole row has
+# been read, so it is checked when the row ends.
+finish_spec_row() {
+    [ -n "$spec_row_now" ] || return 0
+    if [ "$spec_row_entry_points" -gt 0 ] && [ "$spec_row_cases" -eq 0 ]; then
+        note_failure "docs/SPEC.md §1 row $spec_row_now ($spec_row_layer) names an entry point and no case. A file says where to look; it does not say anything in there asserts this claim"
+    fi
+}
+
 case_spec_names_checks_that_exist() {
+    tab=$(printf '\t')
+
     # ⚠ §1 only. §2 is what is deliberately absent and names no checks.
+    # ⚠ One line per token, carrying the row it came from: without that, a case
+    # name gets attributed to an entry point named on some earlier row.
     sed -n '/^## 1\. What this implements/,/^## 2\./p' docs/SPEC.md |
-        awk -F'|' '
+        awk -F'|' -v OFS="$tab" '
             /^\|/ {
+                if ($0 ~ /^\|[-| ]+\|$/) next
                 claimed_by = $(NF - 1)
                 if (claimed_by ~ /What asserts it/) next
-                if (claimed_by ~ /^[- ]*$/) next
+                row++
+                layer = $2
+                gsub(/^ +| +$/, "", layer)
                 pieces = split(claimed_by, part, "`")
-                # Backticked tokens are the even-numbered pieces.
-                for (i = 2; i <= pieces; i += 2) print part[i]
+                named = 0
+                for (i = 2; i <= pieces; i += 2) {
+                    kind = (part[i] ~ /^tests\/.*\.sh$/) ? "entry-point" : "case"
+                    print row, layer, kind, part[i]
+                    named++
+                }
+                # ⚠ A row that names nothing has to reach the shell too, or an
+                # empty column is indistinguishable from no row at all.
+                if (named == 0) print row, layer, "nothing", ""
             }
         ' >"$work/claimed.txt"
 
-    named_script=""
-    scripts_seen=0
+    spec_row_now=""
+    rows_seen=0
+    entry_points_seen=0
     cases_seen=0
-    while read -r token; do
-        case "$token" in
-        tests/*.sh)
-            named_script=$token
-            scripts_seen=$((scripts_seen + 1))
-            if [ ! -x "$named_script" ]; then
-                note_failure "docs/SPEC.md names $named_script, which is not an entry point here"
+    named_entry_point=""
+
+    while IFS="$tab" read -r row layer kind value; do
+        if [ "$row" != "$spec_row_now" ]; then
+            finish_spec_row
+            spec_row_now=$row
+            spec_row_layer=$layer
+            spec_row_entry_points=0
+            spec_row_cases=0
+            named_entry_point=""
+            rows_seen=$((rows_seen + 1))
+        fi
+
+        case $kind in
+        entry-point)
+            named_entry_point=$value
+            spec_row_entry_points=$((spec_row_entry_points + 1))
+            entry_points_seen=$((entry_points_seen + 1))
+            if [ ! -x "$named_entry_point" ]; then
+                note_failure "docs/SPEC.md §1 names $named_entry_point, which is not an entry point here"
             fi
             ;;
-        *)
-            [ -n "$named_script" ] || continue
+        case)
+            spec_row_cases=$((spec_row_cases + 1))
             cases_seen=$((cases_seen + 1))
-            if ! "$named_script" --list | grep -qx -- "$token"; then
-                note_failure "docs/SPEC.md says $named_script asserts $token, and that case does not exist"
+            if [ -z "$named_entry_point" ]; then
+                note_failure "docs/SPEC.md §1 row $row ($layer) names case $value with no entry point in front of it"
+                continue
             fi
+            if ! "$named_entry_point" --list | grep -qx -- "$value"; then
+                note_failure "docs/SPEC.md says $named_entry_point asserts $value, and that case does not exist"
+            fi
+            ;;
+        nothing)
+            note_failure "docs/SPEC.md §1 row $row ($layer) names nothing in \"What asserts it\""
             ;;
         esac
     done <"$work/claimed.txt"
+    finish_spec_row
 
     # ⚠ The other half. Without this the case stays green if the table is empty,
     # if the section headings are renamed, or if the parsing quietly matches
     # nothing (`verify` §5).
-    if [ "$scripts_seen" -eq 0 ] || [ "$cases_seen" -eq 0 ]; then
-        note_failure "read $scripts_seen entry points and $cases_seen case names out of docs/SPEC.md §1, which cannot be right"
+    if [ "$rows_seen" -eq 0 ] || [ "$entry_points_seen" -eq 0 ] || [ "$cases_seen" -eq 0 ]; then
+        note_failure "read $rows_seen rows, $entry_points_seen entry points and $cases_seen case names out of docs/SPEC.md §1, which cannot be right"
         return
     fi
-    printf '    checked %d entry points and %d case names named by docs/SPEC.md §1\n' \
-        "$scripts_seen" "$cases_seen"
+    printf '    checked %d rows, %d entry points and %d case names named by docs/SPEC.md §1\n' \
+        "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
 select_cases static "build_warnings_are_errors build_with_sanitizers report_lines a_device_name_that_is_too_long_is_refused spec_names_checks_that_exist" "$@"
