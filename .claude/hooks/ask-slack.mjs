@@ -69,7 +69,10 @@ try {
   const fromFile = (name) => {
     for (const f of [join(ROOT, ".envrc"), join(ROOT, ".env")]) {
       if (!existsSync(f)) continue;
-      const m = new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=\\s*(.*)$`, "m").exec(readFileSync(f, "utf8"));
+      // ⚠ Horizontal whitespace only ([ \t], not \s). ⚠ \s crosses newlines, so an empty
+      //   assignment (NAME=) would take the next non-empty line as the value — reading
+      //   "missing" as "set, to the wrong thing", and the terminal fallback never fires.
+      const m = new RegExp(`^[ \\t]*(?:export[ \\t]+)?${name}[ \\t]*=[ \\t]*([^\\n]*)$`, "m").exec(readFileSync(f, "utf8"));
       if (!m) continue;
       let v = m[1].trim();
       if (/^".*"$/.test(v) || /^'.*'$/.test(v)) v = v.slice(1, -1); else v = v.replace(/\s+#.*$/, "");
