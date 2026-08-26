@@ -70,12 +70,17 @@ read 1 frame, 0 read errors
 
 ⚠ **`tap-read` does not know that is an ARP request.** It reports a length and the bytes.
 
-There is a Parse layer now (`src/ethernet.c`): it reads the 14-octet ethernet header — destination
-address, source address, length/type — and tells a malformed frame, an IEEE 802.3 Length and a value
-the standard does not define apart from one another
-([ADR 0003](docs/adr/0003-what-the-length-type-field-means-and-what-the-parse-layer-refuses-to-guess.md)).
-⚠ **Nothing prints what it finds yet**, which is why the run above says only a length, and
-⚠ **nothing above ethernet is interpreted** — naming the payload is still to come.
+There is a Parse layer now. `src/ethernet.c` reads the 14-octet ethernet header — destination
+address, source address, length/type
+([ADR 0003](docs/adr/0003-what-the-length-type-field-means-and-what-the-parse-layer-refuses-to-guess.md)),
+and `src/arp.c` reads the fixed part of an ARP packet — RFC 826's `ar$hrd`, `ar$pro`, `ar$hln`,
+`ar$pln`, `ar$op` and the four addresses
+([ADR 0005](docs/adr/0005-arp-names-come-from-rfc-826-and-the-numbers-do-not.md)).
+Each keeps a malformed packet, one whose shape it cannot place, and one it can read but does not act
+on as three separate answers.
+
+⚠ **Nothing prints what they find yet**, which is why the run above says only a length, and
+⚠ **nothing decides or sends** — answering an ARP request is still to come.
 
 The three tiers differ in who the other end is: nobody (`check-static`), the device and us
 (`check-real`), and the Linux kernel (`check-foreign`). Each runs one named case on its own and

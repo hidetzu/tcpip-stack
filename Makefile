@@ -17,7 +17,7 @@ BUILD   := build
 # a sanitizer that reports and continues turns a defect into a log line.
 SANITIZE := -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
 
-HEADERS      := src/tap.h src/report.h src/ethernet.h
+HEADERS      := src/tap.h src/report.h src/ethernet.h src/arp.h
 LIB_SOURCES  := src/tap.c src/report.c
 MAIN_SOURCE  := src/tap_read.c
 
@@ -26,7 +26,7 @@ MAIN_SOURCE  := src/tap_read.c
 # waiting for its consumer (hidetzu/tcpip-stack#10 is what will print what it
 # finds). ⚠ It is still compiled at -O2 with -Werror and the sanitizers, by the
 # check below.
-PARSE_SOURCES := src/ethernet.c
+PARSE_SOURCES := src/ethernet.c src/arp.c
 
 # ⚠ verify §1's contract — one named case, counting without loading anything
 # heavy, the first line saying which subset ran — is implemented once, in
@@ -35,11 +35,13 @@ CHECK_SOURCES        := tests/check.c
 CHECK_HEADERS        := tests/check.h
 TEST_REPORT_SOURCE   := tests/test_report.c
 TEST_ETHERNET_SOURCE := tests/test_ethernet.c
+TEST_ARP_SOURCE      := tests/test_arp.c
 
 TAP_READ            := $(BUILD)/tap-read
 TAP_READ_SANITIZED  := $(BUILD)/tap-read.sanitized
 TEST_REPORT         := $(BUILD)/test_report.sanitized
 TEST_ETHERNET       := $(BUILD)/test_ethernet.sanitized
+TEST_ARP            := $(BUILD)/test_arp.sanitized
 
 # Passed through to a check script, so one named case can be run on its own:
 #   make check-static CHECK_ARGS="--case report_lines"
@@ -51,7 +53,7 @@ all: build
 
 build: $(TAP_READ)
 
-build-sanitized: $(TAP_READ_SANITIZED) $(TEST_REPORT) $(TEST_ETHERNET)
+build-sanitized: $(TAP_READ_SANITIZED) $(TEST_REPORT) $(TEST_ETHERNET) $(TEST_ARP)
 
 $(TAP_READ): $(MAIN_SOURCE) $(LIB_SOURCES) $(HEADERS)
 	@mkdir -p $(@D)
@@ -70,6 +72,11 @@ $(TEST_ETHERNET): $(TEST_ETHERNET_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES) $(HE
 	@mkdir -p $(@D)
 	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -Itests -o $@ \
 		$(TEST_ETHERNET_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES)
+
+$(TEST_ARP): $(TEST_ARP_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES) $(HEADERS) $(CHECK_HEADERS)
+	@mkdir -p $(@D)
+	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -Itests -o $@ \
+		$(TEST_ARP_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES)
 
 check: check-static check-real check-foreign
 

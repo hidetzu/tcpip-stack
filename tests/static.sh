@@ -57,6 +57,22 @@ case_ethernet_header() {
     sed 's/^/    /' "$work/ethernet.txt"
 }
 
+# The ARP Parse layer, against the captured frame and against packets built for
+# the boundaries. This binary announces its own case count — ⚠ never copy that
+# number into a document (`docs/SPEC.md`).
+case_arp_packet() {
+    $MAKE -s build-sanitized >/dev/null 2>&1 || {
+        note_failure "the sanitized build did not succeed"
+        return
+    }
+    if ! ./build/test_arp.sanitized --fixtures tests/fixtures >"$work/arp.txt" 2>&1; then
+        note_failure "the ARP Parse layer did not read the packet the way it must"
+        sed 's/^/      /' "$work/arp.txt" >&2
+        return
+    fi
+    sed 's/^/    /' "$work/arp.txt"
+}
+
 # ⚠ Refusing the name happens before /dev/net/tun is touched, so this needs no
 # device and no capability.
 case_a_device_name_that_is_too_long_is_refused() {
@@ -175,5 +191,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines ethernet_header a_device_name_that_is_too_long_is_refused spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines ethernet_header arp_packet a_device_name_that_is_too_long_is_refused spec_names_checks_that_exist" "$@"
 run_selected_cases
