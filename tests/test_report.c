@@ -4,6 +4,9 @@
  * the lines a human reads and compares them byte for byte with the wording the
  * owner approved (hidetzu/tcpip-stack#2).
  *
+ * ⚠ Running cases and reading fixtures is `tests/check.h`, shared with the
+ * other static-tier binaries. ⚠ Only what is asserted lives here.
+ *
  * ⚠ Exact comparison is the point: it is how "the timeout message claims
  * nothing about what the other side sent" is asserted. Any sentence added to
  * that message breaks this check. */
@@ -13,12 +16,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "check.h"
 #include "report.h"
 #include "tap.h"
-
-#define FIXTURE_DIRECTORY_DEFAULT "tests/fixtures"
-
-static const char *fixture_directory = FIXTURE_DIRECTORY_DEFAULT;
 
 /* ---- the harness ------------------------------------------------------- */
 
@@ -62,53 +62,6 @@ static bool matches(const char *what, struct produced *produced, const char *exp
     return false;
 }
 
-/* ---- loading the captured frame ---------------------------------------- */
-
-/* Reads the hex fixture into a caller-supplied buffer. Lines starting with '#'
- * are provenance, not bytes. Returns the number of bytes, or -1. */
-static long load_fixture(const char *name, unsigned char *into, size_t capacity)
-{
-    char path[512];
-    if ((size_t)snprintf(path, sizeof path, "%s/%s", fixture_directory, name) >= sizeof path) {
-        fprintf(stderr, "  the path to fixture %s does not fit\n", name);
-        return -1;
-    }
-    FILE *file = fopen(path, "r");
-    if (file == NULL) {
-        fprintf(stderr, "  could not read fixture %s: %s\n", path, strerror(errno));
-        return -1;
-    }
-
-    long bytes = 0;
-    char line[256];
-    while (fgets(line, sizeof line, file) != NULL) {
-        if (line[0] == '#' || line[0] == '\n') {
-            continue;
-        }
-        for (const char *at = line; *at != '\0';) {
-            if (*at == ' ' || *at == '\n' || *at == '\t' || *at == '\r') {
-                at++;
-                continue;
-            }
-            unsigned value = 0;
-            if (sscanf(at, "%2x", &value) != 1) {
-                fprintf(stderr, "  fixture %s has something that is not a byte\n", path);
-                fclose(file);
-                return -1;
-            }
-            if ((size_t)bytes >= capacity) {
-                fprintf(stderr, "  fixture %s is larger than the buffer for it\n", path);
-                fclose(file);
-                return -1;
-            }
-            into[bytes++] = (unsigned char)value;
-            at += 2;
-        }
-    }
-    fclose(file);
-    return bytes;
-}
-
 /* ---- the cases --------------------------------------------------------- */
 
 static bool case_frame_line(void)
@@ -135,7 +88,7 @@ static bool case_frame_line_when_the_buffer_was_filled(void)
 static bool case_hex_of_the_captured_arp_request(void)
 {
     unsigned char frame[TAP_FRAME_BUFFER_BYTES];
-    long bytes = load_fixture("arp-request-42.hex", frame, sizeof frame);
+    long bytes = check_load_fixture("arp-request-42.hex", frame, sizeof frame);
     if (bytes < 0) {
         return false;
     }
@@ -222,11 +175,6 @@ static bool case_attach_failure_names_the_step_and_the_errno(void)
 
 /* ---- running them ------------------------------------------------------ */
 
-struct test_case {
-    const char *name;
-    bool (*run)(void);
-};
-
 static const struct test_case cases[] = {
     { "frame_line", case_frame_line },
     { "frame_line_when_the_buffer_was_filled", case_frame_line_when_the_buffer_was_filled },
@@ -241,63 +189,5 @@ static const struct test_case cases[] = {
 
 int main(int argc, char **argv)
 {
-    const char *only = NULL;
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--count") == 0) {
-            /* ⚠ Counts without running and without touching a fixture. */
-            printf("report: %zu cases\n", CASE_COUNT);
-            return 0;
-        }
-        if (strcmp(argv[i], "--list") == 0) {
-            for (size_t c = 0; c < CASE_COUNT; c++) {
-                printf("%s\n", cases[c].name);
-            }
-            return 0;
-        }
-        if (strcmp(argv[i], "--case") == 0 && i + 1 < argc) {
-            only = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--fixtures") == 0 && i + 1 < argc) {
-            fixture_directory = argv[++i];
-            continue;
-        }
-        fprintf(stderr, "usage: %s [--case NAME] [--fixtures DIR] [--list] [--count]\n",
-                argv[0]);
-        return 2;
-    }
-
-    size_t selected = 0;
-    for (size_t c = 0; c < CASE_COUNT; c++) {
-        if (only == NULL || strcmp(only, cases[c].name) == 0) {
-            selected++;
-        }
-    }
-    if (selected == 0) {
-        fprintf(stderr, "report: no case is named %s\n", only);
-        return 2;
-    }
-
-    /* ⚠ The first line says which subset ran (`.claude/skills/verify` §1). */
-    if (only == NULL) {
-        printf("report: running %zu of %zu cases\n", selected, CASE_COUNT);
-    } else {
-        printf("report: running %zu of %zu cases (%s)\n", selected, CASE_COUNT, only);
-    }
-
-    size_t passed = 0;
-    for (size_t c = 0; c < CASE_COUNT; c++) {
-        if (only != NULL && strcmp(only, cases[c].name) != 0) {
-            continue;
-        }
-        bool ok = cases[c].run();
-        printf("  %-44s %s\n", cases[c].name, ok ? "ok" : "FAILED");
-        if (ok) {
-            passed++;
-        }
-    }
-
-    printf("report: %zu of %zu cases passed\n", passed, selected);
-    return passed == selected ? 0 : 1;
+    return check_main("report", cases, CASE_COUNT, argc, argv);
 }

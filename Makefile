@@ -17,14 +17,29 @@ BUILD   := build
 # a sanitizer that reports and continues turns a defect into a log line.
 SANITIZE := -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
 
-HEADERS      := src/tap.h src/report.h
+HEADERS      := src/tap.h src/report.h src/ethernet.h
 LIB_SOURCES  := src/tap.c src/report.c
 MAIN_SOURCE  := src/tap_read.c
-TEST_SOURCE  := tests/test_report.c
+
+# ⚠ The Parse layer is deliberately not linked into tap-read: nothing in the
+# program calls it yet, and dead code in the product is worse than a layer
+# waiting for its consumer (hidetzu/tcpip-stack#10 is what will print what it
+# finds). ⚠ It is still compiled at -O2 with -Werror and the sanitizers, by the
+# check below.
+PARSE_SOURCES := src/ethernet.c
+
+# ⚠ verify §1's contract — one named case, counting without loading anything
+# heavy, the first line saying which subset ran — is implemented once, in
+# tests/check.c, and linked into every static-tier binary (`CLAUDE.md` §3).
+CHECK_SOURCES        := tests/check.c
+CHECK_HEADERS        := tests/check.h
+TEST_REPORT_SOURCE   := tests/test_report.c
+TEST_ETHERNET_SOURCE := tests/test_ethernet.c
 
 TAP_READ            := $(BUILD)/tap-read
 TAP_READ_SANITIZED  := $(BUILD)/tap-read.sanitized
 TEST_REPORT         := $(BUILD)/test_report.sanitized
+TEST_ETHERNET       := $(BUILD)/test_ethernet.sanitized
 
 # Passed through to a check script, so one named case can be run on its own:
 #   make check-static CHECK_ARGS="--case report_lines"
@@ -36,7 +51,7 @@ all: build
 
 build: $(TAP_READ)
 
-build-sanitized: $(TAP_READ_SANITIZED) $(TEST_REPORT)
+build-sanitized: $(TAP_READ_SANITIZED) $(TEST_REPORT) $(TEST_ETHERNET)
 
 $(TAP_READ): $(MAIN_SOURCE) $(LIB_SOURCES) $(HEADERS)
 	@mkdir -p $(@D)
@@ -46,9 +61,15 @@ $(TAP_READ_SANITIZED): $(MAIN_SOURCE) $(LIB_SOURCES) $(HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -o $@ $(MAIN_SOURCE) $(LIB_SOURCES)
 
-$(TEST_REPORT): $(TEST_SOURCE) $(LIB_SOURCES) $(HEADERS)
+$(TEST_REPORT): $(TEST_REPORT_SOURCE) $(CHECK_SOURCES) $(LIB_SOURCES) $(HEADERS) $(CHECK_HEADERS)
 	@mkdir -p $(@D)
-	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -o $@ $(TEST_SOURCE) $(LIB_SOURCES)
+	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -Itests -o $@ \
+		$(TEST_REPORT_SOURCE) $(CHECK_SOURCES) $(LIB_SOURCES)
+
+$(TEST_ETHERNET): $(TEST_ETHERNET_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES) $(HEADERS) $(CHECK_HEADERS)
+	@mkdir -p $(@D)
+	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -Itests -o $@ \
+		$(TEST_ETHERNET_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES)
 
 check: check-static check-real check-foreign
 
