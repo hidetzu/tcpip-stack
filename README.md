@@ -4,8 +4,7 @@ A user-space TCP/IP stack for Linux, built as an experiment in AI-assisted syste
 
 **What runs today: `tap-read`.** It creates and attaches to a TAP device in the current network
 namespace, and reports the ethernet frames the kernel puts on it — length per frame, and the raw
-bytes on request. It reads only; ⚠ **sending frames is not implemented yet**, and no byte of a
-frame is interpreted anywhere in `src/`.
+bytes on request. It reads only; ⚠ **sending frames is not implemented yet**.
 
 ⚠ **The namespace is not `tap-read`'s doing.** It uses whichever network namespace it is started
 in. The checks put a fresh one there with `unshare -Urn`
@@ -70,7 +69,13 @@ read 1 frame, 0 read errors
 ```
 
 ⚠ **`tap-read` does not know that is an ARP request.** It reports a length and the bytes.
-Naming what they mean is the Parse layer, and there is no Parse layer yet.
+
+There is a Parse layer now (`src/ethernet.c`): it reads the 14-octet ethernet header — destination
+address, source address, length/type — and tells a malformed frame, an IEEE 802.3 Length and a value
+the standard does not define apart from one another
+([ADR 0003](docs/adr/0003-what-the-length-type-field-means-and-what-the-parse-layer-refuses-to-guess.md)).
+⚠ **Nothing prints what it finds yet**, which is why the run above says only a length, and
+⚠ **nothing above ethernet is interpreted** — naming the payload is still to come.
 
 The three tiers differ in who the other end is: nobody (`check-static`), the device and us
 (`check-real`), and the Linux kernel (`check-foreign`). Each runs one named case on its own and

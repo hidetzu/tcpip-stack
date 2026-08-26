@@ -26,10 +26,14 @@ wait_for_interface() {
 
 # Turns the reported output back into one line per frame: "<length> <hex>".
 #
-# ⚠ This reads the bytes of a frame, and nothing in src/ does. That is not two
-# implementations of the same question — there is no parser yet. ⚠ When one
-# exists, this check has to stop deciding for itself what an ARP request looks
-# like (`CLAUDE.md` §3).
+# ⚠ This reads the bytes of a frame, and since hidetzu/tcpip-stack#9 so does
+# src/ethernet.c. ⚠ That makes them two implementations of the same question
+# (`CLAUDE.md` §3), and the debt is real and unpaid.
+#
+# ⚠ Paying it off is hidetzu/tcpip-stack#11, deliberately not done here: the
+# obvious fix — letting the parser pick the frame out — turns the one tier whose
+# other end is not ours into our parser agreeing with our parser, and that is
+# the question this tier exists to answer (`.claude/rules/layers.md`).
 frames_as_hex() {
     awk '
         /^frame [0-9]+  [0-9]+ bytes/ {
