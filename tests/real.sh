@@ -39,6 +39,13 @@ wait_for_interface_to_go() {
     return 1
 }
 
+# ⚠ The limit is read out of the source rather than written here a second time:
+# if it changes, this check follows it instead of asserting a number nothing
+# produces any more (`CLAUDE.md` §3).
+read_consecutive_read_failures_allowed() {
+    awk '/^#define CONSECUTIVE_READ_FAILURES_ALLOWED/ { print $3 }' src/tap_read.c
+}
+
 # ---- the cases, as they run inside the namespace -------------------------
 
 inside_the_interface_exists_only_while_it_is_attached() {
@@ -145,6 +152,68 @@ inside_a_second_attach_to_the_same_device_is_refused() {
         "attaching to a device someone else holds"
 }
 
+# ⚠ A read that could not be made is neither a frame nor silence. It gets its
+# own line, and it is counted apart from the frames that were read
+# (`CLAUDE.md` §1: not captured ≠ not sent).
+#
+# ⚠ How the failure is produced without adding a seam to src/: `ip link del` on
+# a tap device detaches every fd attached to it, so the wait comes back with an
+# error on the fd and the next read(2) fails. ⚠ The kernel produces the failure;
+# the harness only takes the device away.
+#
+# ⚠ Which errno comes back is the kernel's choice, so it is recorded and not
+# asserted (`.claude/rules/testing.md`). What is asserted is our own reporting.
+inside_a_read_that_could_not_be_made_is_its_own_outcome() {
+    allowed=$(read_consecutive_read_failures_allowed)
+    if [ -z "$allowed" ]; then
+        note_failure "could not read CONSECUTIVE_READ_FAILURES_ALLOWED out of src/tap_read.c"
+        return
+    fi
+
+    "$TAP_READ" --dev tap0 --timeout 3000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while tap-read was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+
+    # ⚠ If the device could not be taken away, no read was ever made to fail and
+    # nothing below is a statement about our code (`verify` §4).
+    if ! ip link del tap0; then
+        note_failure "tap0 could not be removed, so no read was ever made to fail"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+
+    wait "$reader"
+    assert_exit_code 3 $? "a read that could not be made"
+
+    failure_lines=$(grep -c '^frame [0-9][0-9]*  could not be read: ' "$work/err.txt")
+    if [ "$failure_lines" -ne "$allowed" ]; then
+        note_failure "expected $allowed reads that could not be made, each on its own line, and found $failure_lines"
+        printf '    what was said:\n' >&2
+        sed 's/^/      /' "$work/err.txt" >&2
+        return
+    fi
+
+    # ⚠ The frames-read counter did not move, and the failures were counted
+    # somewhere else. ⚠ If one counter served both, this line would say
+    # "read $allowed frames" instead.
+    #
+    # ⚠ The other half — the frames-read counter moving while the read-error
+    # counter stays at 0 — is `an_arp_request_the_kernel_generated_is_read_intact`
+    # in tests/foreign.sh (`verify` §5).
+    assert_file_is "$work/out.txt" "listening on tap0
+read 0 frames, $allowed read errors" "a read that could not be made"
+
+    # ⚠ Recorded, never asserted: what actually came back (`verify` §4).
+    printf '    the reads came back with: %s\n' \
+        "$(sed -n '1s/^frame [0-9][0-9]*  could not be read: //p' "$work/err.txt")"
+}
+
 # ---- outer: each case gets its own namespace -----------------------------
 
 in_namespace() {
@@ -166,8 +235,11 @@ case_a_stop_request_reaches_a_reader_that_is_waiting() {
 case_a_second_attach_to_the_same_device_is_refused() {
     in_namespace a_second_attach_to_the_same_device_is_refused
 }
+case_a_read_that_could_not_be_made_is_its_own_outcome() {
+    in_namespace a_read_that_could_not_be_made_is_its_own_outcome
+}
 
-ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused"
+ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused a_read_that_could_not_be_made_is_its_own_outcome"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

@@ -32,6 +32,7 @@ the reviewer's job, and that is the half this table got wrong.**
 | Report | A frame read and a timer running out are different outcomes, each with its own line. ⚠ A timer running out and being unable to use the device each leave their own exit code | `CLAUDE.md` §1, §4-1 | `tests/static.sh` `report_lines`, `tests/real.sh` `a_timer_running_out_has_its_own_exit_code` |
 | Wire | ⚠ A request to stop reaches a reader that is waiting with no time limit, and what was read up to then is reported | Not an RFC. `ppoll(2)` with the stop signals blocked around the loop | `tests/real.sh` `a_stop_request_reaches_a_reader_that_is_waiting` |
 | Report | ⚠ A frame that exactly filled the read buffer is reported as a length we do not know, not as a measurement | `CLAUDE.md` §1 | `tests/static.sh` `report_lines`, `tests/foreign.sh` `a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length` |
+| Report | ⚠ A read that could not be made is reported as its own outcome: its own line, and counted apart from the frames that were read | `CLAUDE.md` §1 | `tests/real.sh` `a_read_that_could_not_be_made_is_its_own_outcome` |
 
 ## 2. What this deliberately does not implement
 
@@ -61,6 +62,6 @@ Arch Linux, kernel `7.0.2-arch1-1`, x86_64, gcc 15.2.1, tap MTU 1500, namespace 
 |---|---|---|---|
 | Whether creating a TAP device needs `sudo` | ⚠ **no**, inside `unshare -Urn` | 2026-08-26 | `ip tuntap add` and `ioctl(TUNSETIFF)`, both from uid 1000 |
 | Cost of `make check-static` | 703 ms from a clean tree; 23 ms and 23 ms with the build already done | 2026-08-26 | 3 runs, all three values listed |
-| Cost of `make check-real` | 479 / 487 / 463 ms | 2026-08-26 | 3 runs, all three values listed |
+| Cost of `make check-real` | 507 / 519 / 489 ms | 2026-08-26 | 3 runs, all three values listed, with the build already done. Six cases, each with its own namespace |
 | Cost of `make check-foreign` | 2838 / 2659 / 2642 ms | 2026-08-26 | 3 runs, all three values listed. Two cases, each with its own namespace and its own `ping -c 2 -i 0.3` |
 | Which ethertype the kernel put on a fresh tap first | ARP first in 3 runs, IPv6 first in 2 | 2026-08-26 | 5 runs of the same script. ⚠ **Why no check asserts which frame comes first** |
