@@ -1,0 +1,76 @@
+# The checks, on a runner that is not the developer's machine.
+#
+# ⚠ Nothing here re-implements a check. Which checks exist, what they assert and
+# in what order they run belong to the test tree and to
+# `.claude/skills/verify/SKILL.md`; this file only starts them and reports which
+# ones ran. ⚠ A build command written here as well would be the same decision in
+# two places (`CLAUDE.md` §3).
+#
+# ⚠ One job per group of tiers, on purpose: a single green tick that hid which
+# tiers ran would make NOT-VERIFIED look like PASS, and that is the one thing
+# `verify` §6 forbids.
+
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    # ⚠ The tier that needs no fd, no clock, no namespace and no privilege. It
+    # runs anywhere, so there is no honest reason for it not to run here.
+    name: static
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠ A result carries the conditions it was measured under (`CLAUDE.md` §6),
+      # and a runner is not the machine `docs/SPEC.md` §3 was measured on.
+      - name: What this ran on
+        run: |
+          uname -srvm
+          cc --version | head -1
+          make --version | head -1
+
+      - run: make check-static
+
+  namespace:
+    # ⚠ The two tiers that need a TAP device. The capability comes from
+    # `unshare -Urn` and never from sudo (ADR 0001).
+    name: real and foreign
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What this ran on
+        run: |
+          uname -srvm
+          cc --version | head -1
+          ip -V || true
+          ping -V 2>&1 | head -1 || true
+
+      # ⚠ Measured, not assumed. Unprivileged user namespaces are disabled on
+      # some systems, and where they are, these two tiers run zero cases.
+      # ⚠ Zero cases is NOT-VERIFIED, never a pass (ADR 0001, `verify` §6) — so
+      # this step says plainly what it found and the tiers below decide the job.
+      - name: Can the check environment be built here?
+        run: |
+          echo "kernel.unprivileged_userns_clone: $(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || echo '(not present)')"
+          echo "apparmor_restrict_unprivileged_userns: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '(not present)')"
+          if unshare -Urn true 2>/dev/null; then
+            echo "unshare -Urn: works here"
+          else
+            echo "unshare -Urn: refused here"
+          fi
+
+      # ⚠ Both run even when the first fails, so the log says which tier was
+      # reached rather than only the first one that stopped.
+      - run: make check-real
+
+      - if: ${{ !cancelled() }}
+        run: make check-foreign
