@@ -1,0 +1,7 @@
+Temporary. Opened only to find out whether GitHub creates a workflow run for a
+pull request on this repository at all — hidetzu/tcpip-stack has created no run
+since 2026-08-26T14:58:27Z while hidetzu/konjaku has kept running normally.
+
+⚠ This file and its branch are deleted as soon as the answer is known.
+⚠ .github/workflows/checks.yml is deliberately untouched: changing it would
+change what is being measured.
