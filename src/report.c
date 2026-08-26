@@ -176,6 +176,14 @@ void report_arp_summary(FILE *out, const struct arp_counts *counts)
             counts->unsupported_address_space, counts->unhandled_opcode);
 }
 
+void report_device_gone(FILE *out, const char *device_name)
+{
+    fprintf(out,
+            "could not keep listening on %s: the device stopped being usable.\n"
+            "  Waiting for a frame will not help. Nothing here can say why.\n",
+            device_name);
+}
+
 void report_usage(FILE *out, const char *program_name)
 {
     fprintf(out,

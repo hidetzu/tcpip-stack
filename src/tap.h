@@ -60,7 +60,19 @@ enum tap_wait {
     TAP_WAIT_READY,       /* a frame can be read now */
     TAP_WAIT_TIMEOUT,     /* the time we agreed to wait ran out. ⚠ Not an answer */
     TAP_WAIT_INTERRUPTED, /* a signal arrived while waiting */
-    TAP_WAIT_FAILED       /* *failure says which step and which errno */
+    TAP_WAIT_FAILED,      /* *failure says which step and which errno */
+
+    /* ⚠ The wait came back reporting an error on the fd rather than a frame.
+     * ⚠ There is no errno: ppoll SUCCEEDED — it returned 1 — and POLLERR is not
+     * an errno. ⚠ Nothing here can say why, and nothing pretends to
+     * (hidetzu/tcpip-stack#8 Owner Decision 1).
+     *
+     * ⚠ Measured 2026-08-26, 30 of 30 iterations across 3 runs: `ip link del`
+     * on the device gives revents = 0x0008, POLLERR alone, POLLIN clear.
+     * ⚠ POLLHUP and POLLNVAL are folded in here provisionally — ⚠ neither has
+     * ever been observed on this fd, and ⚠ not having observed a thing is not a
+     * proof that it cannot happen (`CLAUDE.md` §1). */
+    TAP_WAIT_DEVICE_GONE
 };
 
 /* Wait until a frame can be read. timeout_ms < 0 waits without a limit.
@@ -71,6 +83,10 @@ enum tap_wait {
  * ⚠ Why the caller has to supply one: with a signal merely handled, a stop
  * request that arrives between the caller testing its flag and this function
  * entering the wait is lost, and a wait with no limit then never returns. The
+ * ⚠ What comes back is decided by `revents`, not by ppoll's return value. ⚠ A
+ * non-zero return says something happened, not that a frame can be read: an
+ * error on the fd counts as something (hidetzu/tcpip-stack#8).
+ *
  * caller blocks those signals around the loop and hands the unblocked mask in
  * here, so they can only be delivered inside the wait, where they interrupt it
  * (`.claude/skills/change-review/SKILL.md` §4: reorder it, do not reason that

@@ -30,7 +30,16 @@ enum exit_code {
 };
 
 /* ⚠ A read that keeps failing must not spin. After this many failures in a row
- * with no frame in between, stop and say so. */
+ * with no frame in between, stop and say so.
+ *
+ * ⚠ No route to a failing read(2) is known today. The one that existed was the
+ * gap hidetzu/tcpip-stack#8 closed — ppoll now says the device is gone instead
+ * of saying READY on an error — and a replacement was searched for on
+ * 2026-08-27 without success: with POLLIN set, six reads in six succeeded.
+ *
+ * ⚠ This guard stays anyway. ⚠ Not being able to reach a failure today is not a
+ * proof that none exists, and a guard removed for that reason is a spin waiting
+ * to happen (`CLAUDE.md` §1). */
 #define CONSECUTIVE_READ_FAILURES_ALLOWED 8
 
 #define DEFAULT_DEVICE_NAME "tap0"
@@ -262,6 +271,11 @@ int main(int argc, char **argv)
         if (waited == TAP_WAIT_TIMEOUT) {
             report_timeout(stderr, options.device_name, options.timeout_ms, frames_read);
             exit_code = EXIT_TIMER_RAN_OUT;
+            break;
+        }
+        if (waited == TAP_WAIT_DEVICE_GONE) {
+            report_device_gone(stderr, options.device_name);
+            exit_code = EXIT_COULD_NOT_USE_THE_DEVICE;
             break;
         }
         if (waited == TAP_WAIT_FAILED) {

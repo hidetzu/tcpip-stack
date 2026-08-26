@@ -98,7 +98,18 @@ enum tap_wait tap_wait_readable(int fd, int timeout_ms,
     if (ready == 0) {
         return TAP_WAIT_TIMEOUT;
     }
-    return TAP_WAIT_READY;
+
+    /* ⚠ ppoll returning 1 says something happened on the fd, not that a frame
+     * can be read. ⚠ revents is what says which, and it is read rather than
+     * assumed (hidetzu/tcpip-stack#8).
+     *
+     * ⚠ POLLIN wins when it is set alongside an error bit: octets are queued and
+     * they can be read. ⚠ That combination has not been observed here, and this
+     * is the safe reading of it, not a measurement. */
+    if (waited_on.revents & POLLIN) {
+        return TAP_WAIT_READY;
+    }
+    return TAP_WAIT_DEVICE_GONE;
 }
 
 ssize_t tap_read_frame(int fd, uint8_t *buffer, size_t buffer_bytes,
