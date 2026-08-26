@@ -19,12 +19,15 @@ parallel change conflict.**
 ⚠ **"What asserts it" names a case, not a file.** ⚠ **A file name says where to look; it does not
 say that anything in there asserts this claim** — and a reader takes the column at its word.
 ⚠ **Run the case before filling the row in, and read whether it covers every clause of the claim.**
-⚠ **Grounds: this went wrong here** (`CLAUDE.md` §9). ⚠ `tests/static.sh` `spec_names_checks_that_exist`
-catches a case name that does not exist, ⚠ **and nothing catches a case that does not cover the clause.**
+⚠ **Grounds: this went wrong here** (`CLAUDE.md` §9). `tests/static.sh` `spec_names_checks_that_exist`
+stops a row that names an entry point and no case, a row that names nothing at all, a case name that
+does not exist, and a case with no entry point in front of it to attribute it to.
+⚠ **Nothing stops a case that exists and does not cover the clause** — ⚠ **reading the case is still
+the reviewer's job, and that is the half this table got wrong.**
 
 | Layer | What is supported | Which RFC, which section | What asserts it |
 |---|---|---|---|
-| Wire | Creating a Linux TAP device, attaching to it, and reading the ethernet frames that arrive on it. Each frame's length is reported, and its bytes on request | Not an RFC. Linux `/dev/net/tun`, `IFF_TAP \| IFF_NO_PI` (`Documentation/networking/tuntap.rst`) | `tests/real.sh`, `tests/foreign.sh` |
+| Wire | Creating a Linux TAP device, attaching to it, and reading the ethernet frames that arrive on it. Each frame's length is reported, and its bytes on request | Not an RFC. Linux `/dev/net/tun`, `IFF_TAP \| IFF_NO_PI` (`Documentation/networking/tuntap.rst`) | `tests/real.sh` `count_zero_reads_nothing`, `tests/foreign.sh` `an_arp_request_the_kernel_generated_is_read_intact` |
 | Wire | The device is created when the fd is taken and is gone when the fd is released. ⚠ Nothing persists between runs | same | `tests/real.sh` `the_interface_exists_only_while_it_is_attached` |
 | Report | A frame read and a timer running out are different outcomes, each with its own line. ⚠ A timer running out and being unable to use the device each leave their own exit code | `CLAUDE.md` §1, §4-1 | `tests/static.sh` `report_lines`, `tests/real.sh` `a_timer_running_out_has_its_own_exit_code` |
 | Wire | ⚠ A request to stop reaches a reader that is waiting with no time limit, and what was read up to then is reported | Not an RFC. `ppoll(2)` with the stop signals blocked around the loop | `tests/real.sh` `a_stop_request_reaches_a_reader_that_is_waiting` |
