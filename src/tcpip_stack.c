@@ -1,4 +1,4 @@
-/* tap-read — attach to a TAP device, read the frames that arrive, report them.
+/* tcpip-stack — attach to a TAP device, read the frames that arrive, report them.
  *
  * ⚠ Read only. Sending frames is not implemented yet (hidetzu/tcpip-stack#2).
  * ⚠ Nothing here interprets a byte of a frame. */

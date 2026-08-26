@@ -10,10 +10,10 @@ set -u
 cd "$(dirname -- "$0")/.." || exit 2
 . tests/lib.sh
 
-TAP_READ=./build/tap-read
+TCPIP_STACK=./build/tcpip-stack
 MAKE=${MAKE:-make}
 
-# The device appears when tap-read attaches and is gone when it lets go, so
+# The device appears when tcpip-stack attaches and is gone when it lets go, so
 # everything that inspects it has to wait for it first.
 wait_for_interface() {
     i=0
@@ -43,7 +43,7 @@ wait_for_interface_to_go() {
 # if it changes, this check follows it instead of asserting a number nothing
 # produces any more (`CLAUDE.md` §3).
 read_consecutive_read_failures_allowed() {
-    awk '/^#define CONSECUTIVE_READ_FAILURES_ALLOWED/ { print $3 }' src/tap_read.c
+    awk '/^#define CONSECUTIVE_READ_FAILURES_ALLOWED/ { print $3 }' src/tcpip_stack.c
 }
 
 SEND_ONE_FRAME=./build/send-one-frame
@@ -78,16 +78,16 @@ wait_for_line() {  # file text
 # ---- the cases, as they run inside the namespace -------------------------
 
 inside_the_interface_exists_only_while_it_is_attached() {
-    "$TAP_READ" --dev tap0 --count 1 --timeout 3000 >"$work/out.txt" 2>"$work/err.txt" &
+    "$TCPIP_STACK" --dev tap0 --count 1 --timeout 3000 >"$work/out.txt" 2>"$work/err.txt" &
     reader=$!
 
     if ! wait_for_interface tap0; then
-        note_failure "tap0 never appeared while tap-read was attached"
+        note_failure "tap0 never appeared while tcpip-stack was attached"
         kill "$reader" 2>/dev/null
         wait "$reader" 2>/dev/null
         return
     fi
-    assert_true "while tap-read holds it" ip link show tap0
+    assert_true "while tcpip-stack holds it" ip link show tap0
 
     kill "$reader" 2>/dev/null
     wait "$reader" 2>/dev/null
@@ -95,14 +95,14 @@ inside_the_interface_exists_only_while_it_is_attached() {
     # ⚠ The other half. A check that only asserts the device appears stays green
     # when it never goes away (`verify` §5).
     if ! wait_for_interface_to_go tap0; then
-        note_failure "tap0 was still there after tap-read let go of the fd"
+        note_failure "tap0 was still there after tcpip-stack let go of the fd"
     fi
 
     assert_file_contains "$work/out.txt" "listening on tap0" "the first line"
 }
 
 inside_count_zero_reads_nothing() {
-    "$TAP_READ" --dev tap0 --count 0 >"$work/out.txt" 2>"$work/err.txt"
+    "$TCPIP_STACK" --dev tap0 --count 0 >"$work/out.txt" 2>"$work/err.txt"
     assert_exit_code 0 $? "reading no frames at all"
     assert_file_is "$work/out.txt" "listening on tap0
 read 0 frames, 0 read errors" "reading no frames at all"
@@ -111,7 +111,7 @@ read 0 frames, 0 read errors" "reading no frames at all"
 
 inside_a_timer_running_out_has_its_own_exit_code() {
     # tap0 is created but never brought up, so nothing is put on it.
-    "$TAP_READ" --dev tap0 --count 1 --timeout 300 >"$work/out.txt" 2>"$work/err.txt"
+    "$TCPIP_STACK" --dev tap0 --count 1 --timeout 300 >"$work/out.txt" 2>"$work/err.txt"
     assert_exit_code 2 $? "the timer running out"
     assert_file_is "$work/err.txt" \
         "listened on tap0 for 300 ms and read 0 frames. Nothing arrived here; that does not say whether anything was sent." \
@@ -130,10 +130,10 @@ read 0 frames, 0 read errors" "the timer running out"
 inside_a_stop_request_reaches_a_reader_that_is_waiting() {
     # No --count and no --timeout: it waits until something arrives or it is told
     # to stop, and nothing is ever put on this device.
-    "$TAP_READ" --dev tap0 >"$work/out.txt" 2>"$work/err.txt" &
+    "$TCPIP_STACK" --dev tap0 >"$work/out.txt" 2>"$work/err.txt" &
     reader=$!
     if ! wait_for_interface tap0; then
-        note_failure "tap0 never appeared while tap-read was attached"
+        note_failure "tap0 never appeared while tcpip-stack was attached"
         kill -9 "$reader" 2>/dev/null
         wait "$reader" 2>/dev/null
         return
@@ -147,7 +147,7 @@ inside_a_stop_request_reaches_a_reader_that_is_waiting() {
         i=$((i + 1))
     done
     if kill -0 "$reader" 2>/dev/null; then
-        note_failure "tap-read was still waiting 3 s after being asked to stop"
+        note_failure "tcpip-stack was still waiting 3 s after being asked to stop"
         kill -9 "$reader" 2>/dev/null
         wait "$reader" 2>/dev/null
         return
@@ -160,16 +160,16 @@ read 0 frames, 0 read errors" "being asked to stop"
 }
 
 inside_a_second_attach_to_the_same_device_is_refused() {
-    "$TAP_READ" --dev tap0 --count 1 --timeout 3000 >"$work/first.txt" 2>&1 &
+    "$TCPIP_STACK" --dev tap0 --count 1 --timeout 3000 >"$work/first.txt" 2>&1 &
     reader=$!
     if ! wait_for_interface tap0; then
-        note_failure "tap0 never appeared while tap-read was attached"
+        note_failure "tap0 never appeared while tcpip-stack was attached"
         kill "$reader" 2>/dev/null
         wait "$reader" 2>/dev/null
         return
     fi
 
-    "$TAP_READ" --dev tap0 --count 1 --timeout 300 >"$work/out.txt" 2>"$work/err.txt"
+    "$TCPIP_STACK" --dev tap0 --count 1 --timeout 300 >"$work/out.txt" 2>"$work/err.txt"
     second=$?
 
     kill "$reader" 2>/dev/null
@@ -195,14 +195,14 @@ inside_a_second_attach_to_the_same_device_is_refused() {
 inside_a_read_that_could_not_be_made_is_its_own_outcome() {
     allowed=$(read_consecutive_read_failures_allowed)
     if [ -z "$allowed" ]; then
-        note_failure "could not read CONSECUTIVE_READ_FAILURES_ALLOWED out of src/tap_read.c"
+        note_failure "could not read CONSECUTIVE_READ_FAILURES_ALLOWED out of src/tcpip_stack.c"
         return
     fi
 
-    "$TAP_READ" --dev tap0 --timeout 3000 >"$work/out.txt" 2>"$work/err.txt" &
+    "$TCPIP_STACK" --dev tap0 --timeout 3000 >"$work/out.txt" 2>"$work/err.txt" &
     reader=$!
     if ! wait_for_interface tap0; then
-        note_failure "tap0 never appeared while tap-read was attached"
+        note_failure "tap0 never appeared while tcpip-stack was attached"
         kill "$reader" 2>/dev/null
         wait "$reader" 2>/dev/null
         return

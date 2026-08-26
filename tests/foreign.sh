@@ -9,7 +9,7 @@ set -u
 cd "$(dirname -- "$0")/.." || exit 2
 . tests/lib.sh
 
-TAP_READ=./build/tap-read
+TCPIP_STACK=./build/tcpip-stack
 MAKE=${MAKE:-make}
 
 wait_for_interface() {
@@ -75,12 +75,12 @@ inside_a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length() {
         return
     fi
 
-    "$TAP_READ" --dev tap0 --count 4 --timeout 3000 \
+    "$TCPIP_STACK" --dev tap0 --count 4 --timeout 3000 \
         >"$work/out.txt" 2>"$work/err.txt" &
     reader=$!
 
     if ! wait_for_interface tap0; then
-        note_failure "tap0 never appeared while tap-read was attached"
+        note_failure "tap0 never appeared while tcpip-stack was attached"
         kill "$reader" 2>/dev/null
         wait "$reader" 2>/dev/null
         return
@@ -97,7 +97,7 @@ inside_a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length() {
     wait "$reader"
     reader_exit=$?
     if [ "$reader_exit" -ne 0 ] && [ "$reader_exit" -ne 2 ]; then
-        note_failure "tap-read stopped with exit code $reader_exit"
+        note_failure "tcpip-stack stopped with exit code $reader_exit"
         sed 's/^/      /' "$work/err.txt" >&2
         return
     fi
@@ -119,12 +119,12 @@ inside_a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length() {
 }
 
 inside_an_arp_request_the_kernel_generated_is_read_intact() {
-    "$TAP_READ" --dev tap0 --count 3 --timeout 3000 --hex \
+    "$TCPIP_STACK" --dev tap0 --count 3 --timeout 3000 --hex \
         >"$work/out.txt" 2>"$work/err.txt" &
     reader=$!
 
     if ! wait_for_interface tap0; then
-        note_failure "tap0 never appeared while tap-read was attached"
+        note_failure "tap0 never appeared while tcpip-stack was attached"
         kill "$reader" 2>/dev/null
         wait "$reader" 2>/dev/null
         return
@@ -142,7 +142,7 @@ inside_an_arp_request_the_kernel_generated_is_read_intact() {
     wait "$reader"
     reader_exit=$?
     if [ "$reader_exit" -ne 0 ] && [ "$reader_exit" -ne 2 ]; then
-        note_failure "tap-read stopped with exit code $reader_exit"
+        note_failure "tcpip-stack stopped with exit code $reader_exit"
         sed 's/^/      /' "$work/err.txt" >&2
         return
     fi

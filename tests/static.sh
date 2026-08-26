@@ -77,12 +77,53 @@ case_arp_packet() {
 # device and no capability.
 case_a_device_name_that_is_too_long_is_refused() {
     $MAKE -s build >/dev/null 2>&1 || { note_failure "the build did not succeed"; return; }
-    ./build/tap-read --dev a-name-that-is-far-too-long --count 1 \
+    ./build/tcpip-stack --dev a-name-that-is-far-too-long --count 1 \
         >"$work/out.txt" 2>"$work/err.txt"
     assert_exit_code 3 $? "a device name that cannot exist"
     assert_file_is "$work/err.txt" \
         'could not attach to "a-name-that-is-far-too-long": a device name is 1 to 15 characters.' \
         "a device name that cannot exist"
+}
+
+# ⚠ The one check that says the rename is finished. Without it nothing does:
+# report_usage is asserted by no case at all, and the only output this tier
+# compares byte for byte holds no program name (hidetzu/tcpip-stack#24).
+#
+# ⚠ The pattern is built by concatenation so this file does not contain the
+# literal it is hunting for. ⚠ Excluding this file instead would leave it the one
+# place the check cannot see, and `CLAUDE.md` §5 is about exactly this: otherwise
+# the check picks up the very words written to describe it.
+#
+# ⚠ docs/adr/ is excluded on purpose. An ADR records what a thing was called on
+# the day it was decided, and `CLAUDE.md` §4 forbids sweeping it.
+case_the_old_program_name_is_gone() {
+    old_hyphen="tap""-read"
+    old_underscore="tap""_read"
+    surviving="${old_underscore}_frame"
+
+    if grep -rn --exclude-dir=.git --exclude-dir=build --exclude-dir=adr \
+        -e "$old_hyphen" . >"$work/left.txt" 2>/dev/null; then
+        note_failure "the old program name is still in the tree"
+        sed 's/^/      /' "$work/left.txt" >&2
+        return
+    fi
+
+    # ⚠ tap_read_frame() is not the program's name — it reads a frame from the
+    # tap — so it is the one spelling that stays.
+    grep -rn --exclude-dir=.git --exclude-dir=build --exclude-dir=adr \
+        -e "$old_underscore" . 2>/dev/null | grep -v -- "$surviving" \
+        >"$work/left2.txt" || true
+    if [ -s "$work/left2.txt" ]; then
+        note_failure "the old name is still in the tree as an identifier"
+        sed 's/^/      /' "$work/left2.txt" >&2
+        return
+    fi
+
+    # ⚠ The other half. A check that only says "the old name is gone" stays green
+    # when the rename swept away something it should not have (`verify` §5).
+    if ! grep -rq --exclude-dir=build -- "$surviving" src/; then
+        note_failure "the function that reads a frame from the tap is gone too, which is a rename that went too far"
+    fi
 }
 
 # ⚠ What this catches and what it does not.
@@ -191,5 +232,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines ethernet_header arp_packet a_device_name_that_is_too_long_is_refused spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines ethernet_header arp_packet a_device_name_that_is_too_long_is_refused the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
 run_selected_cases
