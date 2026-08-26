@@ -1,0 +1,24 @@
+# One ARP reply, 42 octets, as the Linux kernel put it on a TAP device.
+#
+# ⚠ Captured, not written by hand. If this file is ever regenerated, capture it
+# again — a frame typed out from memory is not a fixture (`CLAUDE.md` §1).
+#
+# How it was captured:
+#   Arch Linux, kernel 7.0.2-arch1-1, x86_64, 2026-08-27
+#   unshare -Urn (no sudo), tap0 with the default MTU of 1500
+#   ip addr add 10.0.0.1/24 dev tap0; ip link set tap0 up
+#   a probe outside src/ attached to tap0 and wrote one ARP request:
+#     ar$op = 1, ar$sha 02:00:00:00:00:02, ar$spa 10.0.0.2, ar$tpa 10.0.0.1
+#   the first frame read back whose octets 12..13 were 08 06 and whose ar$op was 2
+#
+# ⚠ The kernel answered for its own address. So ar$sha and the ethernet source
+# are whatever hardware address the kernel picked for tap0 on that run; they are
+# different on the next one, which is why this file is a recording and no check
+# expects them to be reproduced.
+#
+# ⚠ 42 octets. There is no padding to 60, and there is no FCS.
+# ⚠ ar$tha is the requester's hardware address — RFC 826 calls that field
+# "Hardware address of target of this packet (if known)", and here it was known.
+02 00 00 00 00 02 a2 0f 1b 1e 44 4b 08 06 00 01
+08 00 06 04 00 02 a2 0f 1b 1e 44 4b 0a 00 00 01
+02 00 00 00 00 02 0a 00 00 02

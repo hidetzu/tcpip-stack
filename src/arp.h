@@ -29,6 +29,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ethernet.h"
+
 /* ar$hrd through ar$op, before the four addresses begin. */
 #define ARP_FIXED_BYTES 8
 
@@ -48,6 +50,14 @@
  * byte transmitted first) and ares_op$REPLY (= 2)". */
 #define ARP_OPCODE_REQUEST 1u
 #define ARP_OPCODE_REPLY 2u
+
+/* The ethernet length/type an ARP packet rides under.
+ *
+ * ⚠ Grounds: this was NOT taken from RFC 826 — it was not looked for there and
+ * is not attributed to it (ADR 0005). It is octets 12 and 13 of
+ * tests/fixtures/arp-request-42.hex and of tests/fixtures/arp-reply-42.hex,
+ * both put on a TAP device by the Linux kernel. ⚠ An observation. */
+#define ARP_ETHERNET_LENGTH_TYPE 0x0806u
 
 /* Why a packet was not accepted. ⚠ An enum never reaches a human (`CLAUDE.md` §4). */
 enum arp_parse {
@@ -99,5 +109,49 @@ struct arp_packet {
  * value the sender chose and not an unfilled field. */
 enum arp_parse arp_parse_packet(const uint8_t *payload, size_t payload_bytes,
                                 struct arp_packet *packet);
+
+/* An ARP reply on ethernet, header and packet together.
+ *
+ * ⚠ Measured, not assumed: the reply the Linux kernel built for us is exactly
+ * this long — tests/fixtures/arp-reply-42.hex, 42 octets. ⚠ There is no padding
+ * to 60 and no FCS. */
+#define ARP_REPLY_FRAME_BYTES \
+    (ETHERNET_HEADER_BYTES + ARP_FIXED_BYTES + \
+     2 * (ARP_HARDWARE_ADDRESS_BYTES + ARP_PROTOCOL_ADDRESS_BYTES))
+
+/* Why a reply was not built. ⚠ An enum never reaches a human (`CLAUDE.md` §4). */
+enum arp_build {
+    ARP_BUILD_OK = 0,
+
+    /* ⚠ The caller's buffer cannot hold the whole reply. ⚠ Refused, never
+     * truncated: half a frame on the wire is worse than none, and a caller told
+     * it succeeded would count a frame that was never whole
+     * (`.claude/rules/c.md`). */
+    ARP_BUILD_BUFFER_TOO_SMALL
+};
+
+/* Build the reply to `request`, into a caller-supplied buffer.
+ *
+ * `frame_bytes` is what the buffer actually holds, and ⚠ nothing is written
+ * unless the whole reply fits. On OK, *reply_bytes is how much was written.
+ *
+ * ⚠ Where each field comes from, and none of it is guessed:
+ *
+ *     ethernet destination   the request's ar$sha — the host that asked
+ *     ethernet source        our_hardware_address
+ *     ar$sha, ar$spa         ours, both passed in
+ *     ar$tha, ar$tpa         the request's ar$sha and ar$spa
+ *
+ * ⚠ The addresses we answer with are handed in and never reached for. The TAP
+ * device's own hardware address is the kernel's end of the wire, not ours, and
+ * it is a different value on every run (hidetzu/tcpip-stack#19 Owner Decision 1).
+ *
+ * ⚠ This decides nothing. Whether a request deserves an answer at all belongs
+ * to whoever calls this (hidetzu/tcpip-stack#19). */
+enum arp_build arp_build_reply(const struct arp_packet *request,
+                               const uint8_t *our_hardware_address,
+                               const uint8_t *our_protocol_address,
+                               uint8_t *frame, size_t frame_bytes,
+                               size_t *reply_bytes);
 
 #endif /* ARP_H */

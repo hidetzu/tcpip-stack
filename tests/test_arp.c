@@ -288,6 +288,180 @@ static bool case_the_reasons_a_packet_is_not_accepted_are_three_distinct_values(
     return ok;
 }
 
+
+/* ---- building a reply ---------------------------------------------------- */
+
+/* ⚠ The strongest check here. The kernel built a reply for us and it is in
+ * tests/fixtures/arp-reply-42.hex. ⚠ Feed our builder the values the kernel
+ * answered with, and what comes out must be the kernel's own octets, all 42.
+ *
+ * ⚠ That is what a captured reply buys: a hand-written expectation and a
+ * hand-written implementation agree with each other by construction, and this
+ * one was not written by us (`.claude/rules/layers.md`, question 3). */
+static bool case_the_captured_reply_is_rebuilt_octet_for_octet(void)
+{
+    unsigned char captured[TAP_FRAME_BUFFER_BYTES];
+    long captured_bytes = check_load_fixture("arp-reply-42.hex", captured, sizeof captured);
+    if (captured_bytes < 0) {
+        return false;
+    }
+    if (captured_bytes != ARP_REPLY_FRAME_BYTES) {
+        fprintf(stderr, "  the captured reply is %d octets, this one is %ld\n",
+                ARP_REPLY_FRAME_BYTES, captured_bytes);
+        return false;
+    }
+
+    /* What the kernel answered with, read back out of its own reply. ⚠ Not
+     * typed in here: the hardware address is whatever it picked that run. */
+    struct arp_packet parsed;
+    if (arp_parse_packet(captured + ETHERNET_HEADER_BYTES,
+                         (size_t)captured_bytes - ETHERNET_HEADER_BYTES,
+                         &parsed) != ARP_PARSE_OK) {
+        fprintf(stderr, "  the captured reply did not parse\n");
+        return false;
+    }
+    if (parsed.opcode != ARP_OPCODE_REPLY) {
+        fprintf(stderr, "  the captured frame is a reply; its ar$op read as %u\n", parsed.opcode);
+        return false;
+    }
+
+    /* ⚠ The request that would have produced it: the kernel's reply names the
+     * requester in ar$tha and ar$tpa, so those are the request's ar$sha/ar$spa. */
+    struct arp_packet request;
+    memset(&request, 0, sizeof request);
+    memcpy(request.sender_hardware_address, parsed.target_hardware_address,
+           ARP_HARDWARE_ADDRESS_BYTES);
+    memcpy(request.sender_protocol_address, parsed.target_protocol_address,
+           ARP_PROTOCOL_ADDRESS_BYTES);
+
+    unsigned char ours[ARP_REPLY_FRAME_BYTES];
+    size_t built = 0;
+    if (arp_build_reply(&request, parsed.sender_hardware_address,
+                        parsed.sender_protocol_address, ours, sizeof ours,
+                        &built) != ARP_BUILD_OK) {
+        fprintf(stderr, "  a reply into a buffer of exactly the right size was refused\n");
+        return false;
+    }
+    if (built != (size_t)captured_bytes) {
+        fprintf(stderr, "  built %zu octets, the kernel built %ld\n", built, captured_bytes);
+        return false;
+    }
+    if (memcmp(ours, captured, (size_t)captured_bytes) != 0) {
+        fprintf(stderr, "  our octets are not the kernel's. octet by octet:\n");
+        for (long i = 0; i < captured_bytes; i++) {
+            if (ours[i] != captured[i]) {
+                fprintf(stderr, "    %02ld: ours %02x, the kernel's %02x\n", i, ours[i],
+                        captured[i]);
+            }
+        }
+        return false;
+    }
+    return true;
+}
+
+/* ⚠ The reply goes back to whoever asked, and every field it borrows is taken
+ * from the request rather than from anywhere else. */
+static bool case_the_reply_goes_to_the_requester(void)
+{
+    unsigned char payload[BUILT_BYTES];
+    build_a_request(payload);
+    struct arp_packet request;
+    if (arp_parse_packet(payload, sizeof payload, &request) != ARP_PARSE_OK) {
+        fprintf(stderr, "  the built request did not parse\n");
+        return false;
+    }
+
+    static const unsigned char our_mac[6] = {0x02,0xaa,0xaa,0xaa,0xaa,0xaa};
+    static const unsigned char our_ipv4[4] = {10,0,0,99};
+
+    unsigned char frame[ARP_REPLY_FRAME_BYTES];
+    size_t built = 0;
+    if (arp_build_reply(&request, our_mac, our_ipv4, frame, sizeof frame, &built)
+        != ARP_BUILD_OK) {
+        fprintf(stderr, "  building the reply was refused\n");
+        return false;
+    }
+
+    const unsigned char *packet = frame + ETHERNET_HEADER_BYTES;
+    bool ok = true;
+    struct { const char *what; const unsigned char *got; const unsigned char *want; size_t n; }
+    fields[] = {
+        { "the ethernet destination", frame, SENDER_HARDWARE, 6 },
+        { "the ethernet source", frame + 6, our_mac, 6 },
+        { "ar$sha", packet + 8, our_mac, 6 },
+        { "ar$spa", packet + 14, our_ipv4, 4 },
+        { "ar$tha", packet + 18, SENDER_HARDWARE, 6 },
+        { "ar$tpa", packet + 24, SENDER_PROTOCOL, 4 },
+    };
+    for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) {
+        if (memcmp(fields[i].got, fields[i].want, fields[i].n) != 0) {
+            fprintf(stderr, "  %s is not what it should be\n", fields[i].what);
+            ok = false;
+        }
+    }
+    unsigned length_type = ((unsigned)frame[12] << 8) | frame[13];
+    if (length_type != ARP_ETHERNET_LENGTH_TYPE) {
+        fprintf(stderr, "  the length/type is 0x%04x\n", length_type);
+        ok = false;
+    }
+    unsigned opcode = ((unsigned)packet[6] << 8) | packet[7];
+    if (opcode != ARP_OPCODE_REPLY) {
+        fprintf(stderr, "  ar$op is %u, not a reply\n", opcode);
+        ok = false;
+    }
+    /* ⚠ The other half: the request's own target address is NOT what we answer
+     * with. A builder that echoed the request back would pass everything above
+     * that only looked at the borrowed fields. */
+    if (memcmp(packet + 14, request.target_protocol_address, 4) == 0) {
+        fprintf(stderr, "  ar$spa is the request's ar$tpa, not the address we were given\n");
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ A buffer that cannot hold the whole reply is refused, never truncated.
+ * ⚠ Half a frame on the wire is worse than none. */
+static bool case_a_buffer_too_small_is_refused_rather_than_truncated(void)
+{
+    unsigned char payload[BUILT_BYTES];
+    build_a_request(payload);
+    struct arp_packet request;
+    arp_parse_packet(payload, sizeof payload, &request);
+
+    static const unsigned char our_mac[6] = {0x02,0xaa,0xaa,0xaa,0xaa,0xaa};
+    static const unsigned char our_ipv4[4] = {10,0,0,99};
+
+    bool ok = true;
+    for (size_t room = 0; room < ARP_REPLY_FRAME_BYTES; room++) {
+        unsigned char frame[ARP_REPLY_FRAME_BYTES];
+        memset(frame, 0xee, sizeof frame);
+        size_t built = 12345;
+        if (arp_build_reply(&request, our_mac, our_ipv4, frame, room, &built)
+            != ARP_BUILD_BUFFER_TOO_SMALL) {
+            fprintf(stderr, "  %zu octets of room should not be enough\n", room);
+            ok = false;
+            continue;
+        }
+        /* ⚠ Nothing was written. Not one octet of a frame that will not be whole. */
+        for (size_t i = 0; i < sizeof frame; i++) {
+            if (frame[i] != 0xee) {
+                fprintf(stderr, "  %zu octets of room: the buffer was written to anyway\n", room);
+                ok = false;
+                break;
+            }
+        }
+    }
+    /* ⚠ The other half. A builder that refused everything would pass the loop. */
+    unsigned char frame[ARP_REPLY_FRAME_BYTES];
+    size_t built = 0;
+    if (arp_build_reply(&request, our_mac, our_ipv4, frame, sizeof frame, &built)
+        != ARP_BUILD_OK) {
+        fprintf(stderr, "  exactly enough room was refused\n");
+        ok = false;
+    }
+    return ok;
+}
+
 /* ---- running them ------------------------------------------------------- */
 
 static const struct test_case cases[] = {
@@ -307,6 +481,11 @@ static const struct test_case cases[] = {
       case_the_four_addresses_are_read_from_their_own_places },
     { "the_reasons_a_packet_is_not_accepted_are_three_distinct_values",
       case_the_reasons_a_packet_is_not_accepted_are_three_distinct_values },
+    { "the_captured_reply_is_rebuilt_octet_for_octet",
+      case_the_captured_reply_is_rebuilt_octet_for_octet },
+    { "the_reply_goes_to_the_requester", case_the_reply_goes_to_the_requester },
+    { "a_buffer_too_small_is_refused_rather_than_truncated",
+      case_a_buffer_too_small_is_refused_rather_than_truncated },
 };
 
 #define CASE_COUNT (sizeof cases / sizeof cases[0])

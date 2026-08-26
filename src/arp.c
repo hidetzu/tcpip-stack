@@ -82,3 +82,53 @@ enum arp_parse arp_parse_packet(const uint8_t *payload, size_t payload_bytes,
 
     return ARP_PARSE_OK;
 }
+
+/* ⚠ The offsets above are the only description of where an ARP field sits, and
+ * building uses them too. ⚠ Read and write in one file is the point: the same
+ * layout written twice is how the two silently diverge (`CLAUDE.md` §3,
+ * ADR 0007). */
+static void write_16(uint8_t *at, uint16_t value)
+{
+    at[0] = (uint8_t)(value >> 8);
+    at[1] = (uint8_t)(value & 0xffu);
+}
+
+enum arp_build arp_build_reply(const struct arp_packet *request,
+                               const uint8_t *our_hardware_address,
+                               const uint8_t *our_protocol_address,
+                               uint8_t *frame, size_t frame_bytes,
+                               size_t *reply_bytes)
+{
+    /* ⚠ Checked before a single octet is written. Nothing is left half-built in
+     * the caller's buffer for it to send. */
+    if (frame_bytes < ARP_REPLY_FRAME_BYTES) {
+        return ARP_BUILD_BUFFER_TOO_SMALL;
+    }
+
+    /* The ethernet header: back to whoever asked, from us. */
+    memcpy(frame, request->sender_hardware_address, ARP_HARDWARE_ADDRESS_BYTES);
+    memcpy(frame + ETHERNET_ADDRESS_BYTES, our_hardware_address, ARP_HARDWARE_ADDRESS_BYTES);
+    write_16(frame + ETHERNET_ADDRESS_BYTES * 2, ARP_ETHERNET_LENGTH_TYPE);
+
+    uint8_t *packet = frame + ETHERNET_HEADER_BYTES;
+    write_16(packet + HARDWARE_ADDRESS_SPACE_OFFSET, ARP_HARDWARE_ADDRESS_SPACE_ETHERNET);
+    write_16(packet + PROTOCOL_ADDRESS_SPACE_OFFSET, ARP_PROTOCOL_ADDRESS_SPACE_IPV4);
+    packet[HARDWARE_ADDRESS_LENGTH_OFFSET] = ARP_HARDWARE_ADDRESS_BYTES;
+    packet[PROTOCOL_ADDRESS_LENGTH_OFFSET] = ARP_PROTOCOL_ADDRESS_BYTES;
+    write_16(packet + OPCODE_OFFSET, ARP_OPCODE_REPLY);
+
+    uint8_t *at = packet + ARP_FIXED_BYTES;
+    memcpy(at, our_hardware_address, ARP_HARDWARE_ADDRESS_BYTES);
+    at += ARP_HARDWARE_ADDRESS_BYTES;
+    memcpy(at, our_protocol_address, ARP_PROTOCOL_ADDRESS_BYTES);
+    at += ARP_PROTOCOL_ADDRESS_BYTES;
+    /* ⚠ ar$tha is the requester's, taken from the request. RFC 826 calls it
+     * "Hardware address of target of this packet (if known)" — here it is
+     * known, because the request carried it. */
+    memcpy(at, request->sender_hardware_address, ARP_HARDWARE_ADDRESS_BYTES);
+    at += ARP_HARDWARE_ADDRESS_BYTES;
+    memcpy(at, request->sender_protocol_address, ARP_PROTOCOL_ADDRESS_BYTES);
+
+    *reply_bytes = ARP_REPLY_FRAME_BYTES;
+    return ARP_BUILD_OK;
+}
