@@ -57,6 +57,21 @@ case_ethernet_header() {
     sed 's/^/    /' "$work/ethernet.txt"
 }
 
+# The State layer: what an arriving ARP packet means for us. This binary
+# announces its own case count — ⚠ never copy that number into a document.
+case_arp_responder() {
+    $MAKE -s build-sanitized >/dev/null 2>&1 || {
+        note_failure "the sanitized build did not succeed"
+        return
+    }
+    if ! ./build/test_arp_responder.sanitized >"$work/responder.txt" 2>&1; then
+        note_failure "the four reasons did not stay four things"
+        sed 's/^/      /' "$work/responder.txt" >&2
+        return
+    fi
+    sed 's/^/    /' "$work/responder.txt"
+}
+
 # The ARP Parse layer, against the captured frame and against packets built for
 # the boundaries. This binary announces its own case count — ⚠ never copy that
 # number into a document (`docs/SPEC.md`).
@@ -232,5 +247,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines ethernet_header arp_packet a_device_name_that_is_too_long_is_refused the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines ethernet_header arp_packet arp_responder a_device_name_that_is_too_long_is_refused the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
 run_selected_cases

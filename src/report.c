@@ -121,18 +121,77 @@ void report_wait_failure(FILE *out, const char *device_name,
             device_name, strerror(failure->errnum));
 }
 
+/* ⚠ Written as four octets, not as a type: nothing here interprets a protocol
+ * address, it only shows the one it was handed. */
+static void write_protocol_address(FILE *out, const uint8_t *address)
+{
+    fprintf(out, "%u.%u.%u.%u", address[0], address[1], address[2], address[3]);
+}
+
+void report_arp_outcome(FILE *out, const struct arp_outcome *outcome,
+                        const uint8_t *our_protocol_address)
+{
+    if (outcome->decision == ARP_ANSWER) {
+        fputs("  answered it: ", out);
+        write_protocol_address(out, our_protocol_address);
+        fputs(" is ours, and ", out);
+        write_protocol_address(out, outcome->request.sender_protocol_address);
+        fputs(" was told our hardware address\n", out);
+        return;
+    }
+
+    switch (outcome->reason) {
+    case ARP_REASON_NOT_FOR_US:
+        fputs("  no answer: it asked for ", out);
+        write_protocol_address(out, outcome->request.target_protocol_address);
+        fputs(", which is not an address we answer for\n", out);
+        return;
+    case ARP_REASON_MALFORMED:
+        fputs("  no answer: the ARP packet holds fewer octets than it says it does\n", out);
+        return;
+    case ARP_REASON_UNSUPPORTED_ADDRESS_SPACE:
+        fputs("  no answer: its hardware or protocol address space is not one we can place\n",
+              out);
+        return;
+    case ARP_REASON_UNHANDLED_OPCODE:
+        fputs("  no answer: its opcode is not one we act on\n", out);
+        return;
+    case ARP_REASON_NONE:
+        break;
+    }
+    /* ⚠ Reached only if a reason is added without a sentence for it. Say that
+     * plainly rather than printing the number (`CLAUDE.md` §4). */
+    fputs("  no answer, and this build has no wording for why\n", out);
+}
+
+void report_arp_summary(FILE *out, const struct arp_counts *counts)
+{
+    fprintf(out,
+            "answered %lu ARP request%s. %lu %s not for us, %lu %s malformed, "
+            "%lu named an address space we cannot place, "
+            "%lu had an opcode we do not act on\n",
+            counts->answered, plural(counts->answered),
+            counts->not_for_us, counts->not_for_us == 1 ? "was" : "were",
+            counts->malformed, counts->malformed == 1 ? "was" : "were",
+            counts->unsupported_address_space, counts->unhandled_opcode);
+}
+
 void report_usage(FILE *out, const char *program_name)
 {
     fprintf(out,
-            "%s reads the ethernet frames that arrive on a TAP device.\n"
+            "%s reads the ethernet frames that arrive on a TAP device, and answers\n"
+            "the ARP requests among them that ask for the address it was given.\n"
             "\n"
             "  --dev NAME      device to create and attach to (default: tap0)\n"
+            "  --mac ADDRESS   the hardware address to answer with, as 02:00:00:00:00:02\n"
+            "  --ipv4 ADDRESS  the protocol address to answer for, as 10.0.0.2\n"
             "  --count N       stop after N frames (default: until interrupted)\n"
             "  --timeout MS    give up waiting after MS milliseconds (default: no limit)\n"
             "  --hex           print the bytes of each frame as well as its length\n"
             "  --help          this text\n"
             "\n"
-            "It reads only. Sending frames is not implemented yet.\n"
+            "Without --mac and --ipv4 it only reads.\n"
+            "ARP is the only thing it answers so far.\n"
             "The device exists only while this program holds it open.\n",
             program_name);
 }

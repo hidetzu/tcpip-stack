@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "arp_responder.h"
 #include "check.h"
 #include "report.h"
 #include "tap.h"
@@ -173,6 +174,76 @@ static bool case_attach_failure_names_the_step_and_the_errno(void)
     return ok;
 }
 
+
+/* ⚠ The wording the owner approved for the ARP result, compared byte for byte
+ * (hidetzu/tcpip-stack#19 Owner Decision 5). ⚠ The reason is a sentence; the
+ * internal name never reaches a terminal (`CLAUDE.md` §4). */
+static bool case_the_arp_result_says_the_decision_and_the_reason(void)
+{
+    static const unsigned char ours[4] = {10,0,0,2};
+    struct arp_outcome outcome;
+    memset(&outcome, 0, sizeof outcome);
+    outcome.request.sender_protocol_address[0] = 10;
+    outcome.request.sender_protocol_address[3] = 1;
+    outcome.request.target_protocol_address[0] = 10;
+    outcome.request.target_protocol_address[3] = 9;
+
+    struct produced produced;
+    outcome.decision = ARP_ANSWER;
+    outcome.reason = ARP_REASON_NONE;
+    produced_open(&produced);
+    report_arp_outcome(produced.out, &outcome, ours);
+    bool ok = matches("answered", &produced,
+                      "  answered it: 10.0.0.2 is ours, and 10.0.0.1 was told our "
+                      "hardware address\n");
+    produced_close(&produced);
+
+    outcome.decision = ARP_NO_ANSWER;
+    struct { enum arp_reason reason; const char *what; const char *line; } declined[] = {
+        { ARP_REASON_NOT_FOR_US, "not for us",
+          "  no answer: it asked for 10.0.0.9, which is not an address we answer for\n" },
+        { ARP_REASON_MALFORMED, "malformed",
+          "  no answer: the ARP packet holds fewer octets than it says it does\n" },
+        { ARP_REASON_UNSUPPORTED_ADDRESS_SPACE, "an address space we cannot place",
+          "  no answer: its hardware or protocol address space is not one we can place\n" },
+        { ARP_REASON_UNHANDLED_OPCODE, "an opcode we do not act on",
+          "  no answer: its opcode is not one we act on\n" },
+    };
+    for (size_t i = 0; i < sizeof declined / sizeof declined[0]; i++) {
+        outcome.reason = declined[i].reason;
+        produced_open(&produced);
+        report_arp_outcome(produced.out, &outcome, ours);
+        ok = matches(declined[i].what, &produced, declined[i].line) && ok;
+        produced_close(&produced);
+    }
+    return ok;
+}
+
+/* ⚠ Each reason counted on its own. A single "declined" number would make a
+ * packet we could not read look exactly like one not addressed to us. */
+static bool case_the_arp_summary_counts_each_reason_on_its_own(void)
+{
+    struct arp_counts one = { 1, 1, 1, 1, 1 };
+    struct produced produced;
+    produced_open(&produced);
+    report_arp_summary(produced.out, &one);
+    bool ok = matches("one of each", &produced,
+                      "answered 1 ARP request. 1 was not for us, 1 was malformed, "
+                      "1 named an address space we cannot place, "
+                      "1 had an opcode we do not act on\n");
+    produced_close(&produced);
+
+    struct arp_counts several = { 2, 0, 3, 0, 4 };
+    produced_open(&produced);
+    report_arp_summary(produced.out, &several);
+    ok = matches("several", &produced,
+                 "answered 2 ARP requests. 0 were not for us, 3 were malformed, "
+                 "0 named an address space we cannot place, "
+                 "4 had an opcode we do not act on\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
 /* ---- running them ------------------------------------------------------ */
 
 static const struct test_case cases[] = {
@@ -183,6 +254,10 @@ static const struct test_case cases[] = {
     { "timeout_claims_nothing_about_the_sender", case_timeout_claims_nothing_about_the_sender },
     { "attach_failure_names_the_step_and_the_errno",
       case_attach_failure_names_the_step_and_the_errno },
+    { "the_arp_result_says_the_decision_and_the_reason",
+      case_the_arp_result_says_the_decision_and_the_reason },
+    { "the_arp_summary_counts_each_reason_on_its_own",
+      case_the_arp_summary_counts_each_reason_on_its_own },
 };
 
 #define CASE_COUNT (sizeof cases / sizeof cases[0])

@@ -1,7 +1,10 @@
 /* tcpip-stack — attach to a TAP device, read the frames that arrive, report them.
  *
- * ⚠ Read only. Sending frames is not implemented yet (hidetzu/tcpip-stack#2).
- * ⚠ Nothing here interprets a byte of a frame. */
+ * ⚠ Given --mac and --ipv4 it also answers the ARP requests that ask for that
+ * address, and sends the reply. ⚠ Without them it only reads
+ * (hidetzu/tcpip-stack#19 Owner Decision 6).
+ * ⚠ Nothing above ARP is interpreted, and nothing here writes a sentence — the
+ * wording lives in report.c (`.claude/rules/layers.md`). */
 #include <errno.h>
 #include <getopt.h>
 #include <limits.h>
@@ -12,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "arp_responder.h"
+#include "ethernet.h"
 #include "report.h"
 #include "tap.h"
 
@@ -57,6 +62,14 @@ struct options {
     long count;   /* COUNT_UNLIMITED, or how many frames to read */
     int timeout_ms;
     bool print_bytes;
+
+    /* ⚠ The identity is given, never derived. The TAP device's own hardware
+     * address is the kernel's end of the wire and is a different value on every
+     * run (hidetzu/tcpip-stack#19 Owner Decision 1).
+     * ⚠ Both or neither: half an identity is refused, not quietly ignored. */
+    bool has_identity;
+    uint8_t hardware_address[ARP_HARDWARE_ADDRESS_BYTES];
+    uint8_t protocol_address[ARP_PROTOCOL_ADDRESS_BYTES];
 };
 
 /* Returns false when the text is not a number in [minimum, maximum]. */
@@ -75,6 +88,44 @@ static bool parse_bounded_long(const char *text, long minimum, long maximum, lon
     return true;
 }
 
+/* Returns false when the text is not six hexadecimal octets separated by ':'. */
+static bool parse_hardware_address(const char *text, uint8_t *into)
+{
+    unsigned octet[ARP_HARDWARE_ADDRESS_BYTES];
+    char trailing = 0;
+    int read = sscanf(text, "%2x:%2x:%2x:%2x:%2x:%2x%c", &octet[0], &octet[1], &octet[2],
+                      &octet[3], &octet[4], &octet[5], &trailing);
+    if (read != ARP_HARDWARE_ADDRESS_BYTES) {
+        return false;
+    }
+    for (int i = 0; i < ARP_HARDWARE_ADDRESS_BYTES; i++) {
+        if (octet[i] > 0xff) {
+            return false;
+        }
+        into[i] = (uint8_t)octet[i];
+    }
+    return true;
+}
+
+/* Returns false when the text is not four decimal octets separated by '.'. */
+static bool parse_protocol_address(const char *text, uint8_t *into)
+{
+    unsigned octet[ARP_PROTOCOL_ADDRESS_BYTES];
+    char trailing = 0;
+    int read = sscanf(text, "%u.%u.%u.%u%c", &octet[0], &octet[1], &octet[2], &octet[3],
+                      &trailing);
+    if (read != ARP_PROTOCOL_ADDRESS_BYTES) {
+        return false;
+    }
+    for (int i = 0; i < ARP_PROTOCOL_ADDRESS_BYTES; i++) {
+        if (octet[i] > 255) {
+            return false;
+        }
+        into[i] = (uint8_t)octet[i];
+    }
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     struct options options = {
@@ -88,15 +139,34 @@ int main(int argc, char **argv)
         { "dev", required_argument, NULL, 'd' },
         { "count", required_argument, NULL, 'c' },
         { "timeout", required_argument, NULL, 't' },
+        { "mac", required_argument, NULL, 'm' },
+        { "ipv4", required_argument, NULL, '4' },
         { "hex", no_argument, NULL, 'x' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
     };
 
     int option;
-    while ((option = getopt_long(argc, argv, "d:c:t:xh", long_options, NULL)) != -1) {
+    bool given_hardware_address = false;
+    bool given_protocol_address = false;
+
+    while ((option = getopt_long(argc, argv, "d:c:t:m:4:xh", long_options, NULL)) != -1) {
         long value = 0;
         switch (option) {
+        case 'm':
+            if (!parse_hardware_address(optarg, options.hardware_address)) {
+                fprintf(stderr, "--mac takes six hexadecimal octets, as 02:00:00:00:00:02.\n");
+                return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
+            }
+            given_hardware_address = true;
+            break;
+        case '4':
+            if (!parse_protocol_address(optarg, options.protocol_address)) {
+                fprintf(stderr, "--ipv4 takes four octets from 0 to 255, as 10.0.0.2.\n");
+                return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
+            }
+            given_protocol_address = true;
+            break;
         case 'd':
             options.device_name = optarg;
             break;
@@ -125,6 +195,15 @@ int main(int argc, char **argv)
             return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
         }
     }
+    /* ⚠ Half an identity is refused rather than quietly ignored: a stack that
+     * silently declined to answer would look exactly like one nobody asked
+     * (Owner Decision 6). */
+    if (given_hardware_address != given_protocol_address) {
+        fprintf(stderr, "--mac and --ipv4 are given together or not at all.\n");
+        return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
+    }
+    options.has_identity = given_hardware_address;
+
     if (optind != argc) {
         fprintf(stderr, "%s takes no arguments beyond its options.\n", argv[0]);
         return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
@@ -166,6 +245,7 @@ int main(int argc, char **argv)
     uint8_t frame[TAP_FRAME_BUFFER_BYTES];
     unsigned long frames_read = 0;
     unsigned long read_errors = 0;
+    struct arp_counts arp_counts = { 0, 0, 0, 0, 0 };
     unsigned int consecutive_read_failures = 0;
     int exit_code = EXIT_READ_WHAT_WAS_ASKED;
 
@@ -210,10 +290,41 @@ int main(int argc, char **argv)
         if (options.print_bytes) {
             report_frame_bytes(stdout, frame, (size_t)bytes);
         }
+
+        /* ⚠ Only with an identity. Without one the program reads and answers
+         * nothing, which is what it did before (Owner Decision 6). */
+        if (options.has_identity) {
+            struct ethernet_header header;
+            if (ethernet_parse_header(frame, (size_t)bytes, &header) == ETHERNET_PARSE_OK &&
+                header.length_type == ARP_ETHERNET_LENGTH_TYPE) {
+                struct arp_outcome outcome;
+                arp_respond(frame + ETHERNET_HEADER_BYTES,
+                            (size_t)bytes - ETHERNET_HEADER_BYTES,
+                            options.hardware_address, options.protocol_address,
+                            &outcome, &arp_counts);
+                report_arp_outcome(stdout, &outcome, options.protocol_address);
+
+                if (outcome.decision == ARP_ANSWER) {
+                    ssize_t handed = tap_write_frame(device, outcome.reply,
+                                                     outcome.reply_bytes, &failure);
+                    /* ⚠ Counted only once the wire took the whole reply. A frame
+                     * that did not leave is not a frame we answered with
+                     * (`CLAUDE.md` §1). ⚠ A failure here is followed by the read
+                     * failing too — the device is gone — and that path already
+                     * counts and reports itself. */
+                    if (handed >= 0 && (size_t)handed == outcome.reply_bytes) {
+                        arp_counts.answered++;
+                    }
+                }
+            }
+        }
         fflush(stdout);
     }
 
     report_summary(stdout, frames_read, read_errors);
+    if (options.has_identity) {
+        report_arp_summary(stdout, &arp_counts);
+    }
     tap_detach(device);
     return exit_code;
 }

@@ -4,8 +4,8 @@ A user-space TCP/IP stack for Linux, built as an experiment in AI-assisted syste
 
 **What runs today: `tcpip-stack`.** It creates and attaches to a TAP device in the current network
 namespace, and reports the ethernet frames the kernel puts on it — length per frame, and the raw
-bytes on request. ⚠ **`tcpip-stack` itself only reads.** The wire underneath it can hand a frame
-to the device — and ⚠ **nothing yet decides what to send**, so the program has no reason to.
+bytes on request. ⚠ **Given `--mac` and `--ipv4` it also answers the ARP requests that ask for
+that address.** Without them it only reads.
 
 ⚠ **The namespace is not `tcpip-stack`'s doing.** It uses whichever network namespace it is
 started in. The checks put a fresh one there with `unshare -Urn`
@@ -84,9 +84,18 @@ The reply to an ARP request can be built too, and ⚠ **it is checked against a 
 itself produced** — feed our builder what the kernel answered with and the same 42 octets come back
 ([ADR 0007](docs/adr/0007-a-protocols-octets-are-described-in-one-file-both-directions.md)).
 
-⚠ **Nothing prints what they find yet**, which is why the run above says only a length. The pieces
-are here — read the request, build the reply, hand a frame to the device — and ⚠ **what is missing
-is deciding that a request is for us, and joining them up.**
+Given `--mac` and `--ipv4`, it answers the ARP requests that ask for that address, and ⚠ **the
+kernel's own neighbour table is what says so** — not our output
+([ADR 0008](docs/adr/0008-the-state-layer-arrives-as-its-own-file-and-decides-nothing-about-wording.md)):
+
+```text
+10.0.0.9 INCOMPLETE
+10.0.0.2 lladdr 02:00:00:00:00:02 REACHABLE
+```
+
+⚠ **Answering ARP is not answering a ping.** Measured 2026-08-27: `ping` still reports 100% packet
+loss either way, ⚠ **because nothing answers an ICMP echo request yet.** That is the next milestone,
+and `ip neigh` is the only proof this one claims.
 
 The three tiers differ in who the other end is: nobody (`check-static`), the device and us
 (`check-real`), and the Linux kernel (`check-foreign`). Each runs one named case on its own and
