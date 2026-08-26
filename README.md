@@ -128,4 +128,4 @@ anything.
 
 ## Licence
 
-Not decided yet.
+MIT — see [`LICENSE`](LICENSE).
