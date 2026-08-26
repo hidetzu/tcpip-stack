@@ -80,10 +80,13 @@ and `src/arp.c` reads the fixed part of an ARP packet — RFC 826's `ar$hrd`, `a
 Each keeps a malformed packet, one whose shape it cannot place, and one it can read but does not act
 on as three separate answers.
 
-⚠ **Nothing prints what they find yet**, which is why the run above says only a length, and
-⚠ **nothing decides** — answering an ARP request is still to come. The sending half of the wire is
-there and proved against the kernel's own counters for the device; ⚠ **what to put in a frame is
-what is missing.**
+The reply to an ARP request can be built too, and ⚠ **it is checked against a reply the kernel
+itself produced** — feed our builder what the kernel answered with and the same 42 octets come back
+([ADR 0007](docs/adr/0007-a-protocols-octets-are-described-in-one-file-both-directions.md)).
+
+⚠ **Nothing prints what they find yet**, which is why the run above says only a length. The pieces
+are here — read the request, build the reply, hand a frame to the device — and ⚠ **what is missing
+is deciding that a request is for us, and joining them up.**
 
 The three tiers differ in who the other end is: nobody (`check-static`), the device and us
 (`check-real`), and the Linux kernel (`check-foreign`). Each runs one named case on its own and
