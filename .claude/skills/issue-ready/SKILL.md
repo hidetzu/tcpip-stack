@@ -124,8 +124,21 @@ is emitted **and** the drop counter increments).
 | 7 | An owner decision is unresolved | ⚠ The AI decides in their place |
 | 8 | It contradicts the code, SPEC, or an ADR | ⚠ The AI decides which is right |
 | 9 | ⚠ **It changes what a recorded value means** | ⚠ Goes straight to the rules. A human decides |
-| 10 | ⚠ **It can only be verified with privileges or an environment CI does not have** | ⚠ It cannot be shown green |
+| 10 | ⚠ **The AI given this issue cannot actually run the verification it needs** | ⚠ Then nobody can show it green |
 | 11 | ⚠ **Outcomes are not distinguished** (and this issue is one where they apply) | ⚠ **The AI reports "not there" for "not obtained."** §3 |
+
+### ⚠ Clause 10 asks about the AI, not about CI
+
+⚠ **"CI cannot run it" is not clause 10.** ⚠ **CI here runs one tier of three** (ADR 0004), so a
+criterion written against CI would block every issue whose proof needs a device — ⚠ **and those are
+most of them.** ⚠ **The collision that produced this wording, and its grounds, are in ADR 0006.**
+
+⚠ **Measure it. Never assume it.** Run the tier the issue needs, or confirm its environment can be
+built, ⚠ **before answering** — the answer is a property of the machine, not of the issue, and it
+differed between this one and a GitHub runner on the day it was decided.
+
+⚠ **What does not change:** when the tier CI cannot run is the one that proves a change,
+⚠ **the report says so** (`verify` §6). ⚠ **A green tick is then not evidence for that change.**
 
 ⚠ **When it is too big, propose a split.** ⚠ **Split by reason, never by file.**
 
