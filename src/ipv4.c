@@ -86,12 +86,15 @@ enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes
      * 1's complement sum is computed over the octets concerned, and the 1's
      * complement of this sum is placed in the checksum field." ⚠ So the check is
      * the generation, done again, compared with what arrived — ⚠ not a second
-     * way of asking the same question (`CLAUDE.md` §3). */
-    uint8_t cleared[IPV4_HEADER_LENGTH_MAXIMUM * IPV4_HEADER_LENGTH_UNIT];
-    memcpy(cleared, datagram, header_bytes);
-    cleared[HEADER_CHECKSUM_OFFSET] = 0;
-    cleared[HEADER_CHECKSUM_OFFSET + 1] = 0;
-    if (internet_checksum(cleared, header_bytes) != header->header_checksum) {
+     * way of asking the same question (`CLAUDE.md` §3).
+     *
+     * ⚠ This copied the header into a 60-octet scratch and zeroed the field
+     * there until hidetzu/tcpip-stack#34 gave `checksum.h` an entry point that
+     * counts the field as zero in place. ⚠ Two ways of clearing one field is the
+     * same defect as two ways of summing it, so the copy is gone. */
+    if (internet_checksum_with_field_cleared(datagram, header_bytes,
+                                             HEADER_CHECKSUM_OFFSET) !=
+        header->header_checksum) {
         return IPV4_PARSE_CHECKSUM_DISAGREES;
     }
 

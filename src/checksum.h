@@ -42,4 +42,24 @@
  * not quoted from RFC 1071, which was not read on the point. */
 uint16_t internet_checksum(const uint8_t *octets, size_t count);
 
+/* The same sum, with the two-octet field at `field_offset` counted as zero.
+ *
+ * ⚠ Why this exists at all: clearing the field is the caller's job above, and a
+ * caller holding octets it may not write has to copy them first. ⚠ That is fine
+ * where the length has a ceiling — an internet header is at most 60 octets
+ * (`src/ipv4.c`) — and ⚠ it is not fine for an ICMP message, whose Data RFC 792
+ * puts no limit on. ⚠ A fixed scratch array there would be a limit this
+ * repository invented (hidetzu/tcpip-stack#34).
+ *
+ * ⚠ Not a second implementation. ⚠ Both entry points run the one loop in
+ * checksum.c, and `internet_checksum` is this function with no field cleared.
+ *
+ * ⚠ `field_offset` must be even and must leave two octets inside `count`.
+ * ⚠ An offset that is not even is not skipped — the sum pairs octets from the
+ * start, so a field starting mid-pair is not a word this loop ever forms. Every
+ * checksum field in this repository starts on an even octet: 10 in an internet
+ * header, 2 in an ICMP message. */
+uint16_t internet_checksum_with_field_cleared(const uint8_t *octets, size_t count,
+                                              size_t field_offset);
+
 #endif /* CHECKSUM_H */
