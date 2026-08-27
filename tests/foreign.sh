@@ -26,17 +26,22 @@ wait_for_interface() {
 
 # Turns the reported output back into one line per frame: "<length> <hex>".
 #
-# ⚠ This reads the bytes of a frame, and so does src/ — the ethernet header
-# since hidetzu/tcpip-stack#9, and ⚠ the ARP fields this case picks apart by
-# hand since hidetzu/tcpip-stack#16 (src/arp.c reads ar$spa and ar$tpa, which is
-# exactly what the offsets below are doing). ⚠ That makes them two
-# implementations of the same question (`CLAUDE.md` §3), and the debt is real
-# and unpaid.
+# Turns the reported output back into one line per frame: "<length> <hex>".
 #
-# ⚠ Paying it off is hidetzu/tcpip-stack#11, deliberately not done here: the
-# obvious fix — letting the parser pick the frame out — turns the one tier whose
-# other end is not ours into our parser agreeing with our parser, and that is
-# the question this tier exists to answer (`.claude/rules/layers.md`).
+# ⚠ This reads the bytes of a frame, and so does src/arp.c. ⚠ What used to be
+# two implementations of the same question is now one: the offsets below are
+# derived from the constants src/ uses, so ⚠ they cannot drift from the parser's
+# (`CLAUDE.md` §3, hidetzu/tcpip-stack#11).
+#
+# ⚠ What is deliberately NOT shared is the reading itself. This case still cuts
+# the octets out for itself and ⚠ never asks src/arp.c what the frame is. ⚠ That
+# independence is what makes the foreign tier an answer to question 3
+# (`.claude/rules/layers.md`): a check that used our parser to find the frame
+# whose octets it verifies would be our parser agreeing with our parser.
+#
+# ⚠ So breaking src/arp.c must NOT break this case, and it does not — measured
+# 2026-08-27: swapping ar$spa and ar$tpa left this passing and made 4 of 11
+# static ARP cases fail. ⚠ The parser's correctness is the static tier's job.
 frames_as_hex() {
     awk '
         /^frame [0-9]+  [0-9]+ bytes/ {
@@ -58,6 +63,19 @@ frames_as_hex() {
 # exercise the path (`CLAUDE.md` §3).
 read_buffer_bytes() {
     awk '/^#define TAP_FRAME_BUFFER_BYTES/ { print $3 }' src/tap.h
+}
+
+# Where a field sits in a frame, in octets, taken from the constants src/ uses.
+#
+# ⚠ One home for the layout. ⚠ Writing 12, 28 and 38 here a second time is how
+# this file and the parser would silently diverge (`CLAUDE.md` §3).
+constant() {  # header name
+    awk -v n="$2" '$1 == "#define" && $2 == n { print $3 }' "$1"
+}
+
+# Turns an octet offset into the position of its first character in a hex string.
+at_octet() {
+    printf '%d' $(( $1 * 2 + 1 ))
 }
 
 # ⚠ read(2) on a TAP fd hands back a truncated frame and discards the rest — it
@@ -147,6 +165,25 @@ inside_an_arp_request_the_kernel_generated_is_read_intact() {
         return
     fi
 
+    # ⚠ Derived, never written here a second time (`CLAUDE.md` §3).
+    address_octets=$(constant src/ethernet.h ETHERNET_ADDRESS_BYTES)
+    header_octets=$(constant src/ethernet.h ETHERNET_HEADER_BYTES)
+    fixed_octets=$(constant src/arp.h ARP_FIXED_BYTES)
+    hardware_octets=$(constant src/arp.h ARP_HARDWARE_ADDRESS_BYTES)
+    protocol_octets=$(constant src/arp.h ARP_PROTOCOL_ADDRESS_BYTES)
+    for value in "$address_octets" "$header_octets" "$fixed_octets" \
+        "$hardware_octets" "$protocol_octets"; do
+        if [ -z "$value" ]; then
+            note_failure "a constant could not be read out of src/, so the offsets are unknown"
+            return
+        fi
+    done
+
+    arp_frame_octets=$((header_octets + fixed_octets + 2 * (hardware_octets + protocol_octets)))
+    ethertype_at=$(at_octet $((address_octets * 2)))
+    spa_at=$(at_octet $((header_octets + fixed_octets + hardware_octets)))
+    tpa_at=$(at_octet $((header_octets + fixed_octets + 2 * hardware_octets + protocol_octets)))
+
     found_arp_request=0
     lengths_disagreeing=0
     frames_as_hex "$work/out.txt" >"$work/frames.txt"
@@ -156,10 +193,10 @@ inside_an_arp_request_the_kernel_generated_is_read_intact() {
         if [ "${#hex}" -ne $((frame_length * 2)) ]; then
             lengths_disagreeing=$((lengths_disagreeing + 1))
         fi
-        [ "$frame_length" -eq 42 ] || continue
-        ethertype=$(printf '%s' "$hex" | cut -c25-28)
-        sender_protocol_address=$(printf '%s' "$hex" | cut -c57-64)
-        target_protocol_address=$(printf '%s' "$hex" | cut -c77-84)
+        [ "$frame_length" -eq "$arp_frame_octets" ] || continue
+        ethertype=$(printf '%s' "$hex" | cut -c"$ethertype_at"-$((ethertype_at + 3)))
+        sender_protocol_address=$(printf '%s' "$hex" | cut -c"$spa_at"-$((spa_at + 7)))
+        target_protocol_address=$(printf '%s' "$hex" | cut -c"$tpa_at"-$((tpa_at + 7)))
         if [ "$ethertype" = "0806" ] &&
             [ "$sender_protocol_address" = "0a000001" ] &&
             [ "$target_protocol_address" = "0a000002" ]; then
