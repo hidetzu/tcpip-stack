@@ -14,6 +14,7 @@
 #include <stdio.h>
 
 #include "arp_responder.h"
+#include "ethernet.h"
 #include "tap.h"
 
 void report_listening(FILE *out, const char *device_name);
@@ -25,6 +26,35 @@ void report_frame(FILE *out, unsigned long frame_number, size_t bytes,
                   bool filled_buffer);
 
 void report_frame_bytes(FILE *out, const uint8_t *frame, size_t bytes);
+
+/* Counts of what the ethernet header turned out to be. ⚠ Each on its own: a
+ * frame we could not read the header of is not a frame carrying a Length we do
+ * not handle (`.claude/rules/c.md`). */
+struct ethernet_counts {
+    unsigned long malformed;
+    unsigned long ieee_802_3_length;
+    unsigned long length_type_undefined;
+};
+
+/* What the ethernet header of one frame holds, and how far it could be read.
+ *
+ * ⚠ Printed for every frame, always (hidetzu/tcpip-stack#10 Owner Decision 1).
+ *
+ * ⚠ The length/type is printed as the value it is and ⚠ never as a protocol
+ * name: a name would be a lie for a VLAN-tagged frame (ADR 0003), and
+ * ⚠ `0x0800` → IPv4 has never been taken from a standard in this repository.
+ *
+ * ⚠ Destination before source, matching the octets on the wire.
+ *
+ * ⚠ When the header could not be read, the line shows no octets that never
+ * arrived. */
+void report_ethernet_header(FILE *out, const uint8_t *frame, size_t bytes,
+                            enum ethernet_parse answer,
+                            const struct ethernet_header *header);
+
+/* ⚠ Printed even when every count is zero. Hiding a zero would make "none
+ * arrived" indistinguishable from "nobody counted" (`CLAUDE.md` §1). */
+void report_ethernet_summary(FILE *out, const struct ethernet_counts *counts);
 
 void report_read_failure(FILE *out, unsigned long frame_number,
                          const struct tap_failure *failure);

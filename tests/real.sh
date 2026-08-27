@@ -98,7 +98,8 @@ inside_count_zero_reads_nothing() {
     "$TCPIP_STACK" --dev tap0 --count 0 >"$work/out.txt" 2>"$work/err.txt"
     assert_exit_code 0 $? "reading no frames at all"
     assert_file_is "$work/out.txt" "listening on tap0
-read 0 frames, 0 read errors" "reading no frames at all"
+read 0 frames, 0 read errors
+0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define" "reading no frames at all"
     assert_file_is "$work/err.txt" "" "reading no frames at all"
 }
 
@@ -110,7 +111,8 @@ inside_a_timer_running_out_has_its_own_exit_code() {
         "listened on tap0 for 300 ms and read 0 frames. Nothing arrived here; that does not say whether anything was sent." \
         "the timer running out"
     assert_file_is "$work/out.txt" "listening on tap0
-read 0 frames, 0 read errors" "the timer running out"
+read 0 frames, 0 read errors
+0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define" "the timer running out"
 }
 
 # ⚠ What this proves and what it does not: it proves that a stop request reaches
@@ -149,7 +151,8 @@ inside_a_stop_request_reaches_a_reader_that_is_waiting() {
     wait "$reader"
     assert_exit_code 0 $? "being asked to stop"
     assert_file_is "$work/out.txt" "listening on tap0
-read 0 frames, 0 read errors" "being asked to stop"
+read 0 frames, 0 read errors
+0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define" "being asked to stop"
 }
 
 inside_a_second_attach_to_the_same_device_is_refused() {
@@ -213,7 +216,8 @@ inside_the_wait_says_the_device_stopped_being_usable() {
 
     # ⚠ No frame was read and no read was attempted, so neither count moved.
     assert_file_is "$work/out.txt" "listening on tap0
-read 0 frames, 0 read errors" "the device stopped being usable"
+read 0 frames, 0 read errors
+0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define" "the device stopped being usable"
 }
 
 # ⚠ A frame handed to the device reaches the kernel, and the kernel's own
