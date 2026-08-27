@@ -34,14 +34,30 @@
  * or in any wording built on it may say the RFC requires something
  * (`CLAUDE.md` §1) — the same standing RFC 826, 791 and 792 are in here.
  *
- * ⚠ Nothing here checks the checksum. ⚠ It is computed over a pseudo-header
- * that is not in the segment (hidetzu/tcpip-stack#41). */
+ * ⚠ The checksum IS checked here, and that is a decision rather than a detail
+ * (hidetzu/tcpip-stack#41 Owner Decision 1). ⚠ It covers a pseudo-header that is
+ * not in the segment, so this function has to be handed the two addresses —
+ * ⚠ RFC 793: "The checksum also covers a 96 bit pseudo header conceptually
+ * prefixed to the TCP header. This pseudo header contains the Source Address,
+ * the Destination Address, the Protocol, and TCP length."
+ *
+ * ⚠ Why it is not a separate call: ⚠ **a caller can forget a separate call.** A
+ * parsed header would then exist whose checksum nobody judged, the checks would
+ * stay green, and ⚠ the handshake would complete anyway — which is
+ * `CLAUDE.md` §1's sentence about answering a ping while computing the checksum
+ * wrong, in TCP's clothes. ⚠ This way that state cannot exist. */
 #ifndef TCP_H
 #define TCP_H
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+/* ⚠ src/tcp.c deliberately includes nothing from the layer below it. ⚠ The two
+ * addresses arrive as four octets each and the length as a number: the
+ * dependency is RFC 793's, and the direction Wire -> Parse -> State stays clean
+ * (`.claude/rules/layers.md`). */
+#define TCP_ADDRESS_BYTES 4
 
 /* ⚠ RFC 793: "Data Offset: 4 bits - The number of 32 bit words in the TCP
  * Header." ⚠ So a header is Data Offset of these. */
@@ -74,6 +90,20 @@
 #define TCP_CONTROL_SYN 0x02u
 #define TCP_CONTROL_FIN 0x01u
 
+/* The value a `Protocol` field carries for TCP, as the pseudo-header needs it.
+ *
+ * ⚠ Grounds, and they are NOT RFC 793: ⚠ **this was not taken from the
+ * document.** RFC 793 names the field in the pseudo-header and does not give its
+ * value. ⚠ It is octet 9 of the internet header in
+ * tests/fixtures/tcp-syn-74.hex, put there by the Linux kernel while carrying
+ * TCP. ⚠ An observation, and it is recorded as one — the same standing ADR 0005
+ * gave ARP's numbers and ADR 0012 gave ICMP's.
+ *
+ * ⚠ It is not a parameter. ⚠ A pseudo-header for a TCP segment always carries
+ * TCP's own number, and a parameter would only be a value a caller could get
+ * wrong (hidetzu/tcpip-stack#41). */
+#define TCP_PROTOCOL_NUMBER 6u
+
 /* ⚠ RFC 793's option-kinds, quoted: "End of option list", "No-Operation",
  * "Maximum Segment Size". ⚠ Only the first two are named here, because ⚠ they
  * are the two the walk has to know about — they are Case 1, "a single octet of
@@ -100,7 +130,13 @@ enum tcp_parse {
      * walked past rather than refused, because ⚠ the Linux kernel's own SYN
      * carries twenty octets of them (tests/fixtures/tcp-syn-74.hex) and a
      * parser that refused them would refuse every real SYN there is. */
-    TCP_PARSE_MALFORMED
+    TCP_PARSE_MALFORMED,
+
+    /* ⚠ Its own answer. ⚠ A segment whose checksum does not agree is not one we
+     * may act on, and it is not the sender being wrong about the format —
+     * ⚠ something changed it, or it was never right. ⚠ Counting it with
+     * malformed would hide it (ADR 0010 and ADR 0011 kept the same two apart). */
+    TCP_PARSE_CHECKSUM_DISAGREES
 };
 
 struct tcp_header {
@@ -134,8 +170,42 @@ struct tcp_header {
  *
  * ⚠ The options are walked and ⚠ not one of them is interpreted. RFC 793 says
  * "A TCP must implement all options"; ⚠ **this file implements none of them**,
- * and that gap is named in `docs/SPEC.md` §2 rather than left silent. */
+ * and that gap is named in `docs/SPEC.md` §2 rather than left silent.
+ *
+ * ⚠ `segment_bytes` MUST be the segment as the internet header's `Total Length`
+ * bounds it, ⚠ **not as many octets as arrived.** ⚠ RFC 793: "The TCP Length is
+ * the TCP header length plus the data length in octets (this is not an
+ * explicitly transmitted quantity, but is computed)". ⚠ It is computed from this
+ * number, so ⚠ a frame padded up to the wire's minimum makes the checksum
+ * disagree — and ⚠ the only thing that comes back is "it does not agree", with
+ * nothing pointing at the padding. ⚠ `src/echo_responder.c` already bounds an
+ * ICMP message this way and the same is required here.
+ *
+ * ⚠ It follows that `segment_bytes` fits in sixteen bits, because `Total Length`
+ * is a sixteen-bit field. ⚠ The `TCP Length` written into the pseudo-header is
+ * that many octets, and ⚠ a caller that handed over more would get a checksum
+ * that does not agree, with nothing saying why. ⚠ The requirement is stated
+ * rather than left to be discovered.
+ *
+ * `source_address` and `destination_address` are the internet header's, four
+ * octets each, ⚠ in the order they were on the wire.
+ *
+ * ⚠ The order the answers are decided in, and why it is this order (ADR 0014):
+ *
+ *     fewer octets than the fixed fields   ⚠ the checksum field itself has not
+ *                                            arrived, so nothing can be judged
+ *     the checksum does not agree          ⚠ before any field's content:
+ *                                            blaming the sender for octets that
+ *                                            were changed in flight would be
+ *                                            the wrong answer
+ *     Data Offset below the fixed header   malformed
+ *     Data Offset beyond what arrived      malformed
+ *     Reserved is not zero                 malformed
+ *     the option list does not walk        malformed
+ *     otherwise                            accepted */
 enum tcp_parse tcp_parse_header(const uint8_t *segment, size_t segment_bytes,
+                                const uint8_t *source_address,
+                                const uint8_t *destination_address,
                                 struct tcp_header *header);
 
 #endif /* TCP_H */
