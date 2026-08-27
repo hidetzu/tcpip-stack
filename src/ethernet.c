@@ -32,3 +32,17 @@ enum ethernet_parse ethernet_parse_header(const uint8_t *frame, size_t frame_byt
     }
     return ETHERNET_PARSE_LENGTH_TYPE_UNDEFINED;
 }
+
+bool ethernet_build_header(const uint8_t *destination, const uint8_t *source,
+                           uint16_t length_type, uint8_t *frame, size_t frame_bytes)
+{
+    if (frame_bytes < ETHERNET_HEADER_BYTES) {
+        return false;
+    }
+    memcpy(frame, destination, ETHERNET_ADDRESS_BYTES);
+    memcpy(frame + ETHERNET_ADDRESS_BYTES, source, ETHERNET_ADDRESS_BYTES);
+    /* ⚠ Network byte order, one octet at a time (`.claude/rules/c.md`). */
+    frame[2 * ETHERNET_ADDRESS_BYTES] = (uint8_t)(length_type >> 8);
+    frame[2 * ETHERNET_ADDRESS_BYTES + 1] = (uint8_t)(length_type & 0xffu);
+    return true;
+}

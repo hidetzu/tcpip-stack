@@ -16,9 +16,10 @@
 #define SOURCE_ADDRESS_OFFSET 12
 #define DESTINATION_ADDRESS_OFFSET 16
 
-/* The header without any Options. ⚠ Derived from the minimum the document
- * states, never written as 20. */
-#define FIXED_HEADER_BYTES (IPV4_HEADER_LENGTH_MINIMUM * IPV4_HEADER_LENGTH_UNIT)
+/* ⚠ The header without any Options. Named in ipv4.h now that a caller has to
+ * reserve room for one (hidetzu/tcpip-stack#35); this is the short spelling
+ * used inside this file. */
+#define FIXED_HEADER_BYTES IPV4_FIXED_HEADER_BYTES
 
 /* ⚠ Network byte order, one octet at a time. ⚠ Never a struct overlaid on the
  * buffer (`.claude/rules/c.md`). */
@@ -72,6 +73,19 @@ enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes
         return IPV4_PARSE_MALFORMED;
     }
 
+    /* ⚠ RFC 791 counts Total Length as "the length of the datagram, measured in
+     * octets, including internet header and data", so ⚠ a Total Length below
+     * the header's own length is a header contradicting itself — the sender is
+     * wrong (hidetzu/tcpip-stack#35 Owner Decision 4).
+     *
+     * ⚠ Left undecided by hidetzu/tcpip-stack#33 on purpose: its approved order
+     * had no row for it and that change did not invent one. ⚠ It is decided here
+     * because this is where a payload length is first computed as
+     * `Total Length - header`, and that subtraction is unsigned. */
+    if (header->total_length < header_bytes) {
+        return IPV4_PARSE_MALFORMED;
+    }
+
     /* ⚠ RFC 791: "Bit 0: reserved, must be zero". ⚠ Set means the sender broke
      * what the document states (Owner Decision 2). ⚠ What its lower-case "must"
      * carries is not defined by anything that was read — ⚠ the decision is the
@@ -111,4 +125,60 @@ enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes
     }
 
     return IPV4_PARSE_OK;
+}
+
+static void write_16(uint8_t *at, uint16_t value)
+{
+    at[0] = (uint8_t)(value >> 8);
+    at[1] = (uint8_t)(value & 0xffu);
+}
+
+enum ipv4_build ipv4_build_datagram(const uint8_t *source_address,
+                                    const uint8_t *destination_address,
+                                    uint8_t protocol,
+                                    const uint8_t *payload, size_t payload_bytes,
+                                    uint8_t *datagram, size_t datagram_bytes,
+                                    size_t *built_bytes)
+{
+    size_t needed = FIXED_HEADER_BYTES + payload_bytes;
+
+    /* ⚠ Decided before a single octet is written, so a refused build leaves the
+     * caller's buffer exactly as it was. */
+    if (datagram_bytes < needed) {
+        return IPV4_BUILD_BUFFER_TOO_SMALL;
+    }
+
+    /* ⚠ Total Length is 16 bits. ⚠ A payload that would not fit in the field is
+     * refused rather than written as a number that means something else. */
+    if (needed > 0xffffu) {
+        return IPV4_BUILD_BUFFER_TOO_SMALL;
+    }
+
+    /* ⚠ The payload first, and with memmove: it is allowed to point into this
+     * same buffer, which is what answering in place looks like. */
+    if (payload_bytes > 0) {
+        memmove(datagram + FIXED_HEADER_BYTES, payload, payload_bytes);
+    }
+
+    datagram[VERSION_AND_LENGTH_OFFSET] =
+        (uint8_t)((IPV4_VERSION << 4) | IPV4_HEADER_LENGTH_MINIMUM);
+    datagram[TYPE_OF_SERVICE_OFFSET] = 0;
+    write_16(datagram + TOTAL_LENGTH_OFFSET, (uint16_t)needed);
+    write_16(datagram + IDENTIFICATION_OFFSET, IPV4_IDENTIFICATION_WE_SEND);
+    /* ⚠ All three flag bits clear and Fragment Offset 0, in the one field they
+     * share. ⚠ Don't Fragment clear is Owner Decision 2, not a reading. */
+    write_16(datagram + FLAGS_AND_OFFSET_OFFSET, 0);
+    datagram[TIME_TO_LIVE_OFFSET] = (uint8_t)IPV4_TIME_TO_LIVE_WE_SEND;
+    datagram[PROTOCOL_OFFSET] = protocol;
+    memcpy(datagram + SOURCE_ADDRESS_OFFSET, source_address, IPV4_ADDRESS_BYTES);
+    memcpy(datagram + DESTINATION_ADDRESS_OFFSET, destination_address, IPV4_ADDRESS_BYTES);
+
+    /* ⚠ "the checksum field itself is cleared" — RFC 1071 — and ⚠ "A checksum on
+     * the header only" — RFC 791. */
+    write_16(datagram + HEADER_CHECKSUM_OFFSET, 0);
+    write_16(datagram + HEADER_CHECKSUM_OFFSET,
+             internet_checksum(datagram, FIXED_HEADER_BYTES));
+
+    *built_bytes = needed;
+    return IPV4_BUILD_OK;
 }

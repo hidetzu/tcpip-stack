@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "arp_responder.h"
+#include "echo_responder.h"
 #include "ethernet.h"
 #include "report.h"
 #include "tap.h"
@@ -255,6 +256,8 @@ int main(int argc, char **argv)
     unsigned long frames_read = 0;
     unsigned long read_errors = 0;
     struct arp_counts arp_counts = { 0, 0, 0, 0, 0 };
+    struct echo_counts echo_counts;
+    memset(&echo_counts, 0, sizeof echo_counts);
     struct ethernet_counts ethernet_counts = { 0, 0, 0 };
     unsigned int consecutive_read_failures = 0;
     int exit_code = EXIT_READ_WHAT_WAS_ASKED;
@@ -351,6 +354,30 @@ int main(int argc, char **argv)
                         arp_counts.answered++;
                     }
                 }
+            } else if (header_answer == ETHERNET_PARSE_OK &&
+                       header.length_type == IPV4_ETHERNET_LENGTH_TYPE) {
+                struct echo_outcome echo;
+                /* ⚠ A buffer of its own rather than the frame that arrived: the
+                 * hex of a frame has already been printed by here, but ⚠ a
+                 * reader comparing what came in with what went out must be able
+                 * to, and overwriting the one with the other takes that away. */
+                uint8_t reply[TAP_FRAME_BUFFER_BYTES];
+                echo_respond(frame + ETHERNET_HEADER_BYTES,
+                             (size_t)bytes - ETHERNET_HEADER_BYTES,
+                             header.source, options.hardware_address,
+                             options.protocol_address, reply, sizeof reply, &echo,
+                             &echo_counts);
+                report_echo_outcome(stdout, &echo, options.protocol_address);
+
+                if (echo.decision == ECHO_ANSWER) {
+                    ssize_t handed =
+                        tap_write_frame(device, reply, echo.reply_bytes, &failure);
+                    /* ⚠ Counted only once the wire took the whole reply, the
+                     * same division ARP uses above (`CLAUDE.md` §1). */
+                    if (handed >= 0 && (size_t)handed == echo.reply_bytes) {
+                        echo_counts.answered++;
+                    }
+                }
             }
         }
         fflush(stdout);
@@ -360,6 +387,7 @@ int main(int argc, char **argv)
     report_ethernet_summary(stdout, &ethernet_counts);
     if (options.has_identity) {
         report_arp_summary(stdout, &arp_counts);
+        report_echo_summary(stdout, &echo_counts);
     }
     tap_detach(device);
     return exit_code;

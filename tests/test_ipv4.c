@@ -295,6 +295,43 @@ static bool case_a_length_larger_than_what_arrived_is_malformed(void)
     return ok;
 }
 
+/* ⚠ A Total Length below the header's own length: the header contradicts
+ * itself (hidetzu/tcpip-stack#35 Owner Decision 4). ⚠ Malformed, and ⚠ this is
+ * the subtraction that would otherwise wrap: a payload length computed as
+ * `Total Length - header` is unsigned. */
+static bool case_a_total_length_below_its_own_header_is_malformed(void)
+{
+    bool ok = true;
+    size_t header_bytes = IPV4_HEADER_LENGTH_MINIMUM * IPV4_HEADER_LENGTH_UNIT;
+
+    for (unsigned claimed = 0; claimed < header_bytes; claimed++) {
+        struct datagram datagram;
+        if (!load_the_echo_request(&datagram)) {
+            return false;
+        }
+        write_16(datagram.octets + AT_TOTAL_LENGTH, claimed);
+        repair_the_header_checksum(&datagram);
+        char what[64];
+        snprintf(what, sizeof what, "Total Length %u with a %zu-octet header", claimed,
+                 header_bytes);
+        if (!answer_is(what, &datagram, IPV4_PARSE_MALFORMED)) {
+            ok = false;
+        }
+    }
+
+    /* ⚠ The other half: exactly the header and no data is not malformed. */
+    struct datagram datagram;
+    if (!load_the_echo_request(&datagram)) {
+        return false;
+    }
+    write_16(datagram.octets + AT_TOTAL_LENGTH, (unsigned)header_bytes);
+    repair_the_header_checksum(&datagram);
+    if (!answer_is("Total Length equal to the header", &datagram, IPV4_PARSE_OK)) {
+        ok = false;
+    }
+    return ok;
+}
+
 /* ⚠ Truncation is decided before support, the order ADR 0005 set for ARP.
  * ⚠ A datagram that does not hold what it says it holds is malformed whether or
  * not we would have handled it.
@@ -558,6 +595,8 @@ static const struct test_case cases[] = {
     { "the_reserved_flag_bit_is_malformed", case_the_reserved_flag_bit_is_malformed },
     { "a_length_larger_than_what_arrived_is_malformed",
       case_a_length_larger_than_what_arrived_is_malformed },
+    { "a_total_length_below_its_own_header_is_malformed",
+      case_a_total_length_below_its_own_header_is_malformed },
     { "truncation_is_decided_before_support", case_truncation_is_decided_before_support },
     { "a_header_checksum_that_disagrees_is_its_own_outcome",
       case_a_header_checksum_that_disagrees_is_its_own_outcome },

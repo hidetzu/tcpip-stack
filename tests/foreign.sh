@@ -225,9 +225,10 @@ inside_an_arp_request_the_kernel_generated_is_read_intact() {
 # OUR hardware address, and one we do not answer for stays unresolved. ⚠ A stack
 # that answered everything would pass the first half alone (`verify` §5).
 #
-# ⚠ ping is not waited on. Measured 2026-08-27: it reports 100% loss either way,
-# because ARP is answered and ⚠ nothing answers an ICMP echo yet. A check that
-# waited on ping would fail for a reason that has nothing to do with this.
+# ⚠ ping is not waited on and its verdict is not asserted here. ⚠ What this case
+# is about is the neighbour table, and ⚠ whether the ping then succeeds is
+# `ping_reports_no_loss_against_our_own_stack`'s question, not this one
+# (`.claude/rules/testing.md`: assert our own correctness, one thing at a time).
 #
 # ⚠ The table is read while the program still holds the device. It is gone the
 # moment that fd closes (`docs/SPEC.md` §1), and there is then nothing to read.
@@ -249,8 +250,7 @@ inside_the_kernel_believes_the_address_we_answered_for() {
 
     ip addr add 10.0.0.1/24 dev tap0
     ip link set tap0 up
-    # ⚠ Give the kernel a reason to ask for each address. Whether the ping
-    # succeeds is not ours to assert — nothing answers an echo request yet.
+    # ⚠ Give the kernel a reason to ask for each address.
     ping -c 2 -i 0.3 -W 1 "$ours" >/dev/null 2>&1 || true
     ping -c 1 -i 0.3 -W 1 "$not_ours" >/dev/null 2>&1 || true
 
@@ -287,6 +287,91 @@ inside_the_kernel_believes_the_address_we_answered_for() {
     printf '    the kernel believes: %s\n' "$(grep "^$ours" "$work/neigh.txt")"
 }
 
+# ⚠ The milestone's proof, and ⚠ the verdict is not ours: `ping` decides.
+#
+# ⚠ Why that is strong: the kernel checks the internet header checksum and the
+# ICMP checksum before it accepts a reply, so ⚠ 0% loss is somebody else's
+# arithmetic agreeing with ours (`.claude/rules/layers.md`, question 3).
+#
+# ⚠ Why it is not enough on its own: ⚠ a stack that never validated a checksum on
+# the way in would answer this ping too (`CLAUDE.md` §1). ⚠ What stops that is
+# `tests/static.sh` `echo_responder`, case
+# `an_icmp_checksum_that_does_not_agree_is_not_answered_and_is_counted`
+# (hidetzu/tcpip-stack#35 AC 2). ⚠ Neither check replaces the other.
+#
+# ⚠ This case reads no octet of any frame and asks no parser of ours anything
+# (ADR 0009). ⚠ Breaking a parser must break the static tier, not this
+# (measured — see the report on hidetzu/tcpip-stack#35).
+#
+# ⚠ LC_ALL=C so the sentence ping prints is the one being matched, whatever the
+# machine's language is.
+inside_ping_reports_no_loss_against_our_own_stack() {
+    ours=10.0.0.2
+    not_ours=10.0.0.9
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --timeout 5000 \
+        >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    LC_ALL=C ping -c 3 -i 0.3 -W 1 "$ours" >"$work/ping.txt" 2>&1
+    ping_exit=$?
+
+    # ⚠ The other half, in the same run: an address we do not answer for must
+    # still be lost. ⚠ Without it this case would pass on a machine where
+    # something else was replying (`verify` §5).
+    LC_ALL=C ping -c 1 -i 0.3 -W 1 "$not_ours" >"$work/ping-other.txt" 2>&1
+    other_exit=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$ping_exit" -ne 0 ]; then
+        note_failure "ping $ours exited $ping_exit"
+        printf '    what ping said:\n' >&2
+        sed 's/^/      /' "$work/ping.txt" >&2
+        printf '    what the stack said:\n' >&2
+        sed 's/^/      /' "$work/out.txt" >&2
+        return
+    fi
+    # ⚠ ", 0% packet loss" and not "0% packet loss": the latter is inside
+    # "100% packet loss" as well.
+    if ! grep -q ", 0% packet loss" "$work/ping.txt"; then
+        note_failure "ping $ours did not report 0% packet loss"
+        sed 's/^/      /' "$work/ping.txt" >&2
+        printf '    what the stack said:\n' >&2
+        sed 's/^/      /' "$work/out.txt" >&2
+        return
+    fi
+
+    if [ "$other_exit" -eq 0 ] || ! grep -q "100% packet loss" "$work/ping-other.txt"; then
+        note_failure "ping $not_ours succeeded, and nothing here answers for that address"
+        sed 's/^/      /' "$work/ping-other.txt" >&2
+        return
+    fi
+
+    # ⚠ Answering is counted, and ⚠ counted only for what the wire took. ⚠ The
+    # count is a number this stack printed, so it is a weaker statement than
+    # ping's verdict above — it is here so that "we answered" can never be
+    # mistaken for "nothing arrived" (`.claude/rules/c.md`).
+    assert_file_contains "$work/out.txt" "answered 3 echo requests" \
+        "answering is counted"
+    assert_file_contains "$work/out.txt" "1 was not for us" \
+        "a datagram for another address is counted apart"
+
+    printf '    ping said: %s\n' "$(grep "packet loss" "$work/ping.txt")"
+}
+
 in_namespace() {
     if ! unshare -Urn "$0" --inside "$1"; then
         current_case_ok=0
@@ -296,6 +381,9 @@ in_namespace() {
 case_an_arp_request_the_kernel_generated_is_read_intact() {
     in_namespace an_arp_request_the_kernel_generated_is_read_intact
 }
+case_ping_reports_no_loss_against_our_own_stack() {
+    in_namespace ping_reports_no_loss_against_our_own_stack
+}
 case_a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length() {
     in_namespace a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length
 }
@@ -303,7 +391,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

@@ -245,6 +245,125 @@ static bool case_the_arp_summary_counts_each_reason_on_its_own(void)
 }
 
 
+/* ⚠ The same two-line shape ARP prints, for an IPv4 datagram
+ * (hidetzu/tcpip-stack#35 Owner Decision 1). ⚠ Every one of the ten reasons has
+ * a sentence, and ⚠ none of them prints an internal name. */
+static bool case_an_echo_outcome_says_what_was_decided_and_why(void)
+{
+    static const uint8_t ours[4] = { 10, 0, 0, 2 };
+    struct produced produced;
+    bool ok = true;
+
+    struct echo_outcome answered;
+    memset(&answered, 0, sizeof answered);
+    answered.decision = ECHO_ANSWER;
+    answered.header.source_address[0] = 10;
+    answered.header.source_address[3] = 1;
+    answered.request.data_bytes = 56;
+    produced_open(&produced);
+    report_echo_outcome(produced.out, &answered, ours);
+    ok = matches("answered", &produced,
+                 "  answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back\n")
+         && ok;
+    produced_close(&produced);
+
+    /* ⚠ One octet is not "1 octets". */
+    answered.request.data_bytes = 1;
+    produced_open(&produced);
+    report_echo_outcome(produced.out, &answered, ours);
+    ok = matches("answered, one octet", &produced,
+                 "  answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 1 octet back\n")
+         && ok;
+    produced_close(&produced);
+
+    static const struct {
+        enum echo_reason reason;
+        const char *line;
+    } declined[] = {
+        { ECHO_REASON_NOT_FOR_US,
+          "  no answer: it was addressed to 10.0.0.9, which is not an address we "
+          "answer for\n" },
+        { ECHO_REASON_INTERNET_HEADER_MALFORMED,
+          "  no answer: its internet header does not hold what it says it holds\n" },
+        { ECHO_REASON_INTERNET_HEADER_NOT_HANDLED,
+          "  no answer: its internet header is one we do not read yet\n" },
+        { ECHO_REASON_INTERNET_HEADER_CHECKSUM_DISAGREES,
+          "  no answer: its internet header checksum does not agree with the octets "
+          "that arrived\n" },
+        { ECHO_REASON_FRAGMENT,
+          "  no answer: it is a fragment, and nothing here puts fragments back "
+          "together\n" },
+        { ECHO_REASON_PROTOCOL_NOT_HANDLED,
+          "  no answer: it carries protocol 17, which is not one we act on\n" },
+        { ECHO_REASON_ICMP_MALFORMED,
+          "  no answer: its ICMP message is shorter than one can be, or its code is "
+          "not the 0 an echo message has\n" },
+        { ECHO_REASON_ICMP_TYPE_NOT_HANDLED,
+          "  no answer: its ICMP type is not one we act on\n" },
+        { ECHO_REASON_ICMP_CHECKSUM_DISAGREES,
+          "  no answer: its ICMP checksum does not agree with the octets that "
+          "arrived\n" },
+        /* ⚠ Ours, and it says so rather than pointing at the sender
+         * (`CLAUDE.md` §4-1). */
+        { ECHO_REASON_WE_COULD_NOT_BUILD_THE_REPLY,
+          "  no answer: we could not build the reply. That is ours, not the "
+          "sender's\n" },
+    };
+
+    for (size_t i = 0; i < sizeof declined / sizeof declined[0]; i++) {
+        struct echo_outcome outcome;
+        memset(&outcome, 0, sizeof outcome);
+        outcome.decision = ECHO_NO_ANSWER;
+        outcome.reason = declined[i].reason;
+        outcome.header.destination_address[0] = 10;
+        outcome.header.destination_address[3] = 9;
+        outcome.header.protocol = 17;
+        produced_open(&produced);
+        report_echo_outcome(produced.out, &outcome, ours);
+        char what[64];
+        snprintf(what, sizeof what, "reason %d", (int)declined[i].reason);
+        ok = matches(what, &produced, declined[i].line) && ok;
+        produced_close(&produced);
+    }
+    return ok;
+}
+
+/* ⚠ Ten numbers, each on its own, and ⚠ printed even when every one is zero:
+ * hiding a zero would make "none arrived" indistinguishable from "nobody
+ * counted" (`CLAUDE.md` §1). */
+static bool case_the_echo_summary_counts_every_reason_apart(void)
+{
+    struct produced produced;
+    struct echo_counts none;
+    memset(&none, 0, sizeof none);
+
+    produced_open(&produced);
+    report_echo_summary(produced.out, &none);
+    bool ok = matches("nothing at all", &produced,
+        "answered 0 echo requests. 0 were not for us, 0 carried a protocol we do not "
+        "act on\n"
+        "0 internet headers were malformed, 0 were ones we do not read yet, 0 had a "
+        "checksum that does not agree, 0 were fragments\n"
+        "0 ICMP messages were malformed, 0 had a type we do not act on, 0 had a "
+        "checksum that does not agree\n"
+        "0 replies could not be built, which would be ours and not the sender's\n");
+    produced_close(&produced);
+
+    struct echo_counts one = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+    produced_open(&produced);
+    report_echo_summary(produced.out, &one);
+    ok = matches("one of each", &produced,
+        "answered 1 echo request. 1 was not for us, 1 carried a protocol we do not "
+        "act on\n"
+        "1 internet header was malformed, 1 was one we do not read yet, 1 had a "
+        "checksum that does not agree, 1 was a fragment\n"
+        "1 ICMP message was malformed, 1 had a type we do not act on, 1 had a "
+        "checksum that does not agree\n"
+        "1 reply could not be built, which would be ours and not the sender's\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
 /* ⚠ The wait reported an error on the fd instead of a frame, and there is no
  * errno — ppoll succeeded (hidetzu/tcpip-stack#8 Owner Decision 1). ⚠ Measured:
  * reusing the older sentence here prints "waiting for a frame failed: Success",
@@ -387,6 +506,10 @@ static const struct test_case cases[] = {
       case_the_arp_result_says_the_decision_and_the_reason },
     { "the_arp_summary_counts_each_reason_on_its_own",
       case_the_arp_summary_counts_each_reason_on_its_own },
+    { "an_echo_outcome_says_what_was_decided_and_why",
+      case_an_echo_outcome_says_what_was_decided_and_why },
+    { "the_echo_summary_counts_every_reason_apart",
+      case_the_echo_summary_counts_every_reason_apart },
     { "the_device_going_away_names_no_errno", case_the_device_going_away_names_no_errno },
     { "a_read_that_could_not_be_made_has_its_own_line",
       case_a_read_that_could_not_be_made_has_its_own_line },

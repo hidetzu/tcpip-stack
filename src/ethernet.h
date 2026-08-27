@@ -9,6 +9,7 @@
 #ifndef ETHERNET_H
 #define ETHERNET_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -69,5 +70,16 @@ struct ethernet_header {
  * wearing the clothes of a measurement (`CLAUDE.md` §1). */
 enum ethernet_parse ethernet_parse_header(const uint8_t *frame, size_t frame_bytes,
                                           struct ethernet_header *header);
+
+/* Write the 14 octets of a header at the front of a caller's buffer.
+ *
+ * ⚠ `frame_bytes` is what the buffer holds, and nothing is written unless the
+ * header fits. Returns true when it was written.
+ *
+ * ⚠ Read and write live in one file so the offsets exist once (ADR 0007).
+ * ⚠ Nothing here decides what the length/type should be — it is handed in, and
+ * a value is never turned into a protocol name here or anywhere (ADR 0003). */
+bool ethernet_build_header(const uint8_t *destination, const uint8_t *source,
+                           uint16_t length_type, uint8_t *frame, size_t frame_bytes);
 
 #endif /* ETHERNET_H */
