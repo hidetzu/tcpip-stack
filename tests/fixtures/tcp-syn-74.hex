@@ -1,0 +1,35 @@
+# One TCP SYN, 74 octets, as the Linux kernel put it on a TAP device.
+#
+# ⚠ Captured, not written by hand. If this file is ever regenerated, capture it
+# again — a frame typed out from memory is not a fixture (`CLAUDE.md` §1).
+#
+# How it was captured:
+#   Arch Linux, kernel 7.0.2-arch1-1, x86_64, 2026-08-28
+#   unshare -Urn (no sudo), tap0 with the default MTU of 1500
+#   ip addr add 10.0.0.1/24 dev tap0; ip link set tap0 up
+#   ip neigh replace 10.0.0.2 lladdr 02:00:00:00:00:02 dev tap0 nud permanent,
+#   so the kernel would send the SYN without asking for the address first
+#   a socket in the same namespace called connect() to 10.0.0.2 port 80
+#   the first frame read whose protocol was 6 and whose only control bit was SYN
+#
+# ⚠ Nothing answered it. ⚠ The kernel retransmitted the same SYN six times in one
+# connect() — measured 2026-08-28 — and this file is one of them.
+#
+# ⚠ Whatever the kernel picked that run: its own hardware address, the IPv4
+# identification field, the source port, the sequence number, and the timestamp
+# inside the options. ⚠ No check expects any of them to be reproduced.
+#
+# ⚠ Why this frame and not one written here: the TCP header is 40 octets, not
+# 20. ⚠ 20 of them are options — Maximum Segment Size, SACK permitted,
+# Timestamps, No-Operation, Window Scale — and ⚠ a parser that refused a header
+# carrying options would refuse every real SYN there is. ⚠ That is the whole
+# reason this fixture exists (hidetzu/tcpip-stack#40).
+#
+# ⚠ Reserved is 0 here, and the TCP checksum is 0x180c. ⚠ Nothing in this issue
+# checks that checksum: it is computed over a pseudo-header that is not in this
+# frame (hidetzu/tcpip-stack#41).
+02 00 00 00 00 02 06 c6 45 8e 13 13 08 00 45 00
+00 3c 1a 9b 40 00 40 06 0c 1f 0a 00 00 01 0a 00
+00 02 c5 88 00 50 83 1b 6b 20 00 00 00 00 a0 02
+fa f0 18 0c 00 00 02 04 05 b4 04 02 08 0a fa 89
+72 5f 00 00 00 00 01 03 03 0a
