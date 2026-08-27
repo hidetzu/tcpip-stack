@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "checksum.h"
+
 /* Where each field sits, written as the layout so nothing drifts. */
 #define SOURCE_PORT_OFFSET 0
 #define DESTINATION_PORT_OFFSET 2
@@ -84,7 +86,47 @@ static bool options_walk(const uint8_t *options, size_t options_bytes)
     return true;
 }
 
+/* The pseudo-header RFC 793 puts in front of the segment, quoted:
+ *
+ *   +--------+--------+--------+--------+
+ *   |           Source Address          |
+ *   +--------+--------+--------+--------+
+ *   |         Destination Address       |
+ *   +--------+--------+--------+--------+
+ *   |  zero  |  PTCL  |    TCP Length   |
+ *   +--------+--------+--------+--------+
+ *
+ * ⚠ "The TCP Length is the TCP header length plus the data length in octets
+ * (this is not an explicitly transmitted quantity, but is computed), and it does
+ * not count the 12 octets of the pseudo header."
+ *
+ * ⚠ Twelve octets, and ⚠ **even** — which is what lets it be summed as a prefix
+ * at all (`src/checksum.h`: only the last block may be odd).
+ *
+ * ⚠ Measured, and worth knowing before trusting this too far: ⚠ **swapping the
+ * Source and Destination Addresses here does not change the sum.** They are two
+ * four-octet blocks aligned the same way, so the set of 16-bit words is
+ * identical and the sum is commutative — ⚠ **no check can catch that order
+ * through the checksum, and none pretends to** (2026-08-28, ADR 0014).
+ * ⚠ RFC 793 says the pseudo-header "gives the TCP protection against misrouted
+ * segments"; ⚠ this is one thing it does not give. */
+#define PSEUDO_HEADER_BYTES 12
+
+static void build_the_pseudo_header(uint8_t *into, const uint8_t *source_address,
+                                    const uint8_t *destination_address,
+                                    size_t tcp_length)
+{
+    memcpy(into, source_address, TCP_ADDRESS_BYTES);
+    memcpy(into + TCP_ADDRESS_BYTES, destination_address, TCP_ADDRESS_BYTES);
+    into[8] = 0;
+    into[9] = (uint8_t)TCP_PROTOCOL_NUMBER;
+    into[10] = (uint8_t)(tcp_length >> 8);
+    into[11] = (uint8_t)(tcp_length & 0xffu);
+}
+
 enum tcp_parse tcp_parse_header(const uint8_t *segment, size_t segment_bytes,
+                                const uint8_t *source_address,
+                                const uint8_t *destination_address,
                                 struct tcp_header *header)
 {
     memset(header, 0, sizeof *header);
@@ -111,6 +153,28 @@ enum tcp_parse tcp_parse_header(const uint8_t *segment, size_t segment_bytes,
     header->window = read_16(segment + WINDOW_OFFSET);
     header->checksum = read_16(segment + CHECKSUM_OFFSET);
     header->urgent_pointer = read_16(segment + URGENT_POINTER_OFFSET);
+
+    /* ⚠ RFC 793: "While computing the checksum, the checksum field itself is
+     * replaced with zeros." ⚠ So the check is the generation done again,
+     * compared with what arrived — ⚠ not a second way of asking the same
+     * question (`CLAUDE.md` §3).
+     *
+     * ⚠ Decided before any field's content, the order ADR 0010 and ADR 0011
+     * already set: judging a Data Offset or a Reserved first would blame the
+     * sender for octets that were changed in flight, and ⚠ malformed means the
+     * sender is wrong.
+     *
+     * ⚠ The whole segment, and ⚠ `segment_bytes` is the TCP Length: the
+     * document computes it as "the TCP header length plus the data length in
+     * octets", which is exactly the extent this function was handed (see
+     * tcp.h — it must not be what arrived). */
+    uint8_t pseudo_header[PSEUDO_HEADER_BYTES];
+    build_the_pseudo_header(pseudo_header, source_address, destination_address,
+                            segment_bytes);
+    if (internet_checksum_of_two(pseudo_header, sizeof pseudo_header, segment,
+                                 segment_bytes, CHECKSUM_OFFSET) != header->checksum) {
+        return TCP_PARSE_CHECKSUM_DISAGREES;
+    }
 
     /* ⚠ A header shorter than its own fixed fields is contradicting itself.
      * ⚠ RFC 793 states no minimum here — unlike RFC 791 for `IHL` — so ⚠ this is

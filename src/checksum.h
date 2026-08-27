@@ -62,4 +62,33 @@ uint16_t internet_checksum(const uint8_t *octets, size_t count);
 uint16_t internet_checksum_with_field_cleared(const uint8_t *octets, size_t count,
                                               size_t field_offset);
 
+/* The same sum over two blocks that are not next to each other in memory.
+ *
+ * ⚠ Why this exists: a TCP checksum covers a pseudo-header that is not in the
+ * segment at all — ⚠ RFC 793: "The checksum also covers a 96 bit pseudo header
+ * conceptually prefixed to the TCP header." ⚠ The two cannot be handed to the
+ * calls above as one block without copying the segment somewhere, and ⚠ a
+ * segment has no length limit worth inventing one for (the reason ADR 0011 gave
+ * for `internet_checksum_with_field_cleared`, and it holds again).
+ *
+ * ⚠ Not a second implementation. ⚠ All three entry points run the one loop in
+ * checksum.c; the two above are this one with no prefix.
+ *
+ * ⚠ `prefix_count` MUST be even. ⚠ Grounds, and it is not style: RFC 1071 pairs
+ * octets from the start and ⚠ RFC 793 says "the last octet is padded on the
+ * right with zeros" — ⚠ **once, at the very end**. A prefix of odd length would
+ * put a pad in the middle and the answer would be wrong while looking right.
+ * ⚠ Measured: [11 22 33] then [44 55] gives 0x7788 added block by block and
+ * 0x6699 as one block. ⚠ Every pseudo-header in this repository is 12 octets, so
+ * ⚠ nothing here can reach that — and the requirement is stated rather than
+ * relied upon (`CLAUDE.md` §1).
+ *
+ * ⚠ `field_offset` is an offset into `octets`, never into the prefix: the field
+ * being cleared is the one carried in the block that was really sent. ⚠ An
+ * offset at or past `count` clears nothing, which is how a caller placing a
+ * checksum asks for the plain sum. */
+uint16_t internet_checksum_of_two(const uint8_t *prefix, size_t prefix_count,
+                                  const uint8_t *octets, size_t count,
+                                  size_t field_offset);
+
 #endif /* CHECKSUM_H */

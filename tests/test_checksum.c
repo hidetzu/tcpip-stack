@@ -265,6 +265,81 @@ static bool case_clearing_a_field_past_the_end_changes_nothing(void)
     return ok;
 }
 
+/* ⚠ Two blocks that are not next to each other must give what the same octets
+ * joined would (hidetzu/tcpip-stack#41). ⚠ Split at every even offset of a real
+ * block, so this cannot pass by working at one lucky boundary. */
+static bool case_two_blocks_are_the_same_as_the_octets_joined(void)
+{
+    unsigned char frame[256];
+    long bytes = load_the_echo_request(frame, sizeof frame);
+    if (bytes < 0) {
+        return false;
+    }
+    unsigned char *header = frame + ETHERNET_HEADER_BYTES;
+    size_t header_bytes = (size_t)(header[0] & 0x0f) * IPV4_HEADER_LENGTH_UNITS;
+
+    unsigned whole = internet_checksum_with_field_cleared(header, header_bytes,
+                                                          IPV4_CHECKSUM_AT);
+    bool ok = true;
+    /* ⚠ Only even splits: the pad for an odd length belongs at the very end, and
+     * checksum.h requires the first block to be even for exactly that reason. */
+    for (size_t split = 0; split <= header_bytes; split += 2) {
+        /* ⚠ The cleared field is an offset into the SECOND block, so a split
+         * past it moves where it is; skip the splits that would cut the field
+         * itself in half, which is not a thing any caller does. */
+        if (split > IPV4_CHECKSUM_AT) {
+            continue;
+        }
+        unsigned in_two = internet_checksum_of_two(header, split, header + split,
+                                                   header_bytes - split,
+                                                   IPV4_CHECKSUM_AT - split);
+        if (in_two != whole) {
+            fprintf(stderr, "  split at %zu gave 0x%04x, the whole gives 0x%04x\n",
+                    split, in_two, whole);
+            ok = false;
+        }
+    }
+
+    /* ⚠ The other half: a prefix that is not part of the block must change the
+     * answer, or the case above would pass for a function that ignored it. */
+    static const unsigned char prefix[] = { 0x0a, 0x00, 0x00, 0x01 };
+    if (internet_checksum_of_two(prefix, sizeof prefix, header, header_bytes,
+                                 IPV4_CHECKSUM_AT) == whole) {
+        fputs("  a four-octet prefix made no difference to the sum\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ No prefix at all is the plain sum. ⚠ Without this the two older entry points
+ * could drift from the one they are now written in terms of. */
+static bool case_no_prefix_is_the_plain_sum(void)
+{
+    static const unsigned char block[] = { 0x45, 0x00, 0x00, 0x54, 0xa3, 0x59, 0x40 };
+    bool ok = true;
+
+    if (internet_checksum_of_two(NULL, 0, block, sizeof block, sizeof block) !=
+        internet_checksum(block, sizeof block)) {
+        fputs("  no prefix did not give what internet_checksum gives\n", stderr);
+        ok = false;
+    }
+    if (internet_checksum_of_two(NULL, 0, block, sizeof block, 2) !=
+        internet_checksum_with_field_cleared(block, sizeof block, 2)) {
+        fputs("  no prefix with a cleared field did not give what "
+              "internet_checksum_with_field_cleared gives\n", stderr);
+        ok = false;
+    }
+    /* ⚠ The other half: the block above has an odd length on purpose, so this
+     * also says the pad still lands at the end when a prefix is asked for. */
+    static const unsigned char nothing[1] = { 0 };
+    if (internet_checksum_of_two(nothing, 0, block, sizeof block, sizeof block) !=
+        internet_checksum(block, sizeof block)) {
+        fputs("  a zero-length prefix that is not NULL behaved differently\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
 static const struct test_case cases[] = {
     { "the_kernels_ipv4_header_checksum_is_reproduced",
       case_the_kernels_ipv4_header_checksum_is_reproduced },
@@ -279,6 +354,9 @@ static const struct test_case cases[] = {
       case_clearing_a_field_in_place_matches_clearing_a_copy },
     { "clearing_a_field_past_the_end_changes_nothing",
       case_clearing_a_field_past_the_end_changes_nothing },
+    { "two_blocks_are_the_same_as_the_octets_joined",
+      case_two_blocks_are_the_same_as_the_octets_joined },
+    { "no_prefix_is_the_plain_sum", case_no_prefix_is_the_plain_sum },
 };
 
 #define CASE_COUNT (sizeof cases / sizeof cases[0])

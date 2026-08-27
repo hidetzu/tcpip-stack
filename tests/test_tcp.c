@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "check.h"
+#include "checksum.h"
 #include "ethernet.h"
 #include "ipv4.h"
 #include "tcp.h"
@@ -37,6 +38,11 @@
 struct segment {
     unsigned char octets[256];
     size_t bytes;
+    /* ⚠ The two addresses the pseudo-header needs, carried with the segment so a
+     * case never has to remember to pass them. ⚠ Read out of the same captured
+     * frame, never typed here. */
+    unsigned char source_address[TCP_ADDRESS_BYTES];
+    unsigned char destination_address[TCP_ADDRESS_BYTES];
 };
 
 /* The TCP segment inside the captured frame, found by reading the internet
@@ -57,7 +63,29 @@ static bool load_the_syn(struct segment *into)
     size_t at = ETHERNET_HEADER_BYTES + header_bytes;
     into->bytes = (size_t)bytes - at;
     memcpy(into->octets, frame + at, into->bytes);
+    memcpy(into->source_address, frame + ETHERNET_HEADER_BYTES + 12, TCP_ADDRESS_BYTES);
+    memcpy(into->destination_address, frame + ETHERNET_HEADER_BYTES + 16,
+           TCP_ADDRESS_BYTES);
     return true;
+}
+
+/* ⚠ RFC 793's own generation, applied again after a case broke a field.
+ * ⚠ Without it every case below would come back as the checksum answer and would
+ * assert nothing about the field it was named for. */
+static void repair_the_checksum(struct segment *s)
+{
+    unsigned char pseudo[12];
+    memcpy(pseudo, s->source_address, TCP_ADDRESS_BYTES);
+    memcpy(pseudo + TCP_ADDRESS_BYTES, s->destination_address, TCP_ADDRESS_BYTES);
+    pseudo[8] = 0;
+    pseudo[9] = TCP_PROTOCOL_NUMBER;
+    pseudo[10] = (unsigned char)(s->bytes >> 8);
+    pseudo[11] = (unsigned char)(s->bytes & 0xff);
+
+    unsigned sum = internet_checksum_of_two(pseudo, sizeof pseudo, s->octets, s->bytes,
+                                            AT_CHECKSUM);
+    s->octets[AT_CHECKSUM] = (unsigned char)(sum >> 8);
+    s->octets[AT_CHECKSUM + 1] = (unsigned char)(sum & 0xff);
 }
 
 static unsigned read_16(const unsigned char *at)
@@ -78,6 +106,8 @@ static const char *name_of(enum tcp_parse answer)
         return "TCP_PARSE_OK";
     case TCP_PARSE_MALFORMED:
         return "TCP_PARSE_MALFORMED";
+    case TCP_PARSE_CHECKSUM_DISAGREES:
+        return "TCP_PARSE_CHECKSUM_DISAGREES";
     }
     return "a value with no name";
 }
@@ -85,7 +115,8 @@ static const char *name_of(enum tcp_parse answer)
 static bool answer_is(const char *what, const struct segment *s, enum tcp_parse expected)
 {
     struct tcp_header header;
-    enum tcp_parse answer = tcp_parse_header(s->octets, s->bytes, &header);
+    enum tcp_parse answer = tcp_parse_header(s->octets, s->bytes, s->source_address,
+                                             s->destination_address, &header);
     if (answer != expected) {
         fprintf(stderr, "  %s: expected %s, got %s\n", what, name_of(expected),
                 name_of(answer));
@@ -121,7 +152,8 @@ static bool case_the_kernels_syn_is_read_as_it_holds_it(void)
     const unsigned char *o = s.octets;
 
     struct tcp_header header;
-    enum tcp_parse answer = tcp_parse_header(o, s.bytes, &header);
+    enum tcp_parse answer =
+        tcp_parse_header(o, s.bytes, s.source_address, s.destination_address, &header);
     if (answer != TCP_PARSE_OK) {
         fprintf(stderr, "  the captured SYN came back as %s\n", name_of(answer));
         return false;
@@ -202,6 +234,7 @@ static bool case_fewer_octets_than_the_fixed_fields(void)
      * so, is a header we accept. */
     s.bytes = TCP_FIXED_HEADER_BYTES;
     write_data_offset(&s, TCP_HEADER_LENGTH_MINIMUM);
+    repair_the_checksum(&s);
     if (!answer_is("exactly the fixed fields arrived", &s, TCP_PARSE_OK)) {
         ok = false;
     }
@@ -220,6 +253,7 @@ static bool case_a_data_offset_below_the_fixed_header_is_malformed(void)
             return false;
         }
         write_data_offset(&s, words);
+        repair_the_checksum(&s);
         char what[64];
         snprintf(what, sizeof what, "data offset %u", words);
         if (!answer_is(what, &s, TCP_PARSE_MALFORMED)) {
@@ -243,6 +277,9 @@ static bool case_a_data_offset_beyond_what_arrived_is_malformed(void)
         write_data_offset(&s, words);
         /* One octet short of what the header claims. */
         s.bytes = (size_t)words * TCP_HEADER_LENGTH_UNIT - 1;
+        /* ⚠ Repaired after the length is set: the TCP Length in the
+         * pseudo-header is this extent, so the two move together. */
+        repair_the_checksum(&s);
         char what[64];
         snprintf(what, sizeof what, "data offset %u with %zu octets here", words, s.bytes);
         if (!answer_is(what, &s, TCP_PARSE_MALFORMED)) {
@@ -263,6 +300,7 @@ static bool case_a_data_offset_beyond_what_arrived_is_malformed(void)
         s.bytes = (size_t)words * TCP_HEADER_LENGTH_UNIT;
         memset(s.octets + TCP_FIXED_HEADER_BYTES, TCP_OPTION_NO_OPERATION,
                s.bytes - TCP_FIXED_HEADER_BYTES);
+        repair_the_checksum(&s);
         char what[64];
         snprintf(what, sizeof what, "data offset %u with exactly that many octets", words);
         if (!answer_is(what, &s, TCP_PARSE_OK)) {
@@ -289,6 +327,7 @@ static bool case_a_reserved_that_is_not_zero_is_malformed(void)
             return false;
         }
         write_reserved(&s, reserved);
+        repair_the_checksum(&s);
         char what[64];
         snprintf(what, sizeof what, "reserved %u", reserved);
         if (!answer_is(what, &s, TCP_PARSE_MALFORMED)) {
@@ -304,6 +343,7 @@ static bool case_a_reserved_that_is_not_zero_is_malformed(void)
     }
     write_reserved(&s, 0);
     s.octets[AT_CONTROL_BITS] = (unsigned char)(s.octets[AT_CONTROL_BITS] | 0x3f);
+    repair_the_checksum(&s);
     if (!answer_is("reserved 0 with every control bit set", &s, TCP_PARSE_OK)) {
         ok = false;
     }
@@ -328,9 +368,11 @@ static bool case_each_control_bit_is_read_on_its_own(void)
         write_reserved(&s, 0);
         s.octets[AT_CONTROL_BITS] =
             (unsigned char)((s.octets[AT_CONTROL_BITS] & 0xc0) | bits[i].bit);
+        repair_the_checksum(&s);
 
         struct tcp_header header;
-        if (tcp_parse_header(s.octets, s.bytes, &header) != TCP_PARSE_OK) {
+        if (tcp_parse_header(s.octets, s.bytes, s.source_address, s.destination_address,
+                             &header) != TCP_PARSE_OK) {
             fprintf(stderr, "  %s alone was declined\n", bits[i].name);
             ok = false;
             continue;
@@ -364,9 +406,11 @@ static bool case_each_control_bit_is_read_on_its_own(void)
         write_reserved(&s, reserved);
         s.octets[AT_CONTROL_BITS] =
             (unsigned char)((s.octets[AT_CONTROL_BITS] & 0xc0) | TCP_CONTROL_SYN);
+        repair_the_checksum(&s);
 
         struct tcp_header header;
-        if (tcp_parse_header(s.octets, s.bytes, &header) != TCP_PARSE_MALFORMED) {
+        if (tcp_parse_header(s.octets, s.bytes, s.source_address, s.destination_address,
+                             &header) != TCP_PARSE_MALFORMED) {
             fprintf(stderr, "  reserved %u was not declined\n", reserved);
             ok = false;
             continue;
@@ -419,6 +463,7 @@ static bool case_an_option_list_that_does_not_walk_is_malformed(void)
         memset(s.octets + TCP_FIXED_HEADER_BYTES, TCP_OPTION_NO_OPERATION,
                s.bytes - TCP_FIXED_HEADER_BYTES);
         memcpy(s.octets + TCP_FIXED_HEADER_BYTES, bad[i].options, bad[i].option_bytes);
+        repair_the_checksum(&s);
         if (!answer_is(bad[i].what, &s, TCP_PARSE_MALFORMED)) {
             ok = false;
         }
@@ -454,6 +499,7 @@ static bool case_end_of_option_list_stops_the_walk(void)
     s.octets[options_at + 3] = 0;
     write_data_offset(&s, TCP_HEADER_LENGTH_MINIMUM + 1);
     s.bytes = (size_t)(TCP_HEADER_LENGTH_MINIMUM + 1) * TCP_HEADER_LENGTH_UNIT;
+    repair_the_checksum(&s);
 
     bool ok = answer_is("padding after the end of the option list", &s, TCP_PARSE_OK);
 
@@ -470,6 +516,7 @@ static bool case_end_of_option_list_stops_the_walk(void)
     without.octets[options_at + 3] = 0;
     write_data_offset(&without, TCP_HEADER_LENGTH_MINIMUM + 1);
     without.bytes = (size_t)(TCP_HEADER_LENGTH_MINIMUM + 1) * TCP_HEADER_LENGTH_UNIT;
+    repair_the_checksum(&without);
     if (!answer_is("the same octets with no end marker", &without, TCP_PARSE_MALFORMED)) {
         ok = false;
     }
@@ -480,9 +527,14 @@ static bool case_end_of_option_list_stops_the_walk(void)
  *
  * ⚠ Asserted by parsing the kernel's own option list and then a completely
  * different one of the same length, and requiring ⚠ every reported field to be
- * identical. ⚠ A parser that read a Maximum Segment Size, a Window Scale or a
- * timestamp would have nowhere to put it, and this case would not notice — so
- * it is paired with the header having no field for one, which the review reads.
+ * identical — ⚠ **except the checksum, which is not an exception but the point:
+ * the options are inside the sum**, so two different lists must give two
+ * different checksums. ⚠ Both halves are asserted here.
+ *
+ * ⚠ An earlier version of this case compared the whole struct and required it
+ * to be identical. ⚠ That was true only while nothing checked the checksum
+ * (hidetzu/tcpip-stack#41), and it stopped being true with this change rather
+ * than drifting.
  *
  * ⚠ RFC 793 says "A TCP must implement all options". ⚠ This implements none, and
  * `docs/SPEC.md` §2 names that gap rather than leaving it silent. */
@@ -493,7 +545,8 @@ static bool case_no_option_is_interpreted(void)
         return false;
     }
     struct tcp_header from_kernels;
-    if (tcp_parse_header(kernels.octets, kernels.bytes, &from_kernels) != TCP_PARSE_OK) {
+    if (tcp_parse_header(kernels.octets, kernels.bytes, kernels.source_address,
+                         kernels.destination_address, &from_kernels) != TCP_PARSE_OK) {
         fputs("  the kernel's own SYN was declined\n", stderr);
         return false;
     }
@@ -503,26 +556,227 @@ static bool case_no_option_is_interpreted(void)
     size_t options_bytes = from_kernels.data_begins_at - options_at;
     /* ⚠ A different list entirely, and the same length: all No-Operation. */
     memset(other.octets + options_at, TCP_OPTION_NO_OPERATION, options_bytes);
+    repair_the_checksum(&other);
 
     struct tcp_header from_other;
-    if (tcp_parse_header(other.octets, other.bytes, &from_other) != TCP_PARSE_OK) {
+    if (tcp_parse_header(other.octets, other.bytes, other.source_address,
+                         other.destination_address, &from_other) != TCP_PARSE_OK) {
         fputs("  a list of No-Operations was declined\n", stderr);
         return false;
     }
 
-    if (memcmp(&from_kernels, &from_other, sizeof from_kernels) != 0) {
-        fputs("  two different option lists of the same length were reported "
-              "differently\n", stderr);
-        return false;
+    bool ok = true;
+#define SAME(field)                                                             \
+    do {                                                                        \
+        if ((unsigned long)from_kernels.field != (unsigned long)from_other.field) { \
+            fprintf(stderr, "  %s changed when only the options changed\n",      \
+                    #field);                                                    \
+            ok = false;                                                         \
+        }                                                                       \
+    } while (0)
+
+    SAME(source_port);
+    SAME(destination_port);
+    SAME(sequence_number);
+    SAME(acknowledgment_number);
+    SAME(data_offset);
+    SAME(reserved);
+    SAME(control_bits);
+    SAME(window);
+    SAME(urgent_pointer);
+    SAME(data_begins_at);
+#undef SAME
+
+    /* ⚠ The checksum, on the other hand, MUST have changed. ⚠ RFC 793: "All
+     * options are included in the checksum." ⚠ If it had not, the options would
+     * not be in the sum and the whole of this file's checksum work would be
+     * asserting nothing about them. */
+    if (from_kernels.checksum == from_other.checksum) {
+        fputs("  the checksum did not change when the options did, so they are "
+              "not in the sum\n", stderr);
+        ok = false;
     }
+
     /* ⚠ And the data still begins where the Data Offset says, not where the
      * options happened to end. */
     if (from_other.data_begins_at !=
         (size_t)from_other.data_offset * TCP_HEADER_LENGTH_UNIT) {
         fputs("  the data does not begin where the data offset says\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ The one held against something we did not write: the number the Linux
+ * kernel put in its own SYN.
+ *
+ * ⚠ The intact fixture coming back as OK already says the two agree — the
+ * checksum is judged before anything else. ⚠ This case says it in its own right,
+ * and ⚠ says what happens when each octet that goes into the sum is changed. */
+static bool case_the_kernels_checksum_is_reproduced(void)
+{
+    struct segment intact;
+    if (!load_the_syn(&intact)) {
         return false;
     }
-    return true;
+    struct tcp_header header;
+    if (tcp_parse_header(intact.octets, intact.bytes, intact.source_address,
+                         intact.destination_address, &header) != TCP_PARSE_OK) {
+        fputs("  the kernel's own SYN did not come back accepted\n", stderr);
+        return false;
+    }
+    /* ⚠ The kernel wrote this number, and we did not. */
+    if (header.checksum == 0) {
+        fputs("  the capture no longer carries a checksum\n", stderr);
+        return false;
+    }
+
+    bool ok = true;
+
+    /* ⚠ Every octet of the segment in turn. */
+    for (size_t i = 0; i < intact.bytes; i++) {
+        struct segment s = intact;
+        s.octets[i] = (unsigned char)(s.octets[i] ^ 0xff);
+        char what[64];
+        snprintf(what, sizeof what, "segment octet %zu flipped", i);
+        if (!answer_is(what, &s, TCP_PARSE_CHECKSUM_DISAGREES)) {
+            ok = false;
+        }
+    }
+
+    /* ⚠ And every octet of the two addresses — ⚠ **which are not in the segment
+     * at all.** ⚠ This is the only thing that proves the pseudo-header is really
+     * in the sum: a parser that summed the segment alone would pass every line
+     * above (RFC 793: "This gives the TCP protection against misrouted
+     * segments"). */
+    for (size_t i = 0; i < TCP_ADDRESS_BYTES; i++) {
+        struct segment s = intact;
+        s.source_address[i] = (unsigned char)(s.source_address[i] ^ 0xff);
+        char what[64];
+        snprintf(what, sizeof what, "source address octet %zu flipped", i);
+        if (!answer_is(what, &s, TCP_PARSE_CHECKSUM_DISAGREES)) {
+            ok = false;
+        }
+
+        struct segment d = intact;
+        d.destination_address[i] = (unsigned char)(d.destination_address[i] ^ 0xff);
+        snprintf(what, sizeof what, "destination address octet %zu flipped", i);
+        if (!answer_is(what, &d, TCP_PARSE_CHECKSUM_DISAGREES)) {
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* ⚠ RFC 793: "The TCP Length is the TCP header length plus the data length in
+ * octets (this is not an explicitly transmitted quantity, but is computed)".
+ *
+ * ⚠ So it comes from the extent this function was handed, and ⚠ a caller that
+ * hands over what ARRIVED — a frame padded up to the wire's minimum — gets a
+ * checksum that does not agree, with nothing pointing at the padding.
+ * ⚠ `src/tcp.h` states the requirement; this is what happens when it is not met,
+ * measured rather than argued. */
+static bool case_the_tcp_length_comes_from_the_extent_it_was_handed(void)
+{
+    struct segment intact;
+    if (!load_the_syn(&intact)) {
+        return false;
+    }
+    bool ok = true;
+
+    for (size_t padding = 1; padding <= 6; padding++) {
+        struct segment padded = intact;
+        for (size_t i = 0; i < padding; i++) {
+            padded.octets[padded.bytes + i] = 0;
+        }
+        padded.bytes += padding;
+        char what[80];
+        snprintf(what, sizeof what, "%zu octets of padding counted into the segment",
+                 padding);
+        if (!answer_is(what, &padded, TCP_PARSE_CHECKSUM_DISAGREES)) {
+            ok = false;
+        }
+    }
+
+    /* ⚠ The other half: the same octets bounded correctly are accepted, so this
+     * case is about the length and not about the zeros. */
+    if (!answer_is("the segment bounded as the internet header says", &intact,
+                   TCP_PARSE_OK)) {
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ The order, asserted rather than assumed (ADR 0014).
+ *
+ * ⚠ The checksum is decided before any field's content, so a segment whose
+ * octets were changed in flight is never reported as the sender's mistake —
+ * the order ADR 0010 and ADR 0011 already set for IPv4 and ICMP.
+ *
+ * ⚠ Every other case in this file repairs the checksum after breaking a field,
+ * so ⚠ **all of them pass whichever way round the two are judged.** ⚠ Measured:
+ * moving the Reserved check in front of the checksum left
+ * `a_reserved_that_is_not_zero_is_malformed` passing. ⚠ This case is the only
+ * thing that holds the order. */
+static bool case_the_order_the_answers_are_decided_in(void)
+{
+    bool ok = true;
+
+    /* Reserved set AND the checksum left alone, so both are wrong at once. */
+    struct segment s;
+    if (!load_the_syn(&s)) {
+        return false;
+    }
+    write_reserved(&s, 1);
+    if (!answer_is("reserved set with the checksum left alone", &s,
+                   TCP_PARSE_CHECKSUM_DISAGREES)) {
+        ok = false;
+    }
+
+    /* A Data Offset below the fixed header, and the checksum left alone. */
+    if (!load_the_syn(&s)) {
+        return false;
+    }
+    write_data_offset(&s, 0);
+    if (!answer_is("data offset 0 with the checksum left alone", &s,
+                   TCP_PARSE_CHECKSUM_DISAGREES)) {
+        ok = false;
+    }
+
+    /* An option list that does not walk, and the checksum left alone. */
+    if (!load_the_syn(&s)) {
+        return false;
+    }
+    s.octets[TCP_FIXED_HEADER_BYTES] = 2;
+    s.octets[TCP_FIXED_HEADER_BYTES + 1] = 0;
+    if (!answer_is("an option length of 0 with the checksum left alone", &s,
+                   TCP_PARSE_CHECKSUM_DISAGREES)) {
+        ok = false;
+    }
+
+    /* ⚠ The other half: each of those on its own, with the checksum repaired,
+     * still gives its own answer — or the three above would pass for a parser
+     * that answered CHECKSUM_DISAGREES to everything. */
+    if (!load_the_syn(&s)) {
+        return false;
+    }
+    write_reserved(&s, 1);
+    repair_the_checksum(&s);
+    if (!answer_is("reserved set alone", &s, TCP_PARSE_MALFORMED)) {
+        ok = false;
+    }
+
+    /* ⚠ And fewer octets than the fixed fields still wins over the checksum:
+     * the checksum field itself has not arrived, so there is nothing to compare
+     * against. */
+    if (!load_the_syn(&s)) {
+        return false;
+    }
+    s.bytes = TCP_FIXED_HEADER_BYTES - 1;
+    if (!answer_is("one octet short of the fixed fields", &s, TCP_PARSE_MALFORMED)) {
+        ok = false;
+    }
+    return ok;
 }
 
 /* ⚠ Nothing is left over from a previous call. ⚠ A header filled in by the
@@ -534,7 +788,9 @@ static bool case_a_read_that_cannot_be_made_leaves_nothing_behind(void)
     memset(&header, 0xaa, sizeof header);
 
     static const unsigned char nothing[1] = { 0 };
-    if (tcp_parse_header(nothing, 0, &header) != TCP_PARSE_MALFORMED) {
+    static const unsigned char an_address[TCP_ADDRESS_BYTES] = { 10, 0, 0, 1 };
+    if (tcp_parse_header(nothing, 0, an_address, an_address, &header) !=
+        TCP_PARSE_MALFORMED) {
         fputs("  zero octets did not come back malformed\n", stderr);
         return false;
     }
@@ -563,6 +819,10 @@ static const struct test_case cases[] = {
       case_an_option_list_that_does_not_walk_is_malformed },
     { "end_of_option_list_stops_the_walk", case_end_of_option_list_stops_the_walk },
     { "no_option_is_interpreted", case_no_option_is_interpreted },
+    { "the_kernels_checksum_is_reproduced", case_the_kernels_checksum_is_reproduced },
+    { "the_tcp_length_comes_from_the_extent_it_was_handed",
+      case_the_tcp_length_comes_from_the_extent_it_was_handed },
+    { "the_order_the_answers_are_decided_in", case_the_order_the_answers_are_decided_in },
     { "a_read_that_cannot_be_made_leaves_nothing_behind",
       case_a_read_that_cannot_be_made_leaves_nothing_behind },
 };
