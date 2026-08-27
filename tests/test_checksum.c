@@ -187,6 +187,84 @@ static bool case_a_carry_is_folded_back_and_folded_again(void)
     return true;
 }
 
+/* ⚠ The field-cleared entry point must agree, octet for octet, with copying the
+ * block and zeroing the field by hand — which is what every caller did before
+ * it existed (hidetzu/tcpip-stack#34). ⚠ Checked over the captured frame's two
+ * real checksums, at their two different offsets and lengths. */
+static bool case_clearing_a_field_in_place_matches_clearing_a_copy(void)
+{
+    unsigned char frame[256];
+    long bytes = load_the_echo_request(frame, sizeof frame);
+    if (bytes < 0) {
+        return false;
+    }
+    unsigned char *header = frame + ETHERNET_HEADER_BYTES;
+    size_t header_bytes = (size_t)(header[0] & 0x0f) * IPV4_HEADER_LENGTH_UNITS;
+    unsigned char *icmp = header + header_bytes;
+    size_t icmp_bytes = (size_t)bytes - ETHERNET_HEADER_BYTES - header_bytes;
+
+    struct { unsigned char *at; size_t count; size_t field; const char *what; } blocks[] = {
+        { header, header_bytes, IPV4_CHECKSUM_AT, "the internet header" },
+        { icmp, icmp_bytes, ICMP_CHECKSUM_AT, "the ICMP message" },
+    };
+
+    bool ok = true;
+    for (size_t i = 0; i < sizeof blocks / sizeof blocks[0]; i++) {
+        unsigned char copy[256];
+        memcpy(copy, blocks[i].at, blocks[i].count);
+        copy[blocks[i].field] = 0;
+        copy[blocks[i].field + 1] = 0;
+
+        unsigned by_copying = internet_checksum(copy, blocks[i].count);
+        unsigned in_place = internet_checksum_with_field_cleared(
+            blocks[i].at, blocks[i].count, blocks[i].field);
+        if (by_copying != in_place) {
+            fprintf(stderr, "  %s: clearing a copy gave 0x%04x, clearing in place gave 0x%04x\n",
+                    blocks[i].what, by_copying, in_place);
+            ok = false;
+        }
+        /* ⚠ The other half: it must also equal the number the kernel carried,
+         * or the two could agree on the same wrong answer. */
+        unsigned carried = ((unsigned)blocks[i].at[blocks[i].field] << 8) |
+                           blocks[i].at[blocks[i].field + 1];
+        if (in_place != carried) {
+            fprintf(stderr, "  %s: the kernel carried 0x%04x and we compute 0x%04x\n",
+                    blocks[i].what, carried, in_place);
+            ok = false;
+        }
+        /* ⚠ And it must not have written into the caller's octets. */
+        if (((unsigned)blocks[i].at[blocks[i].field] << 8 | blocks[i].at[blocks[i].field + 1]) !=
+            carried) {
+            fprintf(stderr, "  %s: the field was changed in the caller's buffer\n",
+                    blocks[i].what);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* ⚠ Clearing nothing must be the plain sum. ⚠ Without this the two entry points
+ * could diverge on every block that has no field to clear. */
+static bool case_clearing_a_field_past_the_end_changes_nothing(void)
+{
+    static const unsigned char block[] = { 0x45, 0x00, 0x00, 0x54, 0xa3, 0x59 };
+    unsigned plain = internet_checksum(block, sizeof block);
+    unsigned past = internet_checksum_with_field_cleared(block, sizeof block, sizeof block);
+    bool ok = true;
+    if (plain != past) {
+        fprintf(stderr, "  clearing past the end gave 0x%04x, the plain sum is 0x%04x\n",
+                past, plain);
+        ok = false;
+    }
+    /* ⚠ The other half: an offset that IS inside must change the answer, or the
+     * case above would pass for an implementation that never clears anything. */
+    if (internet_checksum_with_field_cleared(block, sizeof block, 2) == plain) {
+        fputs("  clearing a field inside the block made no difference\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
 static const struct test_case cases[] = {
     { "the_kernels_ipv4_header_checksum_is_reproduced",
       case_the_kernels_ipv4_header_checksum_is_reproduced },
@@ -197,6 +275,10 @@ static const struct test_case cases[] = {
     { "no_octets_at_all", case_no_octets_at_all },
     { "a_carry_is_folded_back_and_folded_again",
       case_a_carry_is_folded_back_and_folded_again },
+    { "clearing_a_field_in_place_matches_clearing_a_copy",
+      case_clearing_a_field_in_place_matches_clearing_a_copy },
+    { "clearing_a_field_past_the_end_changes_nothing",
+      case_clearing_a_field_past_the_end_changes_nothing },
 };
 
 #define CASE_COUNT (sizeof cases / sizeof cases[0])
