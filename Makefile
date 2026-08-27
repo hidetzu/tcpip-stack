@@ -17,8 +17,8 @@ BUILD   := build
 # a sanitizer that reports and continues turns a defect into a log line.
 SANITIZE := -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
 
-HEADERS      := src/tap.h src/report.h src/ethernet.h src/arp.h src/arp_responder.h
-LIB_SOURCES  := src/tap.c src/report.c src/ethernet.c src/arp.c src/arp_responder.c
+HEADERS      := src/tap.h src/report.h src/ethernet.h src/arp.h src/arp_responder.h src/checksum.h
+LIB_SOURCES  := src/tap.c src/report.c src/ethernet.c src/arp.c src/arp_responder.c src/checksum.c
 MAIN_SOURCE  := src/tcpip_stack.c
 
 # ⚠ The Parse layer is deliberately not linked into tcpip-stack: nothing in the
@@ -28,7 +28,7 @@ MAIN_SOURCE  := src/tcpip_stack.c
 # check below.
 # ⚠ The Parse and State layers are in LIB_SOURCES now: the program answers ARP
 # requests, so it links them (hidetzu/tcpip-stack#19).
-PARSE_SOURCES := src/ethernet.c src/arp.c src/arp_responder.c
+PARSE_SOURCES := src/ethernet.c src/arp.c src/arp_responder.c src/checksum.c
 
 # ⚠ verify §1's contract — one named case, counting without loading anything
 # heavy, the first line saying which subset ran — is implemented once, in
@@ -45,6 +45,7 @@ TEST_REPORT_SOURCE   := tests/test_report.c
 TEST_ETHERNET_SOURCE := tests/test_ethernet.c
 TEST_ARP_SOURCE      := tests/test_arp.c
 TEST_RESPONDER_SOURCE := tests/test_arp_responder.c
+TEST_CHECKSUM_SOURCE  := tests/test_checksum.c
 
 TCPIP_STACK         := $(BUILD)/tcpip-stack
 TCPIP_STACK_SANITIZED := $(BUILD)/tcpip-stack.sanitized
@@ -52,6 +53,7 @@ TEST_REPORT         := $(BUILD)/test_report.sanitized
 TEST_ETHERNET       := $(BUILD)/test_ethernet.sanitized
 TEST_ARP            := $(BUILD)/test_arp.sanitized
 TEST_RESPONDER      := $(BUILD)/test_arp_responder.sanitized
+TEST_CHECKSUM       := $(BUILD)/test_checksum.sanitized
 SEND_ONE_FRAME      := $(BUILD)/send-one-frame
 
 # Passed through to a check script, so one named case can be run on its own:
@@ -64,7 +66,7 @@ all: build
 
 build: $(TCPIP_STACK)
 
-build-sanitized: $(TCPIP_STACK_SANITIZED) $(TEST_REPORT) $(TEST_ETHERNET) $(TEST_ARP) $(TEST_RESPONDER)
+build-sanitized: $(TCPIP_STACK_SANITIZED) $(TEST_REPORT) $(TEST_ETHERNET) $(TEST_ARP) $(TEST_RESPONDER) $(TEST_CHECKSUM)
 
 build-harness: $(SEND_ONE_FRAME)
 
@@ -85,6 +87,11 @@ $(TEST_ETHERNET): $(TEST_ETHERNET_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES) $(HE
 	@mkdir -p $(@D)
 	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -Itests -o $@ \
 		$(TEST_ETHERNET_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES)
+
+$(TEST_CHECKSUM): $(TEST_CHECKSUM_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES) $(HEADERS) $(CHECK_HEADERS)
+	@mkdir -p $(@D)
+	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -Itests -o $@ \
+		$(TEST_CHECKSUM_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES)
 
 $(TEST_RESPONDER): $(TEST_RESPONDER_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES) $(HEADERS) $(CHECK_HEADERS)
 	@mkdir -p $(@D)
