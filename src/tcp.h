@@ -181,6 +181,12 @@ struct tcp_header {
  * nothing pointing at the padding. ⚠ `src/echo_responder.c` already bounds an
  * ICMP message this way and the same is required here.
  *
+ * ⚠ It follows that `segment_bytes` fits in sixteen bits, because `Total Length`
+ * is a sixteen-bit field. ⚠ The `TCP Length` written into the pseudo-header is
+ * that many octets, and ⚠ a caller that handed over more would get a checksum
+ * that does not agree, with nothing saying why. ⚠ The requirement is stated
+ * rather than left to be discovered.
+ *
  * `source_address` and `destination_address` are the internet header's, four
  * octets each, ⚠ in the order they were on the wire.
  *
