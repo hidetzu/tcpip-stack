@@ -255,6 +255,7 @@ int main(int argc, char **argv)
     unsigned long frames_read = 0;
     unsigned long read_errors = 0;
     struct arp_counts arp_counts = { 0, 0, 0, 0, 0 };
+    struct ethernet_counts ethernet_counts = { 0, 0, 0 };
     unsigned int consecutive_read_failures = 0;
     int exit_code = EXIT_READ_WHAT_WAS_ASKED;
 
@@ -301,6 +302,27 @@ int main(int argc, char **argv)
         consecutive_read_failures = 0;
         frames_read++;
         report_frame(stdout, frames_read, (size_t)bytes, (size_t)bytes == sizeof frame);
+        /* ⚠ Every frame, always (hidetzu/tcpip-stack#10 Owner Decision 1). The
+         * header was already read to spot ARP; ⚠ until now none of what it
+         * found reached the page. */
+        struct ethernet_header header;
+        enum ethernet_parse header_answer =
+            ethernet_parse_header(frame, (size_t)bytes, &header);
+        report_ethernet_header(stdout, frame, (size_t)bytes, header_answer, &header);
+        switch (header_answer) {
+        case ETHERNET_PARSE_SHORTER_THAN_THE_HEADER:
+            ethernet_counts.malformed++;
+            break;
+        case ETHERNET_PARSE_LENGTH_NOT_A_TYPE:
+            ethernet_counts.ieee_802_3_length++;
+            break;
+        case ETHERNET_PARSE_LENGTH_TYPE_UNDEFINED:
+            ethernet_counts.length_type_undefined++;
+            break;
+        case ETHERNET_PARSE_OK:
+            break;
+        }
+
         if (options.print_bytes) {
             report_frame_bytes(stdout, frame, (size_t)bytes);
         }
@@ -308,8 +330,7 @@ int main(int argc, char **argv)
         /* ⚠ Only with an identity. Without one the program reads and answers
          * nothing, which is what it did before (Owner Decision 6). */
         if (options.has_identity) {
-            struct ethernet_header header;
-            if (ethernet_parse_header(frame, (size_t)bytes, &header) == ETHERNET_PARSE_OK &&
+            if (header_answer == ETHERNET_PARSE_OK &&
                 header.length_type == ARP_ETHERNET_LENGTH_TYPE) {
                 struct arp_outcome outcome;
                 arp_respond(frame + ETHERNET_HEADER_BYTES,
@@ -336,6 +357,7 @@ int main(int argc, char **argv)
     }
 
     report_summary(stdout, frames_read, read_errors);
+    report_ethernet_summary(stdout, &ethernet_counts);
     if (options.has_identity) {
         report_arp_summary(stdout, &arp_counts);
     }

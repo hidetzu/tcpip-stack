@@ -276,6 +276,103 @@ static bool case_a_read_that_could_not_be_made_has_its_own_line(void)
     return ok;
 }
 
+
+/* ⚠ The value, never a name. A name would be a lie for a VLAN-tagged frame
+ * (ADR 0003), and ⚠ `0x0800` -> IPv4 has never been taken from a standard here.
+ * ⚠ Destination before source, matching the octets on the wire. */
+static bool case_the_ethernet_header_line_shows_the_value_and_no_name(void)
+{
+    struct ethernet_header header;
+    memcpy(header.destination, (unsigned char[]){0xff,0xff,0xff,0xff,0xff,0xff}, 6);
+    memcpy(header.source, (unsigned char[]){0x7a,0x4b,0x98,0xd8,0xd7,0xbd}, 6);
+
+    struct produced produced;
+    struct { unsigned value; const char *line; } shown[] = {
+        { 0x0806, "  ff:ff:ff:ff:ff:ff <- 7a:4b:98:d8:d7:bd, length/type 0x0806\n" },
+        { 0x0800, "  ff:ff:ff:ff:ff:ff <- 7a:4b:98:d8:d7:bd, length/type 0x0800\n" },
+        { 0x86dd, "  ff:ff:ff:ff:ff:ff <- 7a:4b:98:d8:d7:bd, length/type 0x86dd\n" },
+        { 0x8100, "  ff:ff:ff:ff:ff:ff <- 7a:4b:98:d8:d7:bd, length/type 0x8100\n" },
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof shown / sizeof shown[0]; i++) {
+        header.length_type = (uint16_t)shown[i].value;
+        produced_open(&produced);
+        report_ethernet_header(produced.out, NULL, 60, ETHERNET_PARSE_OK, &header);
+        char what[64];
+        snprintf(what, sizeof what, "length/type 0x%04x", shown[i].value);
+        ok = matches(what, &produced, shown[i].line) && ok;
+        produced_close(&produced);
+    }
+    return ok;
+}
+
+/* ⚠ A header that could not be read shows no octets it never had. */
+static bool case_a_header_that_could_not_be_read_shows_no_octets(void)
+{
+    struct ethernet_header header;
+    memset(&header, 0xee, sizeof header);
+    struct produced produced;
+    produced_open(&produced);
+    report_ethernet_header(produced.out, NULL, 9, ETHERNET_PARSE_SHORTER_THAN_THE_HEADER,
+                           &header);
+    bool ok = matches("too few octets", &produced,
+                      "  not read: fewer octets arrived than an ethernet header needs\n");
+    produced_close(&produced);
+    return ok;
+}
+
+/* ⚠ The two answers that decline a frame whose header WAS read say what was
+ * read and then why it stopped. ⚠ Neither calls the sender wrong: an IEEE 802.3
+ * frame is well formed (`CLAUDE.md` §4-1). */
+static bool case_the_two_declining_answers_each_say_why(void)
+{
+    struct ethernet_header header;
+    memcpy(header.destination, (unsigned char[]){0x02,0,0,0,0,0x01}, 6);
+    memcpy(header.source, (unsigned char[]){0x02,0,0,0,0,0x02}, 6);
+
+    struct produced produced;
+    header.length_type = 0x0026;
+    produced_open(&produced);
+    report_ethernet_header(produced.out, NULL, 60, ETHERNET_PARSE_LENGTH_NOT_A_TYPE, &header);
+    bool ok = matches("an IEEE 802.3 Length", &produced,
+                      "  02:00:00:00:00:01 <- 02:00:00:00:00:02, length/type 0x0026\n"
+                      "  not read further: that is an IEEE 802.3 Length, not a Type\n");
+    produced_close(&produced);
+
+    header.length_type = 0x05dd;
+    produced_open(&produced);
+    report_ethernet_header(produced.out, NULL, 60, ETHERNET_PARSE_LENGTH_TYPE_UNDEFINED,
+                           &header);
+    ok = matches("a value the standard does not define", &produced,
+                 "  02:00:00:00:00:01 <- 02:00:00:00:00:02, length/type 0x05dd\n"
+                 "  not read further: the standard does not define that value\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
+/* ⚠ The zeros are printed. Hiding one would make "none arrived" indistinguishable
+ * from "nobody counted" (`CLAUDE.md` §1). */
+static bool case_the_ethernet_summary_prints_its_zeros(void)
+{
+    struct ethernet_counts none = { 0, 0, 0 };
+    struct produced produced;
+    produced_open(&produced);
+    report_ethernet_summary(produced.out, &none);
+    bool ok = matches("nothing was declined", &produced,
+                      "0 frames were malformed, 0 carried an IEEE 802.3 Length, "
+                      "0 carried a length/type the standard does not define\n");
+    produced_close(&produced);
+
+    struct ethernet_counts some = { 1, 2, 3 };
+    produced_open(&produced);
+    report_ethernet_summary(produced.out, &some);
+    ok = matches("one of the first, several of the others", &produced,
+                 "1 frame was malformed, 2 carried an IEEE 802.3 Length, "
+                 "3 carried a length/type the standard does not define\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
 /* ---- running them ------------------------------------------------------ */
 
 static const struct test_case cases[] = {
@@ -293,6 +390,14 @@ static const struct test_case cases[] = {
     { "the_device_going_away_names_no_errno", case_the_device_going_away_names_no_errno },
     { "a_read_that_could_not_be_made_has_its_own_line",
       case_a_read_that_could_not_be_made_has_its_own_line },
+    { "the_ethernet_header_line_shows_the_value_and_no_name",
+      case_the_ethernet_header_line_shows_the_value_and_no_name },
+    { "a_header_that_could_not_be_read_shows_no_octets",
+      case_a_header_that_could_not_be_read_shows_no_octets },
+    { "the_two_declining_answers_each_say_why",
+      case_the_two_declining_answers_each_say_why },
+    { "the_ethernet_summary_prints_its_zeros",
+      case_the_ethernet_summary_prints_its_zeros },
 };
 
 #define CASE_COUNT (sizeof cases / sizeof cases[0])

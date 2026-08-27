@@ -44,6 +44,54 @@ void report_frame_bytes(FILE *out, const uint8_t *frame, size_t bytes)
     }
 }
 
+static void write_hardware_address(FILE *out, const uint8_t *address)
+{
+    fprintf(out, "%02x:%02x:%02x:%02x:%02x:%02x", address[0], address[1], address[2],
+            address[3], address[4], address[5]);
+}
+
+void report_ethernet_header(FILE *out, const uint8_t *frame, size_t bytes,
+                            enum ethernet_parse answer,
+                            const struct ethernet_header *header)
+{
+    (void)frame;
+    (void)bytes;
+
+    if (answer == ETHERNET_PARSE_SHORTER_THAN_THE_HEADER) {
+        /* ⚠ No addresses are shown: none arrived. */
+        fputs("  not read: fewer octets arrived than an ethernet header needs\n", out);
+        return;
+    }
+
+    fputs("  ", out);
+    write_hardware_address(out, header->destination);
+    fputs(" <- ", out);
+    write_hardware_address(out, header->source);
+    fprintf(out, ", length/type 0x%04x\n", header->length_type);
+
+    switch (answer) {
+    case ETHERNET_PARSE_LENGTH_NOT_A_TYPE:
+        fputs("  not read further: that is an IEEE 802.3 Length, not a Type\n", out);
+        return;
+    case ETHERNET_PARSE_LENGTH_TYPE_UNDEFINED:
+        fputs("  not read further: the standard does not define that value\n", out);
+        return;
+    case ETHERNET_PARSE_OK:
+    case ETHERNET_PARSE_SHORTER_THAN_THE_HEADER:
+        return;
+    }
+}
+
+void report_ethernet_summary(FILE *out, const struct ethernet_counts *counts)
+{
+    fprintf(out,
+            "%lu frame%s %s malformed, %lu carried an IEEE 802.3 Length, "
+            "%lu carried a length/type the standard does not define\n",
+            counts->malformed, plural(counts->malformed),
+            counts->malformed == 1 ? "was" : "were",
+            counts->ieee_802_3_length, counts->length_type_undefined);
+}
+
 void report_read_failure(FILE *out, unsigned long frame_number,
                          const struct tap_failure *failure)
 {

@@ -46,7 +46,7 @@ make check           # all three tiers
 ```
 
 Reading the ARP request the kernel sends when it wants an address it does not know
-(⚠ **a real run, 2026-08-26, kernel `7.0.2-arch1-1`** — the hardware address is whatever the
+(⚠ **a real run, 2026-08-27, kernel `7.0.2-arch1-1`** — the hardware address is whatever the
 kernel picked for `tap0` on that run):
 
 ```sh
@@ -63,13 +63,21 @@ unshare -Urn sh -c '
 ```text
 listening on tap0
 frame 1  42 bytes
-  0000  ff ff ff ff ff ff 7a cb  0a 48 09 fa 08 06 00 01
-  0010  08 00 06 04 00 01 7a cb  0a 48 09 fa 0a 00 00 01
+  ff:ff:ff:ff:ff:ff <- ca:0c:0c:a0:9e:36, length/type 0x0806
+  0000  ff ff ff ff ff ff ca 0c  0c a0 9e 36 08 06 00 01
+  0010  08 00 06 04 00 01 ca 0c  0c a0 9e 36 0a 00 00 01
   0020  00 00 00 00 00 00 0a 00  00 02
 read 1 frame, 0 read errors
+0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define
 ```
 
-⚠ **`tcpip-stack` does not know that is an ARP request.** It reports a length and the bytes.
+⚠ **`0x0806` is printed as the value it is, never as a name.** A name would be a lie for a
+VLAN-tagged frame, and ⚠ **`0x0800` → IPv4 has never been taken from a standard in this repository**
+— it is what the kernel put on a device while doing IPv4
+([ADR 0003](docs/adr/0003-what-the-length-type-field-means-and-what-the-parse-layer-refuses-to-guess.md)).
+⚠ **Without `--mac` and `--ipv4` nothing is answered**, which is why this run says nothing about
+having replied.
+
 
 There is a Parse layer now. `src/ethernet.c` reads the 14-octet ethernet header — destination
 address, source address, length/type
