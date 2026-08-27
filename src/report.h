@@ -14,6 +14,7 @@
 #include <stdio.h>
 
 #include "arp_responder.h"
+#include "echo_responder.h"
 #include "ethernet.h"
 #include "tap.h"
 
@@ -97,6 +98,25 @@ void report_arp_outcome(FILE *out, const struct arp_outcome *outcome,
 /* ⚠ Each reason counted on its own, so a packet we could not read never looks
  * like one that was simply not addressed to us. */
 void report_arp_summary(FILE *out, const struct arp_counts *counts);
+
+/* What was decided about one IPv4 datagram, and why.
+ *
+ * ⚠ The same two-line shape ARP already prints, on purpose: a reader learns one
+ * rule, not two (hidetzu/tcpip-stack#35 Owner Decision 1). ⚠ The decision and
+ * the reason are separate things and the line says both.
+ *
+ * ⚠ Every reason is a sentence and never the internal name.
+ *
+ * ⚠ Nothing here blames the sender for something that is ours: "one we do not
+ * read yet" and "we could not build the reply" are both about us, and they say
+ * so (`CLAUDE.md` §4-1). */
+void report_echo_outcome(FILE *out, const struct echo_outcome *outcome,
+                         const uint8_t *our_protocol_address);
+
+/* ⚠ Each reason counted on its own, so a datagram we could not read never looks
+ * like one that was simply not addressed to us. ⚠ Printed even when every count
+ * is zero (`CLAUDE.md` §1). */
+void report_echo_summary(FILE *out, const struct echo_counts *counts);
 
 void report_usage(FILE *out, const char *program_name);
 

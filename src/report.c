@@ -232,11 +232,101 @@ void report_device_gone(FILE *out, const char *device_name)
             device_name);
 }
 
+void report_echo_outcome(FILE *out, const struct echo_outcome *outcome,
+                         const uint8_t *our_protocol_address)
+{
+    if (outcome->decision == ECHO_ANSWER) {
+        fputs("  answered it: ", out);
+        write_protocol_address(out, our_protocol_address);
+        fputs(" is ours, and ", out);
+        write_protocol_address(out, outcome->header.source_address);
+        fprintf(out, " got its %zu octet%s back\n", outcome->request.data_bytes,
+                outcome->request.data_bytes == 1 ? "" : "s");
+        return;
+    }
+
+    switch (outcome->reason) {
+    case ECHO_REASON_NOT_FOR_US:
+        fputs("  no answer: it was addressed to ", out);
+        write_protocol_address(out, outcome->header.destination_address);
+        fputs(", which is not an address we answer for\n", out);
+        return;
+    case ECHO_REASON_INTERNET_HEADER_MALFORMED:
+        fputs("  no answer: its internet header does not hold what it says it holds\n", out);
+        return;
+    case ECHO_REASON_INTERNET_HEADER_NOT_HANDLED:
+        fputs("  no answer: its internet header is one we do not read yet\n", out);
+        return;
+    case ECHO_REASON_INTERNET_HEADER_CHECKSUM_DISAGREES:
+        fputs("  no answer: its internet header checksum does not agree with the octets "
+              "that arrived\n", out);
+        return;
+    case ECHO_REASON_FRAGMENT:
+        fputs("  no answer: it is a fragment, and nothing here puts fragments back "
+              "together\n", out);
+        return;
+    case ECHO_REASON_PROTOCOL_NOT_HANDLED:
+        fprintf(out, "  no answer: it carries protocol %u, which is not one we act on\n",
+                outcome->header.protocol);
+        return;
+    case ECHO_REASON_ICMP_MALFORMED:
+        fputs("  no answer: its ICMP message is shorter than one can be, or its code is "
+              "not the 0 an echo message has\n", out);
+        return;
+    case ECHO_REASON_ICMP_TYPE_NOT_HANDLED:
+        fputs("  no answer: its ICMP type is not one we act on\n", out);
+        return;
+    case ECHO_REASON_ICMP_CHECKSUM_DISAGREES:
+        fputs("  no answer: its ICMP checksum does not agree with the octets that "
+              "arrived\n", out);
+        return;
+    case ECHO_REASON_WE_COULD_NOT_BUILD_THE_REPLY:
+        /* ⚠ Ours, and it says so. ⚠ Reporting this as anything about the sender
+         * would send the reader after the wrong thing (`CLAUDE.md` §4-1). */
+        fputs("  no answer: we could not build the reply. That is ours, not the "
+              "sender's\n", out);
+        return;
+    case ECHO_REASON_NONE:
+        break;
+    }
+    /* ⚠ Reached only if a reason is added without a sentence for it. Say that
+     * plainly rather than printing the number (`CLAUDE.md` §4). */
+    fputs("  no answer, and this build has no wording for why\n", out);
+}
+
+void report_echo_summary(FILE *out, const struct echo_counts *counts)
+{
+    fprintf(out, "answered %lu echo request%s. %lu %s not for us, %lu carried a protocol "
+                 "we do not act on\n",
+            counts->answered, plural(counts->answered),
+            counts->not_for_us, counts->not_for_us == 1 ? "was" : "were",
+            counts->protocol_not_handled);
+    fprintf(out, "%lu internet header%s malformed, %lu %s, "
+                 "%lu had a checksum that does not agree, %lu %s\n",
+            counts->internet_header_malformed,
+            counts->internet_header_malformed == 1 ? " was" : "s were",
+            counts->internet_header_not_handled,
+            counts->internet_header_not_handled == 1 ? "was one we do not read yet"
+                                                     : "were ones we do not read yet",
+            counts->internet_header_checksum_disagrees,
+            counts->fragment,
+            counts->fragment == 1 ? "was a fragment" : "were fragments");
+    fprintf(out, "%lu ICMP message%s malformed, %lu had a type we do not act on, "
+                 "%lu had a checksum that does not agree\n",
+            counts->icmp_malformed, counts->icmp_malformed == 1 ? " was" : "s were",
+            counts->icmp_type_not_handled, counts->icmp_checksum_disagrees);
+    fprintf(out, "%lu repl%s could not be built, which would be ours and not the "
+                 "sender's\n",
+            counts->we_could_not_build_the_reply,
+            counts->we_could_not_build_the_reply == 1 ? "y" : "ies");
+}
+
 void report_usage(FILE *out, const char *program_name)
 {
     fprintf(out,
             "%s reads the ethernet frames that arrive on a TAP device, and answers\n"
-            "the ARP requests among them that ask for the address it was given.\n"
+            "the ARP requests and ICMP echo requests among them that ask for the\n"
+            "address it was given.\n"
             "\n"
             "  --dev NAME      device to create and attach to (default: tap0)\n"
             "  --mac ADDRESS   the hardware address to answer with, as 02:00:00:00:00:02\n"
@@ -247,7 +337,7 @@ void report_usage(FILE *out, const char *program_name)
             "  --help          this text\n"
             "\n"
             "Without --mac and --ipv4 it only reads.\n"
-            "ARP is the only thing it answers so far.\n"
+            "ARP and ICMP echo are what it answers so far.\n"
             "The device exists only while this program holds it open.\n",
             program_name);
 }

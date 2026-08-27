@@ -4,8 +4,9 @@ A user-space TCP/IP stack for Linux, built as an experiment in AI-assisted syste
 
 **What runs today: `tcpip-stack`.** It creates and attaches to a TAP device in the current network
 namespace, and reports the ethernet frames the kernel puts on it — length per frame, and the raw
-bytes on request. ⚠ **Given `--mac` and `--ipv4` it also answers the ARP requests that ask for
-that address.** Without them it only reads.
+bytes on request. ⚠ **Given `--mac` and `--ipv4` it also answers the ARP requests and the ICMP echo
+requests that ask for that address**, and ⚠ **`ping` reports 0% packet loss against it.** Without
+those two options it only reads.
 
 ⚠ **The namespace is not `tcpip-stack`'s doing.** It uses whichever network namespace it is
 started in. The checks put a fresh one there with `unshare -Urn`
@@ -45,88 +46,75 @@ make                 # build/tcpip-stack
 make check           # all three tiers
 ```
 
-Reading the ARP request the kernel sends when it wants an address it does not know
-(⚠ **a real run, 2026-08-27, kernel `7.0.2-arch1-1`** — the hardware address is whatever the
-kernel picked for `tap0` on that run):
+Answering a ping with our own code (⚠ **a real run, 2026-08-28, kernel `7.0.2-arch1-1`** — the
+kernel's hardware address is whatever it picked for `tap0` on that run, and the IPv6 frames it
+sends unprompted are left in rather than tidied away):
 
 ```sh
 unshare -Urn sh -c '
-  ./build/tcpip-stack --count 1 --hex &
+  ./build/tcpip-stack --mac 02:00:00:00:00:02 --ipv4 10.0.0.2 --timeout 1500 &
   until ip link show tap0 >/dev/null 2>&1; do sleep 0.05; done
   ip addr add 10.0.0.1/24 dev tap0
   ip link set tap0 up
-  ping -c 1 -W 1 10.0.0.2 >/dev/null 2>&1
+  LC_ALL=C ping -c 3 -i 0.3 -W 1 10.0.0.2
   wait
 '
 ```
 
+What `ping` said:
+
+```text
+--- 10.0.0.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 609ms
+rtt min/avg/max/mdev = 0.054/0.065/0.079/0.010 ms
+```
+
+What the stack said:
+
 ```text
 listening on tap0
 frame 1  42 bytes
-  ff:ff:ff:ff:ff:ff <- ca:0c:0c:a0:9e:36, length/type 0x0806
-  0000  ff ff ff ff ff ff ca 0c  0c a0 9e 36 08 06 00 01
-  0010  08 00 06 04 00 01 ca 0c  0c a0 9e 36 0a 00 00 01
-  0020  00 00 00 00 00 00 0a 00  00 02
-read 1 frame, 0 read errors
+  ff:ff:ff:ff:ff:ff <- f6:22:9f:90:78:d7, length/type 0x0806
+  answered it: 10.0.0.2 is ours, and 10.0.0.1 was told our hardware address
+frame 2  98 bytes
+  02:00:00:00:00:02 <- f6:22:9f:90:78:d7, length/type 0x0800
+  answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back
+frame 3  90 bytes
+  33:33:00:00:00:16 <- f6:22:9f:90:78:d7, length/type 0x86dd
+frame 4  86 bytes
+  33:33:ff:90:78:d7 <- f6:22:9f:90:78:d7, length/type 0x86dd
+frame 5  98 bytes
+  02:00:00:00:00:02 <- f6:22:9f:90:78:d7, length/type 0x0800
+  answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back
+frame 6  98 bytes
+  02:00:00:00:00:02 <- f6:22:9f:90:78:d7, length/type 0x0800
+  answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back
+frame 7  90 bytes
+  33:33:00:00:00:16 <- f6:22:9f:90:78:d7, length/type 0x86dd
+frame 8  90 bytes
+  33:33:00:00:00:16 <- f6:22:9f:90:78:d7, length/type 0x86dd
+frame 9  70 bytes
+  33:33:00:00:00:02 <- f6:22:9f:90:78:d7, length/type 0x86dd
+frame 10  90 bytes
+  33:33:00:00:00:16 <- f6:22:9f:90:78:d7, length/type 0x86dd
+listened on tap0 for 1500 ms after frame 10 and read no more. That does not say whether anything more was sent.
+read 10 frames, 0 read errors
 0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define
+answered 1 ARP request. 0 were not for us, 0 were malformed, 0 named an address space we cannot place, 0 had an opcode we do not act on
+answered 3 echo requests. 0 were not for us, 0 carried a protocol we do not act on
+0 internet headers were malformed, 0 were ones we do not read yet, 0 had a checksum that does not agree, 0 were fragments
+0 ICMP messages were malformed, 0 had a type we do not act on, 0 had a checksum that does not agree
+0 replies could not be built, which would be ours and not the sender's
 ```
 
-⚠ **`0x0806` is printed as the value it is, never as a name.** A name would be a lie for a
-VLAN-tagged frame, and ⚠ **`0x0800` → IPv4 has never been taken from a standard in this repository**
-— it is what the kernel put on a device while doing IPv4
+⚠ **`0x0806` and `0x0800` are printed as the values they are, never as names.** A name would be a
+lie for a VLAN-tagged frame, and ⚠ **`0x0800` → IPv4 has never been taken from a standard in this
+repository** — it is what the kernel put on a device while doing IPv4
 ([ADR 0003](docs/adr/0003-what-the-length-type-field-means-and-what-the-parse-layer-refuses-to-guess.md)).
-⚠ **Without `--mac` and `--ipv4` nothing is answered**, which is why this run says nothing about
-having replied.
+⚠ **Without `--mac` and `--ipv4` nothing is answered**, and the run above says only what it read.
 
-
-There is a Parse layer now. `src/ethernet.c` reads the 14-octet ethernet header — destination
-address, source address, length/type
-([ADR 0003](docs/adr/0003-what-the-length-type-field-means-and-what-the-parse-layer-refuses-to-guess.md)),
-and `src/arp.c` reads the fixed part of an ARP packet — RFC 826's `ar$hrd`, `ar$pro`, `ar$hln`,
-`ar$pln`, `ar$op` and the four addresses
-([ADR 0005](docs/adr/0005-arp-names-come-from-rfc-826-and-the-numbers-do-not.md)).
-Each keeps a malformed packet, one whose shape it cannot place, and one it can read but does not act
-on as three separate answers.
-
-The reply to an ARP request can be built too, and ⚠ **it is checked against a reply the kernel
-itself produced** — feed our builder what the kernel answered with and the same 42 octets come back
-([ADR 0007](docs/adr/0007-a-protocols-octets-are-described-in-one-file-both-directions.md)).
-
-Given `--mac` and `--ipv4`, it answers the ARP requests that ask for that address, and ⚠ **the
-kernel's own neighbour table is what says so** — not our output
-([ADR 0008](docs/adr/0008-the-state-layer-arrives-as-its-own-file-and-decides-nothing-about-wording.md)):
-
-```text
-10.0.0.9 INCOMPLETE
-10.0.0.2 lladdr 02:00:00:00:00:02 REACHABLE
-```
-
-⚠ **Answering ARP is not answering a ping.** Measured 2026-08-27: `ping` still reports 100% packet
-loss either way, ⚠ **because nothing answers an ICMP echo request yet.** That is the next milestone,
-and `ip neigh` is the only proof this one claims.
-
-The three tiers differ in who the other end is: nobody (`check-static`), the device and us
-(`check-real`), and the Linux kernel (`check-foreign`). Each runs one named case on its own and
-counts without building anything:
-
-```bash
-make check-static  CHECK_ARGS="--list"
-make check-real    CHECK_ARGS="--case count_zero_reads_nothing"
-```
-
-⚠ **No check uses `sudo`.** The capability to create a TAP device comes from the user namespace
-`unshare -Urn` creates
-([ADR 0001](docs/adr/0001-the-checks-take-their-capability-from-a-user-namespace-not-from-sudo.md)).
-⚠ **Where unprivileged user namespaces are disabled, two of the three tiers run zero cases and say
-so** — that is `NOT-VERIFIED`, never a pass.
-
-⚠ **CI runs the static tier, and only that** — the build with `-Werror`, the ASan/UBSan build, the
-Report and Parse layers against the captured frame, and the `docs/SPEC.md` §1 check. A GitHub-hosted
-runner refuses `unshare -Urn` (AppArmor, measured 2026-08-26), so `check-real` and `check-foreign`
-run where unprivileged user namespaces are permitted — today, a developer's machine
-([ADR 0004](docs/adr/0004-ci-runs-the-static-tier-only.md)).
-⚠ **A green tick therefore means the static tier passed. It does not mean the stack was exercised
-against a device.**
+⚠ **The last line of the timer is not a failure.** ⚠ Nothing more arrived here, and that does not
+say whether anything more was sent (`CLAUDE.md` §1).
 
 ## Environment
 
@@ -140,10 +128,20 @@ there are no npm dependencies). The product itself is C.
 ## First milestone
 
 **Our own code answers a ping.** Not TCP — ethernet frames, ARP, IPv4, ICMP echo, through a TAP
-device, inside a namespace, verified against `ping` and `tcpdump`.
+device, inside a namespace, verified against something we did not write.
 
-⚠ **Not there yet.** Reading frames off the device is the first step of it; nothing replies to
-anything.
+⚠ **Met, on 2026-08-28.** ⚠ **`ping` reports 0% packet loss**, and the verdict is not ours: the
+Linux kernel checks the internet header checksum and the ICMP checksum before it accepts a reply
+(`tests/foreign.sh` `ping_reports_no_loss_against_our_own_stack`).
+
+⚠ **And that alone would not prove we validated anything.** ⚠ **A stack that answers a ping while
+computing the checksum wrong still answers the ping**, so a second check carries the other half:
+an echo request whose ICMP checksum does not agree is not answered, and is counted
+(`tests/static.sh` `echo_responder`). ⚠ **Neither replaces the other.**
+
+⚠ **What is not in it:** TCP, UDP, fragment reassembly, IPv4 `Options`, routing, any ICMP type but
+echo. ⚠ [`docs/SPEC.md`](docs/SPEC.md) §2 says which of those are decisions and which are simply
+not written yet.
 
 ## Where things are written down
 

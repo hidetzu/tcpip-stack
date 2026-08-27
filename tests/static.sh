@@ -104,6 +104,21 @@ case_icmp_message() {
     sed 's/^/    /' "$work/icmp.txt"
 }
 
+# The State layer for an arriving IPv4 datagram: what it means for us. This
+# binary announces its own case count — ⚠ never copy that number into a document.
+case_echo_responder() {
+    $MAKE -s build-sanitized >/dev/null 2>&1 || {
+        note_failure "the sanitized build did not succeed"
+        return
+    }
+    if ! ./build/test_echo_responder.sanitized --fixtures tests/fixtures >"$work/echo.txt" 2>&1; then
+        note_failure "the ten reasons did not stay ten things, or the reply is not the kernel's"
+        sed 's/^/      /' "$work/echo.txt" >&2
+        return
+    fi
+    sed 's/^/    /' "$work/echo.txt"
+}
+
 # The State layer: what an arriving ARP packet means for us. This binary
 # announces its own case count — ⚠ never copy that number into a document.
 case_arp_responder() {
@@ -294,5 +309,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message a_device_name_that_is_too_long_is_refused the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message echo_responder a_device_name_that_is_too_long_is_refused the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
 run_selected_cases
