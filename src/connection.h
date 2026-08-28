@@ -29,6 +29,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "moment.h"
+
 /* ⚠ This file includes nothing from the layers around it. An address is four
  * octets here and that is all it needs to know (the same shape `src/tcp.h`
  * takes for the pseudo-header). */
@@ -105,6 +107,17 @@ struct transmission_control_block {
      * one we expect from them. */
     uint32_t irs;
     uint32_t rcv_nxt;
+
+    /* When the answer should go out again, and when we stop waiting for one.
+     *
+     * ⚠ Both are handed in rather than read (ADR 0018), and ⚠ **both mean
+     * something only while the state is `SYN-RECEIVED`** — a connection that
+     * reached `ESTABLISHED` is waiting for nothing.
+     *
+     * ⚠ RFC 793 says the retransmission timer is reinitialised on each send,
+     * ⚠ **not measured from when the connection opened** (ADR 0019). */
+    struct moment answer_due;
+    struct moment give_up_at;
 };
 
 /* Room for the connections this build can hold at once.

@@ -401,6 +401,13 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
         fputs("  no answer: we are already holding a connection, and this build has\n"
               "    room for one. That is ours, not the sender's\n", out);
         return;
+    case HANDSHAKE_REASON_NOBODY_CONFIRMED_IT:
+        /* ⚠ Nobody confirmed it. ⚠ Not "they did not answer" and not anything
+         * about them being wrong — ⚠ we stopped waiting (`CLAUDE.md` §4-1). */
+        fputs("  ", out);
+        write_socket(out, &outcome->id.remote);
+        fputs(" never confirmed it; the connection was given up on\n", out);
+        return;
     case HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY:
         fputs("  no answer: we could not hand the reply to the device. That is ours,\n"
               "    not the sender's\n", out);
@@ -422,6 +429,9 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
                  "connection's state did not expect them\n",
             counts->established, counts->acknowledgment_we_are_not_waiting_for,
             counts->no_connection_held, counts->not_expected_in_this_state);
+    fprintf(out, "%lu %s given up on after nobody confirmed %s\n",
+            counts->given_up_on, counts->given_up_on == 1 ? "connection was" : "connections were",
+            counts->given_up_on == 1 ? "it" : "them");
     fprintf(out, "%lu %s refused for want of room and %lu answer%s never left the "
                  "device, which are ours and not the sender's\n",
             counts->room.refused_for_want_of_room,

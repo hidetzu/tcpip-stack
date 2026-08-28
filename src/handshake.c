@@ -101,7 +101,7 @@ static size_t build_the_answer(const struct transmission_control_block *block,
 }
 
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
-                       uint16_t listening_port,
+                       uint16_t listening_port, struct moment now,
                        const uint8_t *requester_hardware_address,
                        const uint8_t *our_hardware_address,
                        struct connections *connections,
@@ -209,6 +209,11 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     taken->snd_una = taken->iss;
     taken->snd_nxt = taken->iss + 1u;
     taken->state = CONNECTION_SYN_RECEIVED;
+    /* ⚠ RFC 793: the retransmission timer is reinitialised on each send, so it
+     * starts here and not when the connection was found. ⚠ The give-up moment
+     * is from now and is never moved again. */
+    taken->answer_due = moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
+    taken->give_up_at = moment_after(now, HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS);
 
     outcome->reply_bytes = build_the_answer(taken, id, requester_hardware_address,
                                             our_hardware_address, reply, reply_bytes);
@@ -224,4 +229,86 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     }
 
     moved(outcome, CONNECTION_SYN_RECEIVED, &counts->opened);
+}
+
+/* The one connection that is waiting for something, or NULL.
+ *
+ * ⚠ Only `SYN-RECEIVED` waits: a connection that reached `ESTABLISHED` is
+ * waiting for nothing, and one that is not in use is not a connection. */
+static struct transmission_control_block *the_one_waiting(struct connections *connections)
+{
+    for (size_t i = 0; i < CONNECTIONS_AT_ONCE; i++) {
+        struct transmission_control_block *block = &connections->block[i];
+        if (block->in_use && block->state == CONNECTION_SYN_RECEIVED) {
+            return block;
+        }
+    }
+    return NULL;
+}
+
+enum handshake_due handshake_what_is_due(struct connections *connections,
+                                         struct moment now,
+                                         struct handshake_counts *counts,
+                                         struct handshake_outcome *outcome)
+{
+    memset(outcome, 0, sizeof *outcome);
+    outcome->state = CONNECTION_LISTEN;
+
+    struct transmission_control_block *waiting = the_one_waiting(connections);
+    if (waiting == NULL) {
+        outcome->decision = HANDSHAKE_STAYED;
+        outcome->reason = HANDSHAKE_REASON_NONE;
+        return HANDSHAKE_NOTHING_DUE;
+    }
+
+    outcome->id = waiting->id;
+    outcome->state = waiting->state;
+
+    /* ⚠ Giving up is decided first, so ⚠ **at the moment both are due the
+     * connection is given up on rather than answered a third time.** ⚠ The other
+     * order would send an answer nobody is waiting for any more. */
+    if (moment_is_at_or_after(now, waiting->give_up_at)) {
+        /* ⚠ RFC 793's USER TIMEOUT: "delete the TCB, enter the CLOSED state and
+         * return." ⚠ Released, so the next SYN can open one — there is room for
+         * exactly one (ADR 0015). */
+        connections_release(connections, waiting);
+        outcome->decision = HANDSHAKE_STAYED;
+        outcome->reason = HANDSHAKE_REASON_NOBODY_CONFIRMED_IT;
+        outcome->state = CONNECTION_LISTEN;
+        counts->given_up_on++;
+        return HANDSHAKE_GIVE_UP;
+    }
+
+    if (moment_is_at_or_after(now, waiting->answer_due)) {
+        /* ⚠ "send the segment at the front of the retransmission queue again,
+         * reinitialize the retransmission timer" — ⚠ one step, so the timer moves
+         * here. ⚠ From `now` and not from the moment it was due, so ⚠ a caller
+         * that woke late does not immediately owe another. */
+        waiting->answer_due =
+            moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
+        outcome->decision = HANDSHAKE_STAYED;
+        outcome->reason = HANDSHAKE_REASON_ASKED_AGAIN;
+        return HANDSHAKE_ANSWER_AGAIN;
+    }
+
+    outcome->decision = HANDSHAKE_STAYED;
+    outcome->reason = HANDSHAKE_REASON_NONE;
+    return HANDSHAKE_NOTHING_DUE;
+}
+
+bool handshake_next_moment(const struct connections *connections, struct moment *due)
+{
+    for (size_t i = 0; i < CONNECTIONS_AT_ONCE; i++) {
+        const struct transmission_control_block *block = &connections->block[i];
+        if (!block->in_use || block->state != CONNECTION_SYN_RECEIVED) {
+            continue;
+        }
+        /* ⚠ The earlier of the two, ⚠ compared the way moments must be so it
+         * works across the wrap (`src/moment.h`). */
+        *due = moment_is_at_or_after(block->give_up_at, block->answer_due)
+                   ? block->answer_due
+                   : block->give_up_at;
+        return true;
+    }
+    return false;
 }
