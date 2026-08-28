@@ -337,13 +337,24 @@ int main(int argc, char **argv)
              * a wait shortened for a timer ends at or after that moment
              * (`src/moment.h`). */
             struct handshake_outcome handshake;
-            enum handshake_due due = handshake_what_is_due(&connections, moment_now(),
-                                                           &handshake_counts, &handshake);
-            if (due != HANDSHAKE_NOTHING_DUE) {
-                /* ⚠ Nothing is sent yet: hidetzu/tcpip-stack#59 puts the answer
-                 * back on the wire. ⚠ Until then an answer that became due is a
-                 * spent attempt, which `src/handshake.h` says out loud. */
+            uint8_t again[TAP_FRAME_BUFFER_BYTES];
+            enum handshake_due due =
+                handshake_what_is_due(&connections, moment_now(),
+                                      options.hardware_address, again, sizeof again,
+                                      &handshake_counts, &handshake);
+            if (due != HANDSHAKE_NOTHING_DUE || handshake.reason != HANDSHAKE_REASON_NONE) {
                 report_handshake_outcome(stdout, &handshake);
+
+                if (due == HANDSHAKE_ANSWER_AGAIN && handshake.reply_bytes != 0) {
+                    ssize_t handed = tap_write_frame(device, again,
+                                                     handshake.reply_bytes, &failure);
+                    /* ⚠ Counted only once the wire took the whole answer, the
+                     * same division everything else here uses (`CLAUDE.md` §1).
+                     * ⚠ An answer that was built is not an answer that left. */
+                    if (handed >= 0 && (size_t)handed == handshake.reply_bytes) {
+                        handshake_counts.answered_again++;
+                    }
+                }
                 fflush(stdout);
                 continue;
             }

@@ -121,6 +121,15 @@ enum handshake_reason {
      * (hidetzu/tcpip-stack#42 Owner Decision 1). */
     HANDSHAKE_REASON_NO_ROOM,
 
+    /* ⚠ Nobody has confirmed it yet, and the answer went out again. ⚠ **Not the
+     * same event as a retransmitted SYN arriving**, and ⚠ not counted with it:
+     * one is how many times they asked, the other how many times we answered
+     * (hidetzu/tcpip-stack#59 Owner Decision 1).
+     *
+     * ⚠ Until #59 these shared `ASKED_AGAIN`, and ⚠ **the sentence printed for
+     * our own timer said the sender had asked again, which was false.** */
+    HANDSHAKE_REASON_THE_ANSWER_WENT_OUT_AGAIN,
+
     /* ⚠ Nobody confirmed it, and we stopped waiting. ⚠ Not the sender being
      * wrong about anything — ⚠ **the sentence a human reads says so**
      * (`CLAUDE.md` §4-1). ⚠ RFC 793's USER TIMEOUT is what this follows:
@@ -143,6 +152,7 @@ struct handshake_counts {
     unsigned long no_connection_held;
     unsigned long we_could_not_build_the_reply;
     unsigned long given_up_on;
+    unsigned long answered_again;
 
     /* ⚠ Counted only once the wire took the whole answer. ⚠ A reply that was
      * built is not a reply that left — the same division `arp_respond` and
@@ -252,8 +262,18 @@ enum handshake_due {
  * left**, and the caller counts what the wire took (`CLAUDE.md` §1).
  *
  * ⚠ Nothing is sent here and nothing is printed here. */
+/* ⚠ `reply` is the caller's buffer for a whole frame, ⚠ ethernet header
+ * included, exactly as `handshake_receive` takes one. ⚠ On
+ * `HANDSHAKE_ANSWER_AGAIN` the answer is built into it and `outcome->reply_bytes`
+ * says how much; ⚠ **0 for everything else, and a caller must not send what was
+ * not built.**
+ *
+ * `our_hardware_address` is ours; ⚠ **the requester's is remembered in the
+ * connection**, because a retransmission has no arriving frame to read it from. */
 enum handshake_due handshake_what_is_due(struct connections *connections,
                                          struct moment now,
+                                         const uint8_t *our_hardware_address,
+                                         uint8_t *reply, size_t reply_bytes,
                                          struct handshake_counts *counts,
                                          struct handshake_outcome *outcome);
 

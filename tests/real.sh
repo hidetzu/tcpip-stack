@@ -391,6 +391,9 @@ case_a_timer_of_ours_ends_the_wait_without_ending_the_program() {
 case_only_a_frame_puts_off_giving_up_on_reading() {
     in_namespace only_a_frame_puts_off_giving_up_on_reading
 }
+case_the_answer_really_goes_out_again() {
+    in_namespace the_answer_really_goes_out_again
+}
 
 # ⚠ A frame of each kind moves the counter that belongs to it, and no other.
 #
@@ -522,6 +525,135 @@ except OSError:
         note_failure "no frames were read, so the counts above say nothing"
         sed 's/^/      /' "$work/out.txt" >&2
     fi
+}
+
+# ⚠ The milestone's proof: ⚠ **the answer really goes out again on the wire**,
+# counted by something that is not our own output.
+#
+# ⚠ Our own summary says we answered again. ⚠ **That is our word for it**, and
+# `.claude/rules/layers.md` question 3 is why that is not enough: a stack that
+# only agrees with its own tests has proved nothing.
+#
+# ⚠ So the frames are counted with an AF_PACKET socket on tap0, which ⚠ **neither
+# holds the tun fd nor asks any parser of ours what it is looking at** (ADR 0009).
+# ⚠ It must be opened with ETH_P_ALL: ⚠ **a packet socket opened with protocol 0
+# receives nothing**, measured 2026-08-29 — the first attempt at this saw no
+# frames at all and that was the instrument, not the system.
+#
+# ⚠ It waits about four seconds of real time. ⚠ `docs/SPEC.md` §3 carries what
+# this tier costs.
+inside_the_answer_really_goes_out_again() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 4000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    i=0
+    while [ "$i" -lt 60 ] && ! ip link show tap0 >/dev/null 2>&1; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+    if ! ip link show tap0 >/dev/null 2>&1; then
+        note_failure "tap0 never appeared while tcpip-stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    LC_ALL=C python3 -c '
+import socket, struct, sys, time
+
+def sum_of(octets):
+    total = 0
+    for i in range(0, len(octets) - 1, 2):
+        total += (octets[i] << 8) | octets[i + 1]
+    if len(octets) % 2:
+        total += octets[-1] << 8
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
+
+OURS = b"\x02\x00\x00\x00\x00\x02"
+
+# ⚠ ETH_P_ALL, or it receives nothing at all.
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.settimeout(0.3)
+
+# ⚠ A source hardware address and address nobody owns, so nothing answers our
+# answer and the kernel sends nothing back — not even a RST.
+source = socket.inet_aton("10.0.0.99")
+destination = socket.inet_aton("10.0.0.2")
+segment = struct.pack("!HHIIBBHHH", 40000, 80, 5000, 0, 5 << 4, 0x02, 64240, 0, 0)
+checksum = sum_of(source + destination + bytes([0, 6, 0, len(segment)]) + segment)
+segment = segment[:16] + struct.pack("!H", checksum) + segment[18:]
+header = struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(segment), 1, 0, 64, 6, 0) \
+    + source + destination
+header = header[:10] + struct.pack("!H", sum_of(header)) + header[12:]
+wire.send(OURS + b"\x02\xaa\xaa\xaa\xaa\xaa" + b"\x08\x00" + header + segment)
+
+# ⚠ Watched for a second beyond the schedule, so ⚠ **a third answer would be
+# seen if there were one.**
+answers = []
+end = time.time() + 4.0
+while time.time() < end:
+    try:
+        frame = wire.recv(2048)
+    except socket.timeout:
+        continue
+    except OSError:
+        break
+    if len(frame) < 34 or frame[12:14] != b"\x08\x00" or frame[14 + 9] != 6:
+        continue
+    if frame[6:12] != OURS:
+        continue
+    length = (frame[14] & 0x0f) * 4
+    tcp = frame[14 + length:]
+    if tcp[13] != (0x02 | 0x10):
+        continue
+    answers.append((int.from_bytes(tcp[4:8], "big"), int.from_bytes(tcp[8:12], "big"),
+                    frame[0:6]))
+
+print("answers on the wire: %d" % len(answers))
+if len(set(answers)) not in (0, 1):
+    print("they were not all the same answer: %r" % (set(answers),), file=sys.stderr)
+    sys.exit(1)
+' >"$work/watched.txt" 2>&1
+    watch_exit=$?
+
+    wait "$reader"
+    reader_exit=$?
+
+    if [ "$watch_exit" -ne 0 ]; then
+        note_failure "the wire could not be watched, or the answers differed"
+        sed 's/^/      /' "$work/watched.txt" >&2
+        return
+    fi
+    if [ "$reader_exit" -ne 2 ]; then
+        note_failure "tcpip-stack stopped with exit code $reader_exit, not the timer running out"
+        sed 's/^/      /' "$work/err.txt" >&2
+        return
+    fi
+
+    # ⚠ Three: the first answer and two more. ⚠ Counted on the wire, not in our
+    # own output. ⚠ And no fourth, because the watch outlasted the schedule.
+    assert_file_contains "$work/watched.txt" "answers on the wire: 3" \
+        "the answer really goes out again, twice"
+
+    # ⚠ Our own count agrees. ⚠ It says less than the line above — it is our word
+    # — and it is here so "we answered again" can never be mistaken for "nothing
+    # happened" (`.claude/rules/c.md`).
+    assert_file_contains "$work/out.txt" \
+        "2 answers went out again because nobody had confirmed them" \
+        "answering again is counted once the wire took it"
+    assert_file_contains "$work/out.txt" \
+        "1 connection was given up on after nobody confirmed it" \
+        "and then it was given up on"
 }
 
 # ⚠ Only a frame moves the deadline for giving up reading — ⚠ **not a timer of
@@ -696,8 +828,9 @@ wire.send(b"\x02\x00\x00\x00\x00\x02" + b"\x02\xaa\xaa\xaa\xaa\xaa" + b"\x08\x00
     # program stopping, and ⚠ it was given up on — all three, in order.
     assert_file_contains "$work/out.txt" "asked to open a connection" \
         "the crafted SYN opened a connection"
-    if [ "$(grep -c 'asked again; nothing changed' "$work/out.txt")" -ne 2 ]; then
-        note_failure "the answer became due $(grep -c 'asked again; nothing changed' "$work/out.txt") times, and the schedule says twice"
+    went_again=$(grep -c 'has not confirmed it; the answer went out again' "$work/out.txt")
+    if [ "$went_again" -ne 2 ]; then
+        note_failure "the answer went out again $went_again times, and the schedule says twice"
         sed 's/^/      /' "$work/out.txt" >&2
         return
     fi
@@ -714,7 +847,7 @@ wire.send(b"\x02\x00\x00\x00\x00\x02" + b"\x02\xaa\xaa\xaa\xaa\xaa" + b"\x08\x00
         "the program still stops when nothing arrives"
 }
 
-ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused the_wait_says_the_device_stopped_being_usable a_frame_handed_over_reaches_the_kernel a_write_that_could_not_be_made_is_not_a_frame_sent each_kind_of_frame_moves_its_own_counter a_timer_of_ours_ends_the_wait_without_ending_the_program only_a_frame_puts_off_giving_up_on_reading"
+ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused the_wait_says_the_device_stopped_being_usable a_frame_handed_over_reaches_the_kernel a_write_that_could_not_be_made_is_not_a_frame_sent each_kind_of_frame_moves_its_own_counter a_timer_of_ours_ends_the_wait_without_ending_the_program only_a_frame_puts_off_giving_up_on_reading the_answer_really_goes_out_again"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

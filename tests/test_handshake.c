@@ -751,7 +751,9 @@ static bool case_the_answer_is_due_a_second_after_each_send(void)
 #define DUE_AT(milliseconds, expected, what)                                       \
     do {                                                                           \
         enum handshake_due got = handshake_what_is_due(&world.connections,          \
-                                                       at(milliseconds),           \
+                                                       at(milliseconds), OUR_MAC,  \
+                                                       world.reply,                \
+                                                       sizeof world.reply,         \
                                                        &world.counts, &outcome);   \
         if (got != (expected)) {                                                   \
             fprintf(stderr, "  %s: got %d, expected %d\n", what, (int)got,           \
@@ -795,7 +797,8 @@ static bool case_a_connection_nobody_confirms_is_given_up_on(void)
     bool ok = true;
 
     /* ⚠ One millisecond before: still waiting, not given up on. */
-    if (handshake_what_is_due(&world.connections, at(2999), &world.counts, &outcome)
+    if (handshake_what_is_due(&world.connections, at(2999), OUR_MAC, world.reply,
+                                          sizeof world.reply, &world.counts, &outcome)
         == HANDSHAKE_GIVE_UP) {
         fputs("  it was given up on a millisecond early\n", stderr);
         ok = false;
@@ -803,7 +806,8 @@ static bool case_a_connection_nobody_confirms_is_given_up_on(void)
 
     /* ⚠ Exactly at three seconds. ⚠ Both timers are due here, and ⚠ **giving up
      * wins** — the other order would send an answer nobody waits for. */
-    if (handshake_what_is_due(&world.connections, at(3000), &world.counts, &outcome)
+    if (handshake_what_is_due(&world.connections, at(3000), OUR_MAC, world.reply,
+                                          sizeof world.reply, &world.counts, &outcome)
         != HANDSHAKE_GIVE_UP) {
         fputs("  it was not given up on at three seconds\n", stderr);
         return false;
@@ -822,7 +826,8 @@ static bool case_a_connection_nobody_confirms_is_given_up_on(void)
         ok = false;
     }
     /* ⚠ And nothing is due any more. */
-    if (handshake_what_is_due(&world.connections, at(9999), &world.counts, &outcome)
+    if (handshake_what_is_due(&world.connections, at(9999), OUR_MAC, world.reply,
+                                          sizeof world.reply, &world.counts, &outcome)
         != HANDSHAKE_NOTHING_DUE) {
         fputs("  something was still due after giving up\n", stderr);
         ok = false;
@@ -855,8 +860,8 @@ static bool case_a_confirmed_connection_is_due_nothing(void)
     bool ok = true;
     static const uint64_t much_later[] = { 1000, 2000, 3000, 60000 };
     for (size_t i = 0; i < sizeof much_later / sizeof much_later[0]; i++) {
-        if (handshake_what_is_due(&world.connections, at(much_later[i]), &world.counts,
-                                  &outcome) != HANDSHAKE_NOTHING_DUE) {
+        if (handshake_what_is_due(&world.connections, at(much_later[i]), OUR_MAC, world.reply,
+                                  sizeof world.reply, &world.counts, &outcome) != HANDSHAKE_NOTHING_DUE) {
             fprintf(stderr, "  something was due %llu ms after it was confirmed\n",
                     (unsigned long long)much_later[i]);
             ok = false;
@@ -890,7 +895,8 @@ static bool case_a_clock_that_does_not_move_neither_spins_nor_stops(void)
     bool ok = true;
 
     /* ⚠ Due once at exactly a second. */
-    if (handshake_what_is_due(&world.connections, at(1000), &world.counts, &outcome)
+    if (handshake_what_is_due(&world.connections, at(1000), OUR_MAC, world.reply,
+                                          sizeof world.reply, &world.counts, &outcome)
         != HANDSHAKE_ANSWER_AGAIN) {
         fputs("  nothing was due at a second\n", stderr);
         return false;
@@ -899,7 +905,8 @@ static bool case_a_clock_that_does_not_move_neither_spins_nor_stops(void)
      * ⚠ A caller in a loop would otherwise send for ever without the clock
      * moving — a busy loop, not a wait. */
     for (int again = 0; again < 5; again++) {
-        if (handshake_what_is_due(&world.connections, at(1000), &world.counts, &outcome)
+        if (handshake_what_is_due(&world.connections, at(1000), OUR_MAC, world.reply,
+                                          sizeof world.reply, &world.counts, &outcome)
             != HANDSHAKE_NOTHING_DUE) {
             fprintf(stderr, "  it was due again at the same moment, ask %d\n", again + 1);
             ok = false;
@@ -908,7 +915,8 @@ static bool case_a_clock_that_does_not_move_neither_spins_nor_stops(void)
     }
     /* ⚠ The other half: once the clock does move, it becomes due again. ⚠ Without
      * this the loop above would pass for a schedule that never fires twice. */
-    if (handshake_what_is_due(&world.connections, at(2000), &world.counts, &outcome)
+    if (handshake_what_is_due(&world.connections, at(2000), OUR_MAC, world.reply,
+                                          sizeof world.reply, &world.counts, &outcome)
         != HANDSHAKE_ANSWER_AGAIN) {
         fputs("  it never became due again once the clock moved\n", stderr);
         ok = false;
@@ -949,7 +957,8 @@ static bool case_the_next_moment_is_the_earlier_of_the_two(void)
 
     /* ⚠ After the last answer, the give-up moment is the earlier one. */
     struct handshake_outcome outcome;
-    handshake_what_is_due(&world.connections, at(2500), &world.counts, &outcome);
+    handshake_what_is_due(&world.connections, at(2500), OUR_MAC, world.reply,
+                                          sizeof world.reply, &world.counts, &outcome);
     if (!handshake_next_moment(&world.connections, &due)) {
         fputs("  it stopped naming a moment while still waiting\n", stderr);
         return false;
@@ -959,6 +968,110 @@ static bool case_the_next_moment_is_the_earlier_of_the_two(void)
                         "expected the give-up at %llu\n",
                 (unsigned long long)due.nanoseconds,
                 (unsigned long long)at(3000).nanoseconds);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ The answer that goes out again is ⚠ **the same answer**, octet for octet.
+ * ⚠ Nothing is re-chosen — the reason hidetzu/tcpip-stack#43 asserted that a
+ * retransmitted SYN changes nothing, ⚠ and the same reason in the other
+ * direction: a peer that did get the first must not be told a different number.
+ *
+ * ⚠ And it is addressed from what the connection remembers, ⚠ **because a
+ * retransmission has no arriving frame to read a hardware address from.** */
+static bool case_the_answer_that_goes_out_again_is_the_same_answer(void)
+{
+    struct world world;
+    a_world(&world);
+
+    struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+    struct handshake_outcome first = receive(&world, &syn);
+    if (first.decision != HANDSHAKE_MOVED || first.reply_bytes == 0) {
+        fputs("  the SYN was not answered\n", stderr);
+        return false;
+    }
+    unsigned char as_first_sent[256];
+    size_t first_bytes = first.reply_bytes;
+    memcpy(as_first_sent, world.reply, first_bytes);
+
+    bool ok = true;
+    for (int again = 1; again <= 2; again++) {
+        memset(world.reply, 0xaa, sizeof world.reply);
+        struct handshake_outcome outcome;
+        enum handshake_due due =
+            handshake_what_is_due(&world.connections, at((uint64_t)again * 1000u),
+                                  OUR_MAC, world.reply, sizeof world.reply,
+                                  &world.counts, &outcome);
+        if (due != HANDSHAKE_ANSWER_AGAIN) {
+            fprintf(stderr, "  answer %d was not due\n", again);
+            return false;
+        }
+        if (outcome.reason != HANDSHAKE_REASON_THE_ANSWER_WENT_OUT_AGAIN) {
+            fprintf(stderr, "  answer %d came back with reason %d\n", again,
+                    (int)outcome.reason);
+            ok = false;
+        }
+        if (outcome.reply_bytes != first_bytes ||
+            memcmp(world.reply, as_first_sent, first_bytes) != 0) {
+            fprintf(stderr, "  answer %d is not the same octets as the first\n", again);
+            ok = false;
+        }
+    }
+
+    /* ⚠ Answering again is not counted here: ⚠ an answer that was built is not
+     * an answer that left, and the caller counts what the wire took. */
+    if (world.counts.answered_again != 0) {
+        fputs("  answering again was counted before anything left\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ The two events that shared a reason until hidetzu/tcpip-stack#59, ⚠ **and
+ * the sentence printed for one of them was false.**
+ *
+ * ⚠ A retransmitted SYN arriving is them asking again; ⚠ our timer firing is us
+ * answering again. ⚠ **Different reasons, so the two can never be one number**
+ * (`.claude/rules/c.md`). */
+static bool case_them_asking_again_is_not_us_answering_again(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_one(&world, THEIR_ISN, &held)) {
+        return false;
+    }
+
+    bool ok = true;
+
+    /* Them: a retransmitted SYN. */
+    struct tcp_header again = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+    struct handshake_outcome theirs = receive(&world, &again);
+    if (theirs.reason != HANDSHAKE_REASON_ASKED_AGAIN) {
+        fprintf(stderr, "  a retransmitted SYN came back with reason %d\n",
+                (int)theirs.reason);
+        ok = false;
+    }
+
+    /* Us: the timer. */
+    struct handshake_outcome ours;
+    handshake_what_is_due(&world.connections, at(1000), OUR_MAC, world.reply,
+                          sizeof world.reply, &world.counts, &ours);
+    if (ours.reason != HANDSHAKE_REASON_THE_ANSWER_WENT_OUT_AGAIN) {
+        fprintf(stderr, "  our own timer came back with reason %d\n", (int)ours.reason);
+        ok = false;
+    }
+
+    /* ⚠ And the two reasons are not the same value, ⚠ **which is what stops one
+     * number standing for both.** */
+    if (theirs.reason == ours.reason) {
+        fputs("  them asking again and us answering again share a reason\n", stderr);
+        ok = false;
+    }
+    if (world.counts.asked_again != 1) {
+        fprintf(stderr, "  they asked again %lu times, expected 1\n",
+                world.counts.asked_again);
         ok = false;
     }
     return ok;
@@ -989,6 +1102,10 @@ static const struct test_case cases[] = {
       case_a_clock_that_does_not_move_neither_spins_nor_stops },
     { "the_next_moment_is_the_earlier_of_the_two",
       case_the_next_moment_is_the_earlier_of_the_two },
+    { "the_answer_that_goes_out_again_is_the_same_answer",
+      case_the_answer_that_goes_out_again_is_the_same_answer },
+    { "them_asking_again_is_not_us_answering_again",
+      case_them_asking_again_is_not_us_answering_again },
     { "a_block_taken_again_holds_none_of_the_last_connections_numbers",
       case_a_block_taken_again_holds_none_of_the_last_connections_numbers },
 };

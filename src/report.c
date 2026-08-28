@@ -401,6 +401,13 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
         fputs("  no answer: we are already holding a connection, and this build has\n"
               "    room for one. That is ours, not the sender's\n", out);
         return;
+    case HANDSHAKE_REASON_THE_ANSWER_WENT_OUT_AGAIN:
+        /* ⚠ Nobody has confirmed it YET, and we answered again. ⚠ Not "they
+         * asked again": ⚠ **our timer fired** (`CLAUDE.md` §4-1). */
+        fputs("  ", out);
+        write_socket(out, &outcome->id.remote);
+        fputs(" has not confirmed it; the answer went out again\n", out);
+        return;
     case HANDSHAKE_REASON_NOBODY_CONFIRMED_IT:
         /* ⚠ Nobody confirmed it. ⚠ Not "they did not answer" and not anything
          * about them being wrong — ⚠ we stopped waiting (`CLAUDE.md` §4-1). */
@@ -429,6 +436,9 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
                  "connection's state did not expect them\n",
             counts->established, counts->acknowledgment_we_are_not_waiting_for,
             counts->no_connection_held, counts->not_expected_in_this_state);
+    fprintf(out, "%lu answer%s went out again because nobody had confirmed %s\n",
+            counts->answered_again, counts->answered_again == 1 ? "" : "s",
+            counts->answered_again == 1 ? "it" : "them");
     fprintf(out, "%lu %s given up on after nobody confirmed %s\n",
             counts->given_up_on, counts->given_up_on == 1 ? "connection was" : "connections were",
             counts->given_up_on == 1 ? "it" : "them");
