@@ -85,4 +85,24 @@ struct moment moment_after(struct moment from, uint64_t milliseconds);
  * ⚠ Never more than `INT_MAX`, so it fits what `tap_wait_readable` takes. */
 int moment_milliseconds_until(struct moment now, struct moment deadline);
 
+/* A deadline that may or may not apply.
+ *
+ * ⚠ `set` is false when there is none — ⚠ **not a moment far in the future**,
+ * which would be a number nobody chose standing in for "no limit". */
+struct deadline {
+    bool set;
+    struct moment at;
+};
+
+/* The limit to hand a wait, given the deadlines that apply now.
+ *
+ * ⚠ Returns -1 when neither applies, which `tap_wait_readable` reads as ⚠ **wait
+ * without a limit** (`src/tap.h`). ⚠ Otherwise the nearer of the two, in
+ * milliseconds, ⚠ **never negative and never past `INT_MAX`.**
+ *
+ * ⚠ A pure function on purpose: ⚠ **the program's own decision about how long to
+ * wait is checkable with no clock and no waiting**, which is the whole shape
+ * ADR 0018 set. */
+int moment_wait_limit(struct moment now, struct deadline first, struct deadline second);
+
 #endif /* MOMENT_H */

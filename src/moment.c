@@ -66,3 +66,24 @@ int moment_milliseconds_until(struct moment now, struct moment deadline)
     }
     return (int)milliseconds;
 }
+
+int moment_wait_limit(struct moment now, struct deadline first, struct deadline second)
+{
+    if (!first.set && !second.set) {
+        /* ⚠ Nothing to wake for. ⚠ -1 is `tap_wait_readable`'s "no limit", and
+         * ⚠ it is what the program did before it had any timer at all. */
+        return -1;
+    }
+    if (!first.set) {
+        return moment_milliseconds_until(now, second.at);
+    }
+    if (!second.set) {
+        return moment_milliseconds_until(now, first.at);
+    }
+    /* ⚠ The nearer of the two, ⚠ compared the way moments must be so it works
+     * across the wrap. ⚠ Taking the further one would let a deadline pass
+     * unnoticed. */
+    struct moment nearer =
+        moment_is_at_or_after(second.at, first.at) ? first.at : second.at;
+    return moment_milliseconds_until(now, nearer);
+}

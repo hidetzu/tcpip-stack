@@ -149,6 +149,58 @@ static bool case_the_clock_does_not_go_backwards(void)
     return true;
 }
 
+/* ⚠ How long the program waits, ⚠ **checked with no clock and no waiting** —
+ * which is the point of it being a pure function (hidetzu/tcpip-stack#58). */
+static bool case_the_wait_limit_is_the_nearer_deadline(void)
+{
+    static const struct deadline none = { false, { 0 } };
+    bool ok = true;
+
+#define LIMIT(now_ns, a_set, a_ns, b_set, b_ns, expected, what)                    \
+    do {                                                                           \
+        struct deadline a = { a_set, { a_ns } };                                   \
+        struct deadline b = { b_set, { b_ns } };                                   \
+        int got = moment_wait_limit(at(now_ns), a, b);                             \
+        if (got != (expected)) {                                                   \
+            fprintf(stderr, "  %s: got %d, expected %d\n", what, got, (expected));  \
+            ok = false;                                                            \
+        }                                                                          \
+    } while (0)
+
+    /* ⚠ Neither: wait without a limit, ⚠ **which is what the program did before
+     * it had any timer.** */
+    if (moment_wait_limit(at(0), none, none) != -1) {
+        fputs("  neither deadline did not give -1\n", stderr);
+        ok = false;
+    }
+
+    LIMIT(0, true, 1000000u, false, 0, 1, "only the first, a millisecond away");
+    LIMIT(0, false, 0, true, 2000000u, 2, "only the second, two milliseconds away");
+    LIMIT(0, true, 5000000u, true, 2000000u, 2, "the second is nearer");
+    LIMIT(0, true, 2000000u, true, 5000000u, 2, "the first is nearer");
+    LIMIT(0, true, 3000000u, true, 3000000u, 3, "both at the same moment");
+
+    /* ⚠ Already past: 0 and never negative, ⚠ because a negative limit means
+     * "wait for ever" and that is the opposite of a deadline having passed. */
+    LIMIT(5000000u, true, 1000000u, true, 9000000u, 0, "the nearer one already past");
+    LIMIT(5000000u, true, 9000000u, true, 1000000u, 0,
+          "the nearer one already past, the other way round");
+#undef LIMIT
+
+    /* ⚠ Across the wrap: a deadline just past the end is still ahead of a now
+     * just before it. ⚠ Taking the further one, or comparing plainly, gets this
+     * backwards. */
+    struct deadline just_past_the_end = { true, { 1000000u - 1u } };
+    struct deadline much_later = { true, { 500000000u } };
+    struct moment just_before_the_end = { UINT64_MAX - 1u };
+    int across = moment_wait_limit(just_before_the_end, just_past_the_end, much_later);
+    if (across != 2) {
+        fprintf(stderr, "  across the wrap: got %d, expected 2\n", across);
+        ok = false;
+    }
+    return ok;
+}
+
 static const struct test_case cases[] = {
     { "a_moment_is_told_from_another_across_the_wrap",
       case_a_moment_is_told_from_another_across_the_wrap },
@@ -156,6 +208,8 @@ static const struct test_case cases[] = {
       case_a_moment_after_another_is_that_much_later },
     { "the_time_until_a_deadline_is_never_negative",
       case_the_time_until_a_deadline_is_never_negative },
+    { "the_wait_limit_is_the_nearer_deadline",
+      case_the_wait_limit_is_the_nearer_deadline },
     { "the_clock_does_not_go_backwards", case_the_clock_does_not_go_backwards },
 };
 

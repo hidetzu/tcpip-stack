@@ -385,6 +385,12 @@ case_a_write_that_could_not_be_made_is_not_a_frame_sent() {
 case_each_kind_of_frame_moves_its_own_counter() {
     in_namespace each_kind_of_frame_moves_its_own_counter
 }
+case_a_timer_of_ours_ends_the_wait_without_ending_the_program() {
+    in_namespace a_timer_of_ours_ends_the_wait_without_ending_the_program
+}
+case_only_a_frame_puts_off_giving_up_on_reading() {
+    in_namespace only_a_frame_puts_off_giving_up_on_reading
+}
 
 # ⚠ A frame of each kind moves the counter that belongs to it, and no other.
 #
@@ -518,7 +524,197 @@ except OSError:
     fi
 }
 
-ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused the_wait_says_the_device_stopped_being_usable a_frame_handed_over_reaches_the_kernel a_write_that_could_not_be_made_is_not_a_frame_sent each_kind_of_frame_moves_its_own_counter"
+# ⚠ Only a frame moves the deadline for giving up reading — ⚠ **not a timer of
+# ours** (hidetzu/tcpip-stack#58 Owner Decision 1).
+#
+# ⚠ Asserted by counting frames rather than by measuring time: ⚠ **a time-based
+# assertion is the least reproducible thing there is** (`CLAUDE.md` §6).
+#
+# ⚠ Four frames are sent 200 ms apart with a 300 ms limit. ⚠ **Each gap is under
+# the limit and the whole run is well over it**, which is what tells the two
+# apart:
+#
+#   ⚠ with the deadline moving on each frame   all four are read
+#   ⚠ without it                               only the first, then it stops
+#
+# ⚠ This was unasserted before hidetzu/tcpip-stack#58. ⚠ **The first version of
+# this case sent two frames 400 ms apart with a 600 ms limit and the mutation
+# still passed** — both arrived inside the first deadline, so ⚠ **it could not
+# tell whether the deadline had moved at all.**
+inside_only_a_frame_puts_off_giving_up_on_reading() {
+    "$TCPIP_STACK" --dev tap0 --timeout 300 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    i=0
+    while [ "$i" -lt 60 ] && ! ip link show tap0 >/dev/null 2>&1; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+    if ! ip link show tap0 >/dev/null 2>&1; then
+        note_failure "tap0 never appeared while tcpip-stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    # ⚠ IPv6 is turned off on the device before it comes up, so ⚠ **the only
+    # frames read are the two below.** ⚠ Measured 2026-08-28, 3 runs of 3: a bare
+    # link that is merely up gives 6 frames of the kernel's own, and none with
+    # this. ⚠ Without it the count would be the kernel's business rather than
+    # this case's.
+    #
+    # ⚠ AF_PACKET needs the device up, so ⚠ **leaving it down is not an option** —
+    # the send fails with "Network is down". Measured the same day.
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip link set tap0 up
+
+    LC_ALL=C python3 -c '
+import socket, time
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+wire.bind(("tap0", 0))
+frame = b"\x02\x00\x00\x00\x00\x02" + b"\x02\x11\x11\x11\x11\x11" + b"\x90\x00" \
+    + bytes(46)
+# ⚠ The device goes away with the program, so a send after it stopped fails.
+# ⚠ Stopping quietly here means the case fails on the count below — ⚠ **which is
+# what it is named for** — rather than on the sender falling over (`verify` §5:
+# read whether it failed for the reason you intended).
+for _ in range(4):
+    try:
+        wire.send(frame)
+    except OSError:
+        break
+    time.sleep(0.2)
+' >"$work/sent.txt" 2>&1
+    sent_exit=$?
+
+    wait "$reader"
+    reader_exit=$?
+
+    if [ "$sent_exit" -ne 0 ]; then
+        note_failure "the frames could not be put on the wire"
+        sed 's/^/      /' "$work/sent.txt" >&2
+        return
+    fi
+    if [ "$reader_exit" -ne 2 ]; then
+        note_failure "tcpip-stack stopped with exit code $reader_exit, not the timer running out"
+        sed 's/^/      /' "$work/err.txt" >&2
+        return
+    fi
+
+    # ⚠ All four, which can only happen if each one put off the deadline: the
+    # last arrives 600 ms after the first and the limit is 300 ms.
+    assert_file_contains "$work/out.txt" "read 4 frames, 0 read errors" \
+        "a frame puts off giving up on reading"
+}
+
+# ⚠ A wait that runs out is not one thing any more: ⚠ **a timer of ours, or
+# nothing having arrived.** ⚠ This is the case that says they are told apart on a
+# real device (hidetzu/tcpip-stack#58).
+#
+# ⚠ How a connection is left unconfirmed: a SYN is put on the wire with
+# AF_PACKET ⚠ **from a source hardware address nobody owns**, so our answer goes
+# to a machine that is not there and ⚠ **the kernel sends nothing back, not even
+# a RST** (measured 2026-08-28, and it is why hidetzu/tcpip-stack#59 is possible
+# at all).
+#
+# ⚠ What is asserted is the loop waking on our own timer and carrying on —
+# ⚠ **not that anything went out on the wire.** ⚠ Nothing is sent until #59, and
+# `src/handshake.h` says an answer that became due is a spent attempt.
+#
+# ⚠ It waits about three and a half seconds of real time. ⚠ **That is most of
+# what this tier costs**, and `docs/SPEC.md` §3 carries the number.
+inside_a_timer_of_ours_ends_the_wait_without_ending_the_program() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    # ⚠ Longer than the three seconds the schedule takes, so the connection is
+    # given up on before the program stops reading (ADR 0019).
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 3500 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    i=0
+    while [ "$i" -lt 60 ] && ! ip link show tap0 >/dev/null 2>&1; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+    if ! ip link show tap0 >/dev/null 2>&1; then
+        note_failure "tap0 never appeared while tcpip-stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    LC_ALL=C python3 -c '
+import socket, struct
+
+def sum_of(octets):
+    total = 0
+    for i in range(0, len(octets) - 1, 2):
+        total += (octets[i] << 8) | octets[i + 1]
+    if len(octets) % 2:
+        total += octets[-1] << 8
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
+
+# ⚠ An address and a hardware address nobody owns, so nothing answers our answer.
+source = socket.inet_aton("10.0.0.99")
+destination = socket.inet_aton("10.0.0.2")
+segment = struct.pack("!HHIIBBHHH", 40000, 80, 5000, 0, 5 << 4, 0x02, 64240, 0, 0)
+checksum = sum_of(source + destination + bytes([0, 6, 0, len(segment)]) + segment)
+segment = segment[:16] + struct.pack("!H", checksum) + segment[18:]
+
+header = struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(segment), 1, 0, 64, 6, 0) \
+    + source + destination
+header = header[:10] + struct.pack("!H", sum_of(header)) + header[12:]
+
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+wire.bind(("tap0", 0))
+wire.send(b"\x02\x00\x00\x00\x00\x02" + b"\x02\xaa\xaa\xaa\xaa\xaa" + b"\x08\x00"
+          + header + segment)
+' >"$work/sent.txt" 2>&1
+    sent_exit=$?
+
+    wait "$reader"
+    reader_exit=$?
+
+    if [ "$sent_exit" -ne 0 ]; then
+        note_failure "the SYN could not be put on the wire"
+        sed 's/^/      /' "$work/sent.txt" >&2
+        return
+    fi
+    # ⚠ 2 is the timer running out, which is how this run is meant to end.
+    if [ "$reader_exit" -ne 2 ]; then
+        note_failure "tcpip-stack stopped with exit code $reader_exit, not the timer running out"
+        sed 's/^/      /' "$work/err.txt" >&2
+        return
+    fi
+
+    # ⚠ The connection opened, ⚠ the wait ended on our timer twice without the
+    # program stopping, and ⚠ it was given up on — all three, in order.
+    assert_file_contains "$work/out.txt" "asked to open a connection" \
+        "the crafted SYN opened a connection"
+    if [ "$(grep -c 'asked again; nothing changed' "$work/out.txt")" -ne 2 ]; then
+        note_failure "the answer became due $(grep -c 'asked again; nothing changed' "$work/out.txt") times, and the schedule says twice"
+        sed 's/^/      /' "$work/out.txt" >&2
+        return
+    fi
+    assert_file_contains "$work/out.txt" \
+        "never confirmed it; the connection was given up on" \
+        "the connection was given up on"
+    assert_file_contains "$work/out.txt" \
+        "1 connection was given up on after nobody confirmed it" \
+        "giving up is counted"
+
+    # ⚠ And the other reason still works: the program DID stop, on its own
+    # timeout, ⚠ **after the timers were done** — so the two are not one thing.
+    assert_file_contains "$work/err.txt" "listened on tap0 for 3500 ms" \
+        "the program still stops when nothing arrives"
+}
+
+ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused the_wait_says_the_device_stopped_being_usable a_frame_handed_over_reaches_the_kernel a_write_that_could_not_be_made_is_not_a_frame_sent each_kind_of_frame_moves_its_own_counter a_timer_of_ours_ends_the_wait_without_ending_the_program only_a_frame_puts_off_giving_up_on_reading"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)
