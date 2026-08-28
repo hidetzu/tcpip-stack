@@ -622,6 +622,162 @@ print(syns, fins, others)
     printf '    %s SYN, %s FIN and %s other segments arrived\n' "$syns" "$fins" "$others"
 }
 
+# ⚠ hidetzu/tcpip-stack#66 AC 1, 2 and 3, and ⚠ **none of them is our own
+# output**: the segments are cut out of the wire by an `AF_PACKET` socket, and
+# ⚠ **the verdict that we answered properly is the kernel's** — it stops
+# retransmitting.
+#
+# ⚠ Measured before this change, same conditions, 2026-08-29: ⚠ **the kernel
+# sent its FIN five times** because nothing acknowledged it. ⚠ One now.
+#
+# ⚠ Why `AF_PACKET` and not our own `--hex`: `--hex` prints what ARRIVED.
+# ⚠ **What this case is about is what LEFT**, and a stack reporting its own
+# sends would be our word for it (`.claude/rules/layers.md`, question 3).
+inside_the_kernel_stops_retransmitting_once_we_close_back() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+    port=80
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port "$port" \
+        --timeout 5000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    ethernet_header=$(constant src/ethernet.h ETHERNET_HEADER_BYTES)
+    ipv4_type=$(constant src/ipv4.h IPV4_ETHERNET_LENGTH_TYPE)
+    tcp_number=$(constant src/tcp.h TCP_PROTOCOL_NUMBER)
+    fin_bit=$(constant src/tcp.h TCP_CONTROL_FIN)
+    ack_bit=$(constant src/tcp.h TCP_CONTROL_ACK)
+
+    LC_ALL=C python3 -c '
+import socket, subprocess, sys, threading, time
+
+ethernet_header, ipv4_type, tcp_number, fin_bit, ack_bit = (
+    int(argument.rstrip("uU"), 0) for argument in sys.argv[1:6])
+OURS = bytes.fromhex(sys.argv[6].replace(":", ""))
+
+# ⚠ ETH_P_ALL, or it receives nothing at all.
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.settimeout(0.3)
+
+seen = []
+stop = threading.Event()
+
+def watch():
+    while not stop.is_set():
+        try:
+            frame = wire.recv(2048)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if len(frame) < ethernet_header + 40:
+            continue
+        if int.from_bytes(frame[ethernet_header - 2:ethernet_header], "big") != ipv4_type:
+            continue
+        if frame[ethernet_header + 9] != tcp_number:
+            continue
+        internet = (frame[ethernet_header] & 0x0f) * 4
+        at = ethernet_header + internet
+        if len(frame) < at + 20:
+            continue
+        seen.append((frame[6:12] == OURS, frame[at + 13],
+                     int.from_bytes(frame[at + 4:at + 8], "big"),
+                     int.from_bytes(frame[at + 8:at + 12], "big")))
+
+watcher = threading.Thread(target=watch)
+watcher.start()
+
+s = socket.socket()
+s.settimeout(5)
+try:
+    s.connect(("10.0.0.2", 80))
+except Exception as why:
+    stop.set(); watcher.join()
+    print("connect failed:", why); sys.exit(1)
+s.close()
+time.sleep(3.5)          # ⚠ past the whole retransmission schedule
+after = subprocess.run(["ss", "-tan"], capture_output=True, text=True).stdout
+stop.set(); watcher.join()
+
+# ⚠ Theirs and ours are told apart by the ethernet source, ⚠ never by guessing
+# from the direction of the numbers.
+their_fins = [f for f in seen if not f[0] and f[1] & fin_bit]
+our_fins = [f for f in seen if f[0] and f[1] & fin_bit]
+print("their-fins", len(their_fins))
+print("our-fins", len(our_fins))
+for mine, bits, sequence, acknowledgment in our_fins[:1]:
+    print("our-fin-acknowledges", acknowledgment)
+    print("our-fin-carries-ack", 1 if bits & ack_bit else 0)
+for mine, bits, sequence, acknowledgment in their_fins[:1]:
+    print("their-fin-sits-at", sequence)
+print("ss", " ".join(line.split()[0] for line in after.splitlines()[1:]) or "none")
+' "$ethernet_header" "$ipv4_type" "$tcp_number" "$fin_bit" "$ack_bit" "$our_mac" \
+        >"$work/closing.txt" 2>&1
+    watched=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$watched" -ne 0 ]; then
+        note_failure "the connection could not be opened, so nothing was closed"
+        sed 's/^/      /' "$work/closing.txt" >&2
+        return
+    fi
+
+    their_fins=$(awk '$1 == "their-fins" { print $2 }' "$work/closing.txt")
+    our_fins=$(awk '$1 == "our-fins" { print $2 }' "$work/closing.txt")
+    acknowledges=$(awk '$1 == "our-fin-acknowledges" { print $2 }' "$work/closing.txt")
+    carries_ack=$(awk '$1 == "our-fin-carries-ack" { print $2 }' "$work/closing.txt")
+    their_fin_at=$(awk '$1 == "their-fin-sits-at" { print $2 }' "$work/closing.txt")
+
+    # ⚠ AC 1: our close reached the wire, seen by something that is not us.
+    if [ "${our_fins:-0}" -lt 1 ]; then
+        note_failure "our own close never reached the wire"
+        sed 's/^/      /' "$work/closing.txt" >&2
+        return
+    fi
+    # ⚠ AC 3, and ⚠ **it is the kernel's verdict and not ours**: it sent its FIN
+    # once and stopped. ⚠ Five before this change, measured.
+    if [ "${their_fins:-0}" -ne 1 ]; then
+        note_failure "the kernel sent its FIN $their_fins times, so it is not satisfied with our answer"
+        sed 's/^/      /' "$work/closing.txt" >&2
+        return
+    fi
+    # ⚠ AC 2, read off the wire: it acknowledges past their FIN by exactly one.
+    # ⚠ RFC 793: a FIN is "A control bit (finis) occupying one sequence number".
+    if [ "${carries_ack:-0}" -ne 1 ] ||
+       [ "$acknowledges" != "$(( (their_fin_at + 1) % 4294967296 ))" ]; then
+        note_failure "our close acknowledges $acknowledges and their FIN sits at $their_fin_at"
+        sed 's/^/      /' "$work/closing.txt" >&2
+        return
+    fi
+    # ⚠ Our own stack's word, which says less than the octets above.
+    assert_file_contains "$work/out.txt" "1 connection finished" \
+        "the connection was released once our close was acknowledged"
+    # ⚠ Counted under its own name and ⚠ **not as the answer**: one is a
+    # handshake, the other a close, and a stack counting them together would say
+    # it answered twice.
+    assert_file_contains "$work/out.txt" "1 of our own closes left the device" \
+        "our close is counted as a close and not as an answer"
+    assert_file_contains "$work/out.txt" "1 connection was opened and 1 answered" \
+        "the answer is still counted as an answer"
+
+    printf '    the kernel sent %s FIN and we answered with %s; ss then said: %s\n' \
+        "$their_fins" "$our_fins" \
+        "$(awk '$1 == "ss" { $1 = ""; print substr($0, 2) }' "$work/closing.txt")"
+}
+
 # ⚠ The half that stops the case above passing for a stack that never looked at
 # a checksum (hidetzu/tcpip-stack#44 AC 2, and `CLAUDE.md` §1).
 #
@@ -727,6 +883,9 @@ case_the_kernel_opens_a_connection_to_us() {
 case_a_fin_reaches_us_once_the_window_is_open() {
     in_namespace a_fin_reaches_us_once_the_window_is_open
 }
+case_the_kernel_stops_retransmitting_once_we_close_back() {
+    in_namespace the_kernel_stops_retransmitting_once_we_close_back
+}
 case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
     in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
 }
@@ -737,7 +896,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

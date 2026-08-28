@@ -352,7 +352,13 @@ int main(int argc, char **argv)
                      * same division everything else here uses (`CLAUDE.md` §1).
                      * ⚠ An answer that was built is not an answer that left. */
                     if (handed >= 0 && (size_t)handed == handshake.reply_bytes) {
-                        handshake_counts.answered_again++;
+                        /* ⚠ Which counter is the State layer's word, not a rule
+                         * written here a second time (`CLAUDE.md` §3). */
+                        if (handshake.reply == HANDSHAKE_REPLY_OUR_FIN) {
+                            handshake_counts.our_fin_went_out_again++;
+                        } else {
+                            handshake_counts.answered_again++;
+                        }
                     }
                 }
                 fflush(stdout);
@@ -516,7 +522,11 @@ int main(int argc, char **argv)
                              * (`CLAUDE.md` §1). */
                             if (handed >= 0 &&
                                 (size_t)handed == handshake.reply_bytes) {
-                                handshake_counts.answered++;
+                                if (handshake.reply == HANDSHAKE_REPLY_OUR_FIN) {
+                                    handshake_counts.our_fin_left++;
+                                } else {
+                                    handshake_counts.answered++;
+                                }
                             }
                         }
                     }

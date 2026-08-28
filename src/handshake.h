@@ -114,6 +114,26 @@ enum handshake_decision {
     HANDSHAKE_STAYED
 };
 
+/* Which segment was built into the caller's reply buffer, if any.
+ *
+ * ⚠ Its own field so that ⚠ **the caller never has to work out from a state
+ * which counter to move** — that rule would then live in two layers, and one of
+ * them would go stale (`CLAUDE.md` §3). ⚠ An enum never reaches a human. */
+enum handshake_reply {
+    HANDSHAKE_REPLY_NONE = 0,
+
+    /* The `<SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>` that answers a SYN. */
+    HANDSHAKE_REPLY_THE_ANSWER,
+
+    /* ⚠ Our own FIN, ⚠ **carrying the acknowledgment of theirs in the same
+     * segment.** ⚠ Measured 2026-08-29, in a namespace on `lo`: when its
+     * application closes the moment the peer's FIN arrives, ⚠ **the Linux
+     * kernel sends one segment carrying `FIN,ACK`** — and two segments when the
+     * close comes later. ⚠ ADR 0022 puts this stack in the first situation
+     * always, because the FIN's arrival IS the close here (ADR 0023). */
+    HANDSHAKE_REPLY_OUR_FIN
+};
+
 enum handshake_reason {
     HANDSHAKE_REASON_NONE = 0, /* it moved */
 
@@ -153,6 +173,23 @@ enum handshake_reason {
      * ⚠ Until #59 these shared `ASKED_AGAIN`, and ⚠ **the sentence printed for
      * our own timer said the sender had asked again, which was false.** */
     HANDSHAKE_REASON_THE_ANSWER_WENT_OUT_AGAIN,
+
+    /* ⚠ Nobody acknowledged our FIN, and we stopped waiting. ⚠ Counted apart
+     * from a handshake nobody confirmed: ⚠ **one is a connection that never
+     * opened, the other one that would not finish closing** — the same division
+     * hidetzu/tcpip-stack#59 had to make when one reason was doing two jobs.
+     *
+     * ⚠ RFC 793 for LAST-ACK: "The only thing that can arrive in this state is
+     * an acknowledgment of our FIN." ⚠ The document gives no timeout for it
+     * beyond the user timeout, and ⚠ **the interval used is ours** (ADR 0019). */
+    HANDSHAKE_REASON_NOBODY_ACKNOWLEDGED_OUR_FIN,
+
+    /* ⚠ Our FIN went out again because nobody had acknowledged it. ⚠ Counted
+     * apart from the answer going out again, for the same reason as above.
+     *
+     * ⚠ RFC 793: "All segments preceding and including FIN will be
+     * retransmitted until acknowledged." */
+    HANDSHAKE_REASON_OUR_FIN_WENT_OUT_AGAIN,
 
     /* ⚠ Nobody confirmed it, and we stopped waiting. ⚠ Not the sender being
      * wrong about anything — ⚠ **the sentence a human reads says so**
@@ -257,6 +294,22 @@ struct handshake_counts {
     unsigned long fin_outside_the_window;
     unsigned long fin_we_could_not_place;
 
+    /* ⚠ **Segments.** ⚠ Our own FIN, counted only once the wire took the whole
+     * of it — ⚠ **a segment that was built is not a segment that left**, the
+     * division everything here uses. ⚠ The caller moves these two, not this
+     * file. */
+    unsigned long our_fin_left;
+    unsigned long our_fin_went_out_again;
+
+    /* ⚠ **Connections.** ⚠ They acknowledged our FIN and the connection was
+     * released, so ⚠ **the next SYN can open one** (ADR 0015: there is room for
+     * one). */
+    unsigned long closed;
+
+    /* ⚠ **Connections.** ⚠ Nobody acknowledged our FIN and we stopped waiting.
+     * ⚠ Apart from `given_up_on`, which is a handshake that never finished. */
+    unsigned long never_acknowledged_our_fin;
+
     /* ⚠ Counted only once the wire took the whole answer. ⚠ A reply that was
      * built is not a reply that left — the same division `arp_respond` and
      * `echo_respond` use (`CLAUDE.md` §1, in the sending direction). ⚠ The
@@ -308,6 +361,11 @@ struct handshake_outcome {
      * ⚠ Nothing sends it; hidetzu/tcpip-stack#66 does. */
     uint32_t we_would_acknowledge;
 
+    /* ⚠ Which segment was built, so ⚠ **a caller counts what left under the
+     * right name without deciding which it was.** ⚠ `HANDSHAKE_REPLY_NONE`
+     * whenever `reply_bytes` is 0. */
+    enum handshake_reply reply;
+
     /* ⚠ How many octets of the caller's reply buffer were written. ⚠ 0 unless a
      * SYN opened a connection, and ⚠ a caller must not send what was not
      * built. */
@@ -351,6 +409,14 @@ struct handshake_outcome {
  *                      many octets and discards them
  *                      (hidetzu/tcpip-stack#64 Owner Decisions 1 and 2)
  *     Options          ⚠ none (Owner Decision 2)
+ *
+ * ⚠ Since hidetzu/tcpip-stack#66 the same buffer also carries our own FIN:
+ *
+ *     Control Bits     FIN and ACK — ⚠ **one segment, not two**, measured
+ *     Sequence Number  `SND.NXT` before the FIN, ⚠ which is the sequence
+ *                      number the FIN occupies and ⚠ **the one every
+ *                      retransmission of it repeats**
+ *     Acknowledgment   RCV.NXT, ⚠ already advanced over their FIN
  *
  * ⚠ An answer is built only when a SYN opened a connection. ⚠ The three places
  * RFC 793 §3.9 asks for a reset or an ack produce a counted reason and nothing

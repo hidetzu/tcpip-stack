@@ -76,9 +76,22 @@ static size_t build_the_answer(const struct transmission_control_block *block,
     memset(&fields, 0, sizeof fields);
     fields.source_port = id->local.port;
     fields.destination_port = id->remote.port;
-    fields.sequence_number = block->iss;
     fields.acknowledgment_number = block->rcv_nxt;
-    fields.control_bits = TCP_CONTROL_SYN | TCP_CONTROL_ACK;
+    /* ⚠ Which segment this is follows from the state, ⚠ **so a retransmission
+     * cannot build a different one from the send it repeats.**
+     *
+     * ⚠ In LAST-ACK the sequence number is the one our FIN occupies —
+     * `SND.NXT` was advanced over it when it was first built, so the FIN sits
+     * one below. ⚠ RFC 793: "All segments preceding and including FIN will be
+     * retransmitted until acknowledged", and ⚠ **a retransmission carrying a
+     * different number is a different segment.** */
+    if (block->state == CONNECTION_LAST_ACK) {
+        fields.sequence_number = block->snd_nxt - 1u;
+        fields.control_bits = TCP_CONTROL_FIN | TCP_CONTROL_ACK;
+    } else {
+        fields.sequence_number = block->iss;
+        fields.control_bits = TCP_CONTROL_SYN | TCP_CONTROL_ACK;
+    }
     /* ⚠ A promise of exactly this many octets, and ⚠ `take_the_data` is what
      * backs it (hidetzu/tcpip-stack#64 Owner Decision 1). */
     fields.window = HANDSHAKE_WINDOW;
@@ -188,7 +201,7 @@ static void take_the_data(struct transmission_control_block *block,
  * Returns false when the segment carries no FIN or carries one outside the
  * window; ⚠ **`outcome->the_fin_was_read` says which of those it was not.** */
 static bool read_the_fin(struct transmission_control_block *block,
-                         const struct tcp_header *header,
+                         const struct tcp_header *header, struct moment now,
                          struct handshake_outcome *outcome,
                          struct handshake_counts *counts)
 {
@@ -207,10 +220,49 @@ static bool read_the_fin(struct transmission_control_block *block,
 
     block->rcv_nxt = where_the_fin_sits + 1u;
     block->state = CONNECTION_CLOSE_WAIT;
+    /* ⚠ And it does not rest there. ⚠ ADR 0022 decided that the arrival of a
+     * FIN is the CLOSE the absent user would have made, so ⚠ **the CLOSE
+     * happens now**, and RFC 793's CLOSE Call for CLOSE-WAIT is "send a FIN
+     * segment, enter LAST-ACK state" — ⚠ `LAST-ACK` and not `CLOSING`, which is
+     * RFC 1122 §4.2.2.20 (a) correcting a known error in RFC 793 and RFC 9293
+     * §3.10.4 carrying that correction (ADR 0022).
+     *
+     * ⚠ Our FIN occupies one sequence number, the same rule theirs did.
+     * ⚠ Both timers start now: the send is what RFC 793 reinitialises them on,
+     * and ⚠ **the ones from the handshake may already have passed.** */
+    block->snd_nxt += 1u;
+    block->state = CONNECTION_LAST_ACK;
+    block->answer_due = moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
+    block->give_up_at = moment_after(now, HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS);
     /* ⚠ Reported and counted from one place, so the two cannot diverge. */
     outcome->we_would_acknowledge = block->rcv_nxt;
     outcome->the_fin_was_read = true;
     counts->the_other_side_closed++;
+    return true;
+}
+
+/* Build whatever `block->state` says is due into the caller's buffer, and say
+ * which segment it was.
+ *
+ * ⚠ The kind and the octets are set together, so ⚠ **a caller told it holds our
+ * FIN cannot be counting the answer** (the pairing `stayed()` enforces for a
+ * reason and its counter). ⚠ On failure the buffer is reported as empty, and
+ * ⚠ a caller must not send what was not built. */
+static bool build_what_is_due(const struct transmission_control_block *block,
+                              const struct connection_id *id,
+                              const uint8_t *requester_hardware_address,
+                              const uint8_t *our_hardware_address,
+                              uint8_t *reply, size_t reply_bytes,
+                              struct handshake_outcome *outcome)
+{
+    outcome->reply_bytes = build_the_answer(block, id, requester_hardware_address,
+                                            our_hardware_address, reply, reply_bytes);
+    if (outcome->reply_bytes == 0) {
+        outcome->reply = HANDSHAKE_REPLY_NONE;
+        return false;
+    }
+    outcome->reply = block->state == CONNECTION_LAST_ACK ? HANDSHAKE_REPLY_OUR_FIN
+                                                         : HANDSHAKE_REPLY_THE_ANSWER;
     return true;
 }
 
@@ -279,8 +331,16 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                  * state reported is the one it ended in, which may be
                  * CLOSE-WAIT, and ⚠ **both counters move**: one connection did
                  * reach open, and one side did close (ADR 0022). */
-                read_the_fin(held, header, outcome, counts);
+                read_the_fin(held, header, now, outcome, counts);
                 moved(outcome, held->state, &counts->established);
+                if (held->state == CONNECTION_LAST_ACK &&
+                    !build_what_is_due(held, id, requester_hardware_address,
+                                       our_hardware_address, reply, reply_bytes,
+                                       outcome)) {
+                    held->state = CONNECTION_CLOSE_WAIT;
+                    held->snd_nxt -= 1u;
+                    outcome->state = CONNECTION_CLOSE_WAIT;
+                }
                 return;
             }
 
@@ -311,10 +371,11 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
          * already moved over the first one, so ⚠ **every retransmission is
          * outside the window and is counted as that.** */
         if ((held->state == CONNECTION_ESTABLISHED ||
-             held->state == CONNECTION_CLOSE_WAIT) &&
+             held->state == CONNECTION_CLOSE_WAIT ||
+             held->state == CONNECTION_LAST_ACK) &&
             carries_ack && (header->control_bits & TCP_CONTROL_FIN) != 0) {
             take_the_data(held, header, outcome, counts);
-            if (read_the_fin(held, header, outcome, counts)) {
+            if (read_the_fin(held, header, now, outcome, counts)) {
                 /* ⚠ It moved, and ⚠ **no counter moves here**: `read_the_fin`
                  * has already counted it, the same way `take_the_data` and
                  * `connections_take` count their own. ⚠ `established` must not
@@ -322,11 +383,44 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                  * again would say two did. */
                 outcome->decision = HANDSHAKE_MOVED;
                 outcome->reason = HANDSHAKE_REASON_NONE;
-                outcome->state = CONNECTION_CLOSE_WAIT;
+                outcome->state = held->state;
+                if (!build_what_is_due(held, id, requester_hardware_address,
+                                       our_hardware_address, reply, reply_bytes,
+                                       outcome)) {
+                    /* ⚠ Ours, not the sender's. ⚠ The connection is left in
+                     * CLOSE-WAIT rather than claiming to have closed, and
+                     * ⚠ **the block is NOT given back**: their FIN was read and
+                     * `RCV.NXT` moved, so ⚠ forgetting it would make the next
+                     * copy of that FIN look like a new connection. */
+                    held->state = CONNECTION_CLOSE_WAIT;
+                    held->snd_nxt -= 1u;
+                    stayed(outcome, HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY,
+                           &counts->we_could_not_build_the_reply);
+                    outcome->state = CONNECTION_CLOSE_WAIT;
+                }
                 return;
             }
             stayed(outcome, HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW,
                    &counts->fin_outside_the_window);
+            return;
+        }
+
+        /* ⚠ RFC 793 for LAST-ACK: "The only thing that can arrive in this state
+         * is an acknowledgment of our FIN.  If our FIN is now acknowledged,
+         * delete the TCB, enter the CLOSED state, and return."
+         *
+         * ⚠ `SND.NXT` was advanced over our FIN, so an acknowledgment at or past
+         * it is one that covers the FIN. ⚠ Unsigned, for the wrap. */
+        if (held->state == CONNECTION_LAST_ACK && carries_ack) {
+            outcome->acknowledgment_we_had = header->acknowledgment_number;
+            outcome->acknowledgment_we_expected = held->snd_nxt;
+            if (at_or_before(held->snd_nxt, header->acknowledgment_number)) {
+                connections_release(connections, held);
+                moved(outcome, CONNECTION_CLOSED, &counts->closed);
+                return;
+            }
+            stayed(outcome, HANDSHAKE_REASON_ACKNOWLEDGMENT_WE_ARE_NOT_WAITING_FOR,
+                   &counts->acknowledgment_we_are_not_waiting_for);
             return;
         }
 
@@ -411,9 +505,8 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     taken->answer_due = moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
     taken->give_up_at = moment_after(now, HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS);
 
-    outcome->reply_bytes = build_the_answer(taken, id, requester_hardware_address,
-                                            our_hardware_address, reply, reply_bytes);
-    if (outcome->reply_bytes == 0) {
+    if (!build_what_is_due(taken, id, requester_hardware_address, our_hardware_address,
+                           reply, reply_bytes, outcome)) {
         /* ⚠ The connection was opened and we cannot answer it. ⚠ Ours, not the
          * sender's, and ⚠ the block is given back so the next SYN is not refused
          * for want of room by a connection nothing will ever answer. */
@@ -429,16 +522,22 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
 
 /* The one connection that is waiting for something, or NULL.
  *
- * ⚠ Only `SYN-RECEIVED` waits: a connection that reached `ESTABLISHED` is
- * waiting for nothing, ⚠ **a connection whose other side has closed is not
- * still opening** — answering it again would send a SYN-ACK at something that
- * has said goodbye (hidetzu/tcpip-stack#65) — and one that is not in use is not
- * a connection. */
+ * ⚠ Two states wait, and ⚠ **for two different things**: `SYN-RECEIVED` for a
+ * connection to be confirmed, and `LAST-ACK` for our own FIN to be acknowledged.
+ * ⚠ RFC 793: "All segments preceding and including FIN will be retransmitted
+ * until acknowledged."
+ *
+ * ⚠ A connection that reached `ESTABLISHED` is waiting for nothing, ⚠ **and one
+ * left in `CLOSE-WAIT` is waiting for nothing either** — nothing rests there,
+ * and a connection only stays when the answer could not be built, which
+ * `build_what_is_due` has already counted as ours. ⚠ One that is not in use is
+ * not a connection. */
 static struct transmission_control_block *the_one_waiting(struct connections *connections)
 {
     for (size_t i = 0; i < CONNECTIONS_AT_ONCE; i++) {
         struct transmission_control_block *block = &connections->block[i];
-        if (block->in_use && block->state == CONNECTION_SYN_RECEIVED) {
+        if (block->in_use && (block->state == CONNECTION_SYN_RECEIVED ||
+                              block->state == CONNECTION_LAST_ACK)) {
             return block;
         }
     }
@@ -472,11 +571,20 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
         /* ⚠ RFC 793's USER TIMEOUT: "delete the TCB, enter the CLOSED state and
          * return." ⚠ Released, so the next SYN can open one — there is room for
          * exactly one (ADR 0015). */
+        /* ⚠ Two different events, counted and said apart: ⚠ **a connection that
+         * never opened, and one that would not finish closing.** ⚠ Folding them
+         * into one reason is the defect hidetzu/tcpip-stack#59 had to undo. */
+        bool was_closing = waiting->state == CONNECTION_LAST_ACK;
         connections_release(connections, waiting);
         outcome->decision = HANDSHAKE_STAYED;
-        outcome->reason = HANDSHAKE_REASON_NOBODY_CONFIRMED_IT;
+        outcome->reason = was_closing ? HANDSHAKE_REASON_NOBODY_ACKNOWLEDGED_OUR_FIN
+                                      : HANDSHAKE_REASON_NOBODY_CONFIRMED_IT;
         outcome->state = CONNECTION_LISTEN;
-        counts->given_up_on++;
+        if (was_closing) {
+            counts->never_acknowledged_our_fin++;
+        } else {
+            counts->given_up_on++;
+        }
         return HANDSHAKE_GIVE_UP;
     }
 
@@ -490,10 +598,9 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
 
         /* ⚠ Addressed from what the connection remembers: ⚠ **there is no
          * arriving frame to read it from** (hidetzu/tcpip-stack#59). */
-        outcome->reply_bytes =
-            build_the_answer(waiting, &waiting->id, waiting->requester_hardware_address,
-                             our_hardware_address, reply, reply_bytes);
-        if (outcome->reply_bytes == 0) {
+        if (!build_what_is_due(waiting, &waiting->id,
+                               waiting->requester_hardware_address,
+                               our_hardware_address, reply, reply_bytes, outcome)) {
             /* ⚠ Ours, not the sender's. ⚠ The attempt is spent either way — the
              * timer has already moved — and ⚠ the give-up timer still runs. */
             outcome->decision = HANDSHAKE_STAYED;
@@ -504,8 +611,12 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
 
         outcome->decision = HANDSHAKE_STAYED;
         /* ⚠ Its own reason. ⚠ Until hidetzu/tcpip-stack#59 this said the sender
-         * had asked again, ⚠ **which was false: our timer fired.** */
-        outcome->reason = HANDSHAKE_REASON_THE_ANSWER_WENT_OUT_AGAIN;
+         * had asked again, ⚠ **which was false: our timer fired.** ⚠ And our
+         * FIN going out again is not the answer going out again — ⚠ **two
+         * sends, two names** (hidetzu/tcpip-stack#66). */
+        outcome->reason = outcome->reply == HANDSHAKE_REPLY_OUR_FIN
+                              ? HANDSHAKE_REASON_OUR_FIN_WENT_OUT_AGAIN
+                              : HANDSHAKE_REASON_THE_ANSWER_WENT_OUT_AGAIN;
         return HANDSHAKE_ANSWER_AGAIN;
     }
 

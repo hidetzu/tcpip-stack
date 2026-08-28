@@ -7,10 +7,11 @@ namespace, and reports the ethernet frames the kernel puts on it — length per 
 bytes on request. ⚠ **Given `--mac` and `--ipv4` it also answers the ARP requests and the ICMP echo
 requests that ask for that address**, and ⚠ **`ping` reports 0% packet loss against it.** ⚠ **Add
 `--tcp-port` and the Linux kernel's own `connect()` succeeds against it: `ss` reports the connection
-established.** ⚠ **Data that arrives on it is taken and discarded**, an octet at a time, and ⚠ **a `FIN` closing
-the other side is read** — the connection reaches `CLOSE-WAIT`. ⚠ **The sender is told about
-neither yet** — [`docs/SPEC.md`](docs/SPEC.md) §2 says what is missing and what closes it.
-⚠ Nothing else is sent. Without those options it only reads.
+established.** ⚠ **When the other side closes, its `FIN` is acknowledged and this end closes in the same segment,
+and the connection is finished once that is acknowledged in return** — ⚠ `ss` on the peer then
+reports `TIME-WAIT`, which is its own. ⚠ **Data that arrives is taken and discarded**, an octet at a
+time, ⚠ **without the sender being told at the time** — [`docs/SPEC.md`](docs/SPEC.md) §2 says what
+is missing. ⚠ Nothing else is sent. Without those options it only reads.
 
 ⚠ **The namespace is not `tcpip-stack`'s doing.** It uses whichever network namespace it is
 started in. The checks put a fresh one there with `unshare -Urn`
@@ -171,16 +172,22 @@ the kernel's own `close()` produces no `FIN` and ⚠ **with it at 1 the `FIN` ar
 window covers is taken and discarded, and ⚠ **nothing tells the sender we have it** — so it
 retransmits. ⚠ **The promise is kept in taking and not yet in telling.**
 
-⚠ **The `FIN` is read**, and the connection moves to `CLOSE-WAIT` — RFC 793's own state, with
-`RCV.NXT` advanced over the `FIN` by exactly one, after any data it rides with. ⚠ **`TIME-WAIT` is
-not ours**: the document puts it on the side that closed first, and this stack never does.
-⚠ **The document's `CLOSE-WAIT` waits for a local user to close, and there is no user here** — so
-what happens instead is a decision, recorded in
-[ADR 0022](docs/adr/0022-a-fin-is-read-and-the-user-rfc-793-waits-for-does-not-exist.md).
+⚠ **The `FIN` is read**, with `RCV.NXT` advanced over it by exactly one, after any data it rides
+with. ⚠ **`TIME-WAIT` is not ours**: the document puts it on the side that closed first, and this
+stack never does. ⚠ **The document's `CLOSE-WAIT` waits for a local user to close, and there is no
+user here** — so what happens instead is a decision, recorded in
+[ADR 0022](docs/adr/0022-a-fin-is-read-and-the-user-rfc-793-waits-for-does-not-exist.md): the
+`FIN`'s arrival *is* the close.
 
-⚠ Nothing is sent for any of it: three places RFC 793 §3.9 asks for a reset or an ack produce a
-counted reason and no segment, and ⚠ **the acknowledgment the `FIN` is owed is one of them** — so
-⚠ **the peer retransmits its `FIN` and the connection is never closed.** ⚠ **The initial sequence number is fixed, which is a known weakness outside a private
+⚠ **So one segment goes back carrying `FIN,ACK`** — their close acknowledged and ours sent together
+— and the connection enters `LAST-ACK`. ⚠ **The other side's verdict, not ours**: measured
+2026-08-29, ⚠ **the kernel sent its `FIN` five times before this and once after**, and `ss` then
+reports `TIME-WAIT`.
+⚠ Why one segment and not two, and why `LAST-ACK` and not what RFC 793's CLOSE Call prints, are in
+[ADR 0023](docs/adr/0023-our-close-rides-the-acknowledgment-of-theirs.md).
+
+⚠ **What is still not sent**: three places RFC 793 §3.9 asks for a reset or an ack produce a counted
+reason and no segment, and ⚠ **data is never acknowledged at the time it is taken.** ⚠ **The initial sequence number is fixed, which is a known weakness outside a private
 namespace** — [`docs/SPEC.md`](docs/SPEC.md) §2 says so plainly.
 
 ### Our own code answers a ping
