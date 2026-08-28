@@ -208,8 +208,9 @@ counted, ⚠ **and the same segment with the right checksum, in the same run, is
 ⚠ **What is in it after that, and what is not.** ⚠ The answer advertises a window of one octet,
 and ⚠ **that window is what makes closing possible at all**: measured 2026-08-29, with a window of 0
 the kernel's own `close()` produces no `FIN` and ⚠ **with it at 1 the `FIN` arrives.** ⚠ An octet the
-window covers is taken and discarded, and ⚠ **nothing tells the sender we have it** — so it
-retransmits. ⚠ **The promise is kept in taking and not yet in telling.**
+window covers is ⚠ **acknowledged and then discarded** — there is nobody to give it to — and
+⚠ **the peer's `Send-Q` reaches 0**, measured 2026-08-29. ⚠ Until hidetzu/tcpip-stack#74 nothing
+told the sender, and it resent the same octet seven times.
 
 ⚠ **The `FIN` is read**, with `RCV.NXT` advanced over it by exactly one, after any data it rides
 with. ⚠ **`TIME-WAIT` is not ours**: the document puts it on the side that closed first, and this
@@ -225,10 +226,10 @@ reports `TIME-WAIT`.
 ⚠ Why one segment and not two, and why `LAST-ACK` and not what RFC 793's CLOSE Call prints, are in
 [ADR 0023](docs/adr/0023-our-close-rides-the-acknowledgment-of-theirs.md).
 
-⚠ **What is still not sent**: three places RFC 793 §3.9 asks for a reset or an ack produce a counted
-reason and no segment, and ⚠ **data is never acknowledged at the time it is taken.** ⚠ **The initial
-sequence number is fixed, which is a known weakness outside a private namespace** —
-[`docs/SPEC.md`](docs/SPEC.md) §2 says so plainly.
+⚠ **What is still not sent**: three places RFC 793 §3.9 asks for a reset produce a counted reason and
+no segment, and ⚠ **a segment we refuse draws nothing** — the document asks for an acknowledgment
+there too. ⚠ **The initial sequence number is fixed, which is a known weakness outside a private
+namespace** — [`docs/SPEC.md`](docs/SPEC.md) §2 says so plainly.
 
 ⚠ **Whether the kernel then lets the connection go** is the milestone above.
 

@@ -354,17 +354,21 @@ static void write_socket(FILE *out, const struct socket *socket)
     fprintf(out, ":%u", socket->port);
 }
 
-/* ⚠ What we did with the octets, in one place, because two lines print it.
+/* ⚠ What we did with the octets, in one place, because three lines print it.
  *
- * ⚠ It says what happened first and what is missing after, with what closes it
- * (`CLAUDE.md` §4-1). ⚠ Nothing here is the sender's fault: ⚠ **they sent what
- * our own window invited**, and ⚠ **not having told them is ours.** */
+ * ⚠ It says what happened first (`CLAUDE.md` §4-1). ⚠ Nothing here is the
+ * sender's fault: ⚠ **they sent what our own window invited**, and
+ * ⚠ **having nobody to give it to is ours.**
+ *
+ * ⚠ Until hidetzu/tcpip-stack#74 this ended "The sender has not been told we
+ * have it yet", ⚠ **which stopped being true when the acknowledgment started
+ * going out.** ⚠ A stale sentence misleads harder than stale code
+ * (`CLAUDE.md` §5). */
 static void write_the_data_we_took(FILE *out, uint16_t octets_taken)
 {
-    fprintf(out, "  %u octet%s of data arrived; we took %s and had nobody to give\n"
-                 "    %s to. The sender has not been told we have %s yet\n",
+    fprintf(out, "  %u octet%s of data arrived; we took %s, told the sender so, and\n"
+                 "    had nobody to give %s to\n",
             (unsigned)octets_taken, octets_taken == 1 ? "" : "s",
-            octets_taken == 1 ? "it" : "them",
             octets_taken == 1 ? "it" : "them",
             octets_taken == 1 ? "it" : "them");
 }
@@ -540,6 +544,8 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
     /* ⚠ The first number here is octets and the second is segments. ⚠ Both say
      * which, on the line, because ⚠ **a number beside a number of a different
      * kind is read as the same kind** (`CLAUDE.md` §6). */
+    fprintf(out, "%lu acknowledgment%s for data left the device\n",
+            counts->data_acknowledged, counts->data_acknowledged == 1 ? "" : "s");
     fprintf(out, "%lu octet%s of data %s taken and discarded, and %lu segment%s "
                  "carried data none of which was inside the window we promised\n",
             counts->octets_taken_and_discarded,
@@ -635,10 +641,11 @@ void report_usage(FILE *out, const char *program_name)
             "Without --mac and --ipv4 it only reads.\n"
             "ARP and ICMP echo are what it answers so far.\n"
             "With --tcp-port it also answers a connection request on that port, as far\n"
-            "as the connection being open. Data that arrives on it is taken and\n"
-            "discarded without the sender being told. When the other side closes,\n"
-            "its FIN is acknowledged and this end closes in the same segment, and\n"
-            "the connection is finished once that is acknowledged in return.\n"
+            "as the connection being open. Data that arrives on it is acknowledged\n"
+            "and then discarded, because there is nobody to give it to. When the\n"
+            "other side closes, its FIN is acknowledged and this end closes in the\n"
+            "same segment, and the connection is finished once that is acknowledged\n"
+            "in return.\n"
             "The device exists only while this program holds it open.\n",
             program_name);
 }

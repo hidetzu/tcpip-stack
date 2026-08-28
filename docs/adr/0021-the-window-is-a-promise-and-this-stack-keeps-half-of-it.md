@@ -63,11 +63,16 @@ to consume it". ⚠ **That was reasoned, not measured.** ⚠ It was carried over
 measurement in hidetzu/tcpip-stack#64, ⚠ **which was taken with a window of 1024**, and
 ⚠ **a number from another scope is a lie about this one** (`CLAUDE.md` §6, §9).
 
-⚠ **What actually happens, measured with the window at 1**: the peer honours it and sends
-⚠ **one octet, at the same sequence number, over and over** — 7 copies of the same octet in
-8 seconds, with its `Send-Q` stuck at 5. ⚠ **So exactly one octet is ever taken per connection**,
-and every later copy is entirely behind `RCV.NXT` and refused. ⚠ `tests/foreign.sh`
-`a_window_of_one_gets_one_octet_and_the_same_one_again` is the wall.
+⚠ **What actually happens, measured with the window at 1 and nothing acknowledging**: the peer
+honours it and sends ⚠ **one octet, at the same sequence number, over and over** — 7 copies of the
+same octet in 8 seconds, with its `Send-Q` stuck at 5. ⚠ **So exactly one octet was ever taken per
+connection**, and every later copy was entirely behind `RCV.NXT` and refused.
+
+⚠ **hidetzu/tcpip-stack#74 closed that**: the octet is acknowledged when it is taken, and
+⚠ **measured the same conditions, the peer's `Send-Q` reaches 0 and the five octets arrive at five
+sequence numbers.** ⚠ **What survives from the correction above is the lesson, not the numbers**:
+`tests/foreign.sh` `the_peers_send_queue_drains_once_we_acknowledge` is the wall now, and it fails
+if the window is raised without re-measuring (`CLAUDE.md` §9).
 
 ⚠ **This was said before the decision was taken, not discovered afterwards**
 (hidetzu/tcpip-stack#64, in the comment recording the two answers). ⚠ **`docs/SPEC.md` §2 carries it

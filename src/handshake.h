@@ -125,6 +125,23 @@ enum handshake_reply {
     /* The `<SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>` that answers a SYN. */
     HANDSHAKE_REPLY_THE_ANSWER,
 
+    /* ⚠ A bare acknowledgment for data we took.
+     *
+     * ⚠ RFC 793's seventh step, verbatim: "When the TCP takes responsibility
+     * for delivering the data to the user it must also acknowledge the receipt
+     * of the data ... Send an acknowledgment of the form:
+     * <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>".
+     *
+     * ⚠ **Nothing here delivers anything to a user** — there is none, and the
+     * octets are discarded (hidetzu/tcpip-stack#64 Owner Decision 2). ⚠ **What
+     * is acknowledged is what was taken**, and that is what `RCV.NXT` says.
+     *
+     * ⚠ The document adds: "This acknowledgment should be piggybacked on a
+     * segment being transmitted if possible without incurring undue delay."
+     * ⚠ **Nothing else is ever being transmitted here**, so there is nothing to
+     * piggyback on. */
+    HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED,
+
     /* ⚠ Our own FIN, ⚠ **carrying the acknowledgment of theirs in the same
      * segment.** ⚠ Measured 2026-08-29, in a namespace on `lo`: when its
      * application closes the moment the peer's FIN arrives, ⚠ **the Linux
@@ -232,12 +249,11 @@ enum handshake_reason {
      * expected** — it is exactly what advertising a window invites — and the two
      * are not the same event.
      *
-     * ⚠ `RCV.NXT` advanced, so ⚠ **the same octet is not taken twice.**
-     * ⚠ **Nothing tells the sender**, because nothing is sent from this layer at
-     * all: ⚠ **the window is a promise kept in taking and not yet in telling**,
-     * and `docs/SPEC.md` §2 names hidetzu/tcpip-stack#66 as what closes it.
-     * ⚠ The peer retransmits meanwhile, and that is the measured consequence,
-     * not a surprise. */
+     * ⚠ `RCV.NXT` advanced, so ⚠ **the same octet is not taken twice**, and
+     * ⚠ **the sender is told** — an acknowledgment is built for it
+     * (hidetzu/tcpip-stack#74). ⚠ Until then nothing was sent for data at all,
+     * and ⚠ **the peer resent the same octet seven times in eight seconds**,
+     * measured. */
     HANDSHAKE_REASON_THE_DATA_WAS_TAKEN_AND_DISCARDED,
 
     /* ⚠ Data arrived that ⚠ **none of the window we promised covers** — every
@@ -300,6 +316,15 @@ struct handshake_counts {
      * everything else (hidetzu/tcpip-stack#65). */
     unsigned long fin_outside_the_window;
     unsigned long fin_we_could_not_place;
+
+    /* ⚠ **Segments**, not octets. ⚠ An acknowledgment for data we took, counted
+     * only once the wire took the whole of it. ⚠ The caller moves this one.
+     *
+     * ⚠ Kept apart from `octets_taken_and_discarded`, which is in octets:
+     * ⚠ **one says how much arrived, the other how many times we said so**, and
+     * ⚠ at a window of 1 they happen to move together — ⚠ **which is exactly
+     * why they must not be one number** (`CLAUDE.md` §6). */
+    unsigned long data_acknowledged;
 
     /* ⚠ **Segments.** ⚠ Our own FIN, counted only once the wire took the whole
      * of it — ⚠ **a segment that was built is not a segment that left**, the
@@ -416,6 +441,16 @@ struct handshake_outcome {
  *                      many octets and discards them
  *                      (hidetzu/tcpip-stack#64 Owner Decisions 1 and 2)
  *     Options          ⚠ none (Owner Decision 2)
+ *
+ * ⚠ Since hidetzu/tcpip-stack#74 the same buffer also carries a bare
+ * acknowledgment for data we took:
+ *
+ *     Control Bits     ACK — RFC 793: "<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>"
+ *     Sequence Number  `SND.NXT`, ⚠ **unmoved**: an ACK is "A control bit
+ *                      (acknowledge) occupying no sequence space", so
+ *                      ⚠ **nothing is consumed and there is nothing to
+ *                      retransmit**
+ *     Acknowledgment   RCV.NXT, ⚠ already advanced over what was taken
  *
  * ⚠ Since hidetzu/tcpip-stack#66 the same buffer also carries our own FIN:
  *
