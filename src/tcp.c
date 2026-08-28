@@ -212,3 +212,59 @@ enum tcp_parse tcp_parse_header(const uint8_t *segment, size_t segment_bytes,
     header->data_begins_at = header_bytes;
     return TCP_PARSE_OK;
 }
+
+static void write_16(uint8_t *at, uint16_t value)
+{
+    at[0] = (uint8_t)(value >> 8);
+    at[1] = (uint8_t)(value & 0xffu);
+}
+
+static void write_32(uint8_t *at, uint32_t value)
+{
+    at[0] = (uint8_t)(value >> 24);
+    at[1] = (uint8_t)((value >> 16) & 0xffu);
+    at[2] = (uint8_t)((value >> 8) & 0xffu);
+    at[3] = (uint8_t)(value & 0xffu);
+}
+
+enum tcp_build tcp_build_segment(const struct tcp_header *fields,
+                                 const uint8_t *source_address,
+                                 const uint8_t *destination_address,
+                                 uint8_t *segment, size_t segment_bytes,
+                                 size_t *built_bytes)
+{
+    /* ⚠ Decided before a single octet is written, so a refused build leaves the
+     * caller's buffer exactly as it was. */
+    if (segment_bytes < TCP_FIXED_HEADER_BYTES) {
+        return TCP_BUILD_BUFFER_TOO_SMALL;
+    }
+
+    write_16(segment + SOURCE_PORT_OFFSET, fields->source_port);
+    write_16(segment + DESTINATION_PORT_OFFSET, fields->destination_port);
+    write_32(segment + SEQUENCE_NUMBER_OFFSET, fields->sequence_number);
+    write_32(segment + ACKNOWLEDGMENT_NUMBER_OFFSET, fields->acknowledgment_number);
+
+    /* ⚠ Five 32-bit words, because there are no options — and ⚠ `Reserved` is
+     * zero, which is what this file calls malformed on the way in. */
+    segment[OFFSET_AND_RESERVED_OFFSET] = (uint8_t)(TCP_HEADER_LENGTH_MINIMUM << 4);
+    segment[CONTROL_BITS_OFFSET] = (uint8_t)(fields->control_bits & 0x3fu);
+
+    write_16(segment + WINDOW_OFFSET, fields->window);
+    /* ⚠ Zero, and it means it: `URG` is not among the Control Bits we set, so
+     * RFC 793's "Urgent Pointer field significant" does not apply. */
+    write_16(segment + URGENT_POINTER_OFFSET, 0);
+
+    /* ⚠ RFC 793: "While computing the checksum, the checksum field itself is
+     * replaced with zeros." ⚠ The same one loop the Parse side uses, over the
+     * same pseudo-header (`CLAUDE.md` §3). */
+    write_16(segment + CHECKSUM_OFFSET, 0);
+    uint8_t pseudo_header[PSEUDO_HEADER_BYTES];
+    build_the_pseudo_header(pseudo_header, source_address, destination_address,
+                            TCP_FIXED_HEADER_BYTES);
+    write_16(segment + CHECKSUM_OFFSET,
+             internet_checksum_of_two(pseudo_header, sizeof pseudo_header, segment,
+                                      TCP_FIXED_HEADER_BYTES, CHECKSUM_OFFSET));
+
+    *built_bytes = TCP_FIXED_HEADER_BYTES;
+    return TCP_BUILD_OK;
+}

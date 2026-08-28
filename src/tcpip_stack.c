@@ -17,6 +17,7 @@
 
 #include "arp_responder.h"
 #include "echo_responder.h"
+#include "handshake.h"
 #include "ethernet.h"
 #include "report.h"
 #include "tap.h"
@@ -80,6 +81,15 @@ struct options {
     bool has_identity;
     uint8_t hardware_address[ARP_HARDWARE_ADDRESS_BYTES];
     uint8_t protocol_address[ARP_PROTOCOL_ADDRESS_BYTES];
+
+    /* ⚠ The TCP port this stack answers for, or 0 for none.
+     *
+     * ⚠ hidetzu/tcpip-stack#35 Owner Decision 3 refused to add an option nobody
+     * needed. ⚠ This is a different kind of thing: ⚠ **a TTL is how we answer;
+     * a port is what we answer for** — the same kind as `--ipv4`. ⚠ Hard-coding
+     * it would leave this as the one piece of "what we answer for" that is not
+     * on the command line (hidetzu/tcpip-stack#44 Owner Decision 1). */
+    uint16_t tcp_port;
 };
 
 /* Returns false when the text is not a number in [minimum, maximum]. */
@@ -151,6 +161,7 @@ int main(int argc, char **argv)
         { "timeout", required_argument, NULL, 't' },
         { "mac", required_argument, NULL, 'm' },
         { "ipv4", required_argument, NULL, '4' },
+        { "tcp-port", required_argument, NULL, 'p' },
         { "hex", no_argument, NULL, 'x' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
@@ -160,7 +171,7 @@ int main(int argc, char **argv)
     bool given_hardware_address = false;
     bool given_protocol_address = false;
 
-    while ((option = getopt_long(argc, argv, "d:c:t:m:4:xh", long_options, NULL)) != -1) {
+    while ((option = getopt_long(argc, argv, "d:c:t:m:4:p:xh", long_options, NULL)) != -1) {
         long value = 0;
         switch (option) {
         case 'm':
@@ -176,6 +187,13 @@ int main(int argc, char **argv)
                 return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
             }
             given_protocol_address = true;
+            break;
+        case 'p':
+            if (!parse_bounded_long(optarg, 1, 65535, &value)) {
+                fprintf(stderr, "--tcp-port takes a whole number from 1 to 65535.\n");
+                return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
+            }
+            options.tcp_port = (uint16_t)value;
             break;
         case 'd':
             options.device_name = optarg;
@@ -213,6 +231,15 @@ int main(int argc, char **argv)
         return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
     }
     options.has_identity = given_hardware_address;
+
+    /* ⚠ A port with no identity answers nothing, and ⚠ saying so beats
+     * accepting it and staying silent — a stack that quietly declined would look
+     * exactly like one nobody asked (the shape Owner Decision 6 set). */
+    if (options.tcp_port != 0 && !options.has_identity) {
+        fprintf(stderr, "--tcp-port needs --mac and --ipv4 as well: "
+                        "nothing can be answered without them.\n");
+        return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
+    }
 
     if (optind != argc) {
         fprintf(stderr, "%s takes no arguments beyond its options.\n", argv[0]);
@@ -258,6 +285,11 @@ int main(int argc, char **argv)
     struct arp_counts arp_counts = { 0, 0, 0, 0, 0 };
     struct echo_counts echo_counts;
     memset(&echo_counts, 0, sizeof echo_counts);
+    struct handshake_counts handshake_counts;
+    memset(&handshake_counts, 0, sizeof handshake_counts);
+    struct connections connections;
+    connections_forget_everything(&connections);
+    struct tcp_counts tcp_counts = { 0, 0 };
     struct ethernet_counts ethernet_counts = { 0, 0, 0 };
     unsigned int consecutive_read_failures = 0;
     int exit_code = EXIT_READ_WHAT_WAS_ASKED;
@@ -356,6 +388,84 @@ int main(int argc, char **argv)
                 }
             } else if (header_answer == ETHERNET_PARSE_OK &&
                        header.length_type == IPV4_ETHERNET_LENGTH_TYPE) {
+                /* ⚠ Read once here to see whose it is and what it carries.
+                 * ⚠ `echo_respond` reads it again below — ⚠ that is the same
+                 * function called twice, not a second implementation of the
+                 * question (`CLAUDE.md` §3), and ⚠ it keeps every IPv4-level
+                 * reason counted in one place.
+                 *
+                 * ⚠ Only a datagram that is FOR US and carries TCP is diverted.
+                 * ⚠ One that is malformed, a fragment, or addressed elsewhere
+                 * still reaches `echo_respond` and is counted there, so ⚠ those
+                 * numbers keep meaning what they meant. */
+                struct ipv4_header internet;
+                bool for_us_over_tcp =
+                    options.tcp_port != 0 &&
+                    ipv4_parse_header(frame + ETHERNET_HEADER_BYTES,
+                                      (size_t)bytes - ETHERNET_HEADER_BYTES,
+                                      &internet) == IPV4_PARSE_OK &&
+                    internet.protocol == IPV4_PROTOCOL_TCP &&
+                    memcmp(internet.destination_address, options.protocol_address,
+                           IPV4_ADDRESS_BYTES) == 0;
+
+                if (for_us_over_tcp) {
+                    size_t internet_header_bytes =
+                        (size_t)internet.internet_header_length * IPV4_HEADER_LENGTH_UNIT;
+                    const uint8_t *segment =
+                        frame + ETHERNET_HEADER_BYTES + internet_header_bytes;
+                    /* ⚠ Bounded by Total Length, never by what arrived: the
+                     * pseudo-header's TCP Length comes from this and ⚠ padding
+                     * would make the checksum disagree with nothing pointing at
+                     * it (`src/tcp.h`). */
+                    size_t segment_bytes =
+                        (size_t)internet.total_length - internet_header_bytes;
+
+                    struct tcp_header tcp;
+                    enum tcp_parse read_segment =
+                        tcp_parse_header(segment, segment_bytes,
+                                         internet.source_address,
+                                         internet.destination_address, &tcp);
+                    if (read_segment != TCP_PARSE_OK) {
+                        report_tcp_not_read(stdout, read_segment);
+                        if (read_segment == TCP_PARSE_MALFORMED) {
+                            tcp_counts.malformed++;
+                        } else {
+                            tcp_counts.checksum_disagrees++;
+                        }
+                    } else {
+                        struct connection_id id;
+                        memset(&id, 0, sizeof id);
+                        memcpy(id.local.address, internet.destination_address,
+                               CONNECTION_ADDRESS_BYTES);
+                        id.local.port = tcp.destination_port;
+                        memcpy(id.remote.address, internet.source_address,
+                               CONNECTION_ADDRESS_BYTES);
+                        id.remote.port = tcp.source_port;
+
+                        uint8_t reply[TAP_FRAME_BUFFER_BYTES];
+                        struct handshake_outcome handshake;
+                        handshake_receive(&tcp, &id, options.tcp_port, header.source,
+                                          options.hardware_address, &connections, reply,
+                                          sizeof reply, &handshake_counts, &handshake);
+                        report_handshake_outcome(stdout, &handshake);
+
+                        if (handshake.reply_bytes != 0) {
+                            ssize_t handed = tap_write_frame(device, reply,
+                                                             handshake.reply_bytes,
+                                                             &failure);
+                            /* ⚠ Counted only once the wire took the whole
+                             * answer, the same division ARP and ICMP use
+                             * (`CLAUDE.md` §1). */
+                            if (handed >= 0 &&
+                                (size_t)handed == handshake.reply_bytes) {
+                                handshake_counts.answered++;
+                            }
+                        }
+                    }
+                    fflush(stdout);
+                    continue;
+                }
+
                 struct echo_outcome echo;
                 /* ⚠ A buffer of its own rather than the frame that arrived: the
                  * hex of a frame has already been printed by here, but ⚠ a
@@ -388,6 +498,10 @@ int main(int argc, char **argv)
     if (options.has_identity) {
         report_arp_summary(stdout, &arp_counts);
         report_echo_summary(stdout, &echo_counts);
+    }
+    if (options.tcp_port != 0) {
+        report_tcp_summary(stdout, &tcp_counts);
+        report_handshake_summary(stdout, &handshake_counts);
     }
     tap_detach(device);
     return exit_code;

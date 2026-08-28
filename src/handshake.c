@@ -2,6 +2,18 @@
 
 #include <string.h>
 
+/* ⚠ Two files name the same protocol number, because ⚠ `src/tcp.c` deliberately
+ * includes nothing from the layer below it and ⚠ `src/ipv4.c` deliberately
+ * knows nothing about what it carries. ⚠ This is the mechanical cross-check
+ * that stops them diverging (`CLAUDE.md` §3, the same shape `src/tap.c` uses for
+ * `IFNAMSIZ`).
+ *
+ * ⚠ They must be the same number or every checksum we compute is over a
+ * pseudo-header that does not match the datagram it rides in — ⚠ and the only
+ * thing that would come back is "it does not agree". */
+_Static_assert(TCP_PROTOCOL_NUMBER == IPV4_PROTOCOL_TCP,
+               "the pseudo-header's Protocol must be the one the internet header carries");
+
 /* ⚠ `a` is at or before `b` on a sequence space that wraps at 2^32.
  *
  * ⚠ Written with unsigned arithmetic on purpose. ⚠ The usual
@@ -37,8 +49,63 @@ static void moved(struct handshake_outcome *outcome, enum connection_state state
     (*count)++;
 }
 
+/* Build the answer RFC 793 describes, into the caller's frame buffer.
+ *
+ *   "ISS should be selected and a SYN segment sent of the form:
+ *      <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>"
+ *
+ * ⚠ Built from the inside out, so each layer's payload is already in place.
+ * Returns 0 when it would not fit. */
+static size_t build_the_answer(const struct transmission_control_block *block,
+                               const struct connection_id *id,
+                               const uint8_t *requester_hardware_address,
+                               const uint8_t *our_hardware_address,
+                               uint8_t *reply, size_t reply_bytes)
+{
+    if (reply_bytes < ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES) {
+        return 0;
+    }
+
+    struct tcp_header fields;
+    memset(&fields, 0, sizeof fields);
+    fields.source_port = id->local.port;
+    fields.destination_port = id->remote.port;
+    fields.sequence_number = block->iss;
+    fields.acknowledgment_number = block->rcv_nxt;
+    fields.control_bits = TCP_CONTROL_SYN | TCP_CONTROL_ACK;
+    /* ⚠ Zero, and it is the truth: nothing here accepts a single octet of data
+     * (hidetzu/tcpip-stack#44 Owner Decision 3). */
+    fields.window = 0;
+
+    uint8_t *segment = reply + ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES;
+    size_t segment_bytes = 0;
+    if (tcp_build_segment(&fields, id->local.address, id->remote.address, segment,
+                          reply_bytes - ETHERNET_HEADER_BYTES - IPV4_FIXED_HEADER_BYTES,
+                          &segment_bytes) != TCP_BUILD_OK) {
+        return 0;
+    }
+
+    size_t datagram_bytes = 0;
+    if (ipv4_build_datagram(id->local.address, id->remote.address, IPV4_PROTOCOL_TCP,
+                            segment, segment_bytes, reply + ETHERNET_HEADER_BYTES,
+                            reply_bytes - ETHERNET_HEADER_BYTES,
+                            &datagram_bytes) != IPV4_BUILD_OK) {
+        return 0;
+    }
+
+    if (!ethernet_build_header(requester_hardware_address, our_hardware_address,
+                               IPV4_ETHERNET_LENGTH_TYPE, reply, reply_bytes)) {
+        return 0;
+    }
+    return ETHERNET_HEADER_BYTES + datagram_bytes;
+}
+
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
-                       uint16_t listening_port, struct connections *connections,
+                       uint16_t listening_port,
+                       const uint8_t *requester_hardware_address,
+                       const uint8_t *our_hardware_address,
+                       struct connections *connections,
+                       uint8_t *reply, size_t reply_bytes,
                        struct handshake_counts *counts,
                        struct handshake_outcome *outcome)
 {
@@ -142,6 +209,19 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     taken->snd_una = taken->iss;
     taken->snd_nxt = taken->iss + 1u;
     taken->state = CONNECTION_SYN_RECEIVED;
+
+    outcome->reply_bytes = build_the_answer(taken, id, requester_hardware_address,
+                                            our_hardware_address, reply, reply_bytes);
+    if (outcome->reply_bytes == 0) {
+        /* ⚠ The connection was opened and we cannot answer it. ⚠ Ours, not the
+         * sender's, and ⚠ the block is given back so the next SYN is not refused
+         * for want of room by a connection nothing will ever answer. */
+        connections_release(connections, taken);
+        stayed(outcome, HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY,
+               &counts->we_could_not_build_the_reply);
+        outcome->state = CONNECTION_LISTEN;
+        return;
+    }
 
     moved(outcome, CONNECTION_SYN_RECEIVED, &counts->opened);
 }

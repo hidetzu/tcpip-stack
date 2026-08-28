@@ -15,6 +15,9 @@
 #include "check.h"
 #include "handshake.h"
 
+static const unsigned char THEIR_MAC[6] = { 0x02, 0x11, 0x11, 0x11, 0x11, 0x11 };
+static const unsigned char OUR_MAC[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x02 };
+
 #define OUR_PORT 80
 #define THEIR_PORT 50568
 #define THEIR_ISN 0x831b6b20u
@@ -50,12 +53,16 @@ static struct tcp_header a_segment(unsigned control_bits, uint32_t sequence_numb
 struct world {
     struct connections connections;
     struct handshake_counts counts;
+    /* ⚠ Plainly large enough for the answer, so a case is never about the
+     * buffer unless it says it is. */
+    unsigned char reply[256];
 };
 
 static void a_world(struct world *world)
 {
     connections_forget_everything(&world->connections);
     memset(&world->counts, 0, sizeof world->counts);
+    memset(world->reply, 0xaa, sizeof world->reply);
 }
 
 static struct handshake_outcome receive(struct world *world,
@@ -63,8 +70,8 @@ static struct handshake_outcome receive(struct world *world,
 {
     struct connection_id id = the_connection();
     struct handshake_outcome outcome;
-    handshake_receive(header, &id, OUR_PORT, &world->connections, &world->counts,
-                      &outcome);
+    handshake_receive(header, &id, OUR_PORT, THEIR_MAC, OUR_MAC, &world->connections,
+                      world->reply, sizeof world->reply, &world->counts, &outcome);
     return outcome;
 }
 
@@ -261,8 +268,10 @@ static bool case_the_window_still_works_where_the_sequence_space_wraps(void)
 
         struct tcp_header ack =
             a_segment(TCP_CONTROL_ACK, THEIR_ISN + 1u, around_the_wrap[i].ack);
+        unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&ack, &id, OUR_PORT, &connections, &counts, &outcome);
+        handshake_receive(&ack, &id, OUR_PORT, THEIR_MAC, OUR_MAC, &connections, reply,
+                          sizeof reply, &counts, &outcome);
 
         bool established = outcome.decision == HANDSHAKE_MOVED &&
                            outcome.state == CONNECTION_ESTABLISHED;
@@ -315,6 +324,241 @@ static bool case_a_retransmitted_syn_changes_nothing(void)
     if (world.counts.not_expected_in_this_state != 0 ||
         world.counts.acknowledgment_we_are_not_waiting_for != 0) {
         fputs("  a retransmission was counted as something being wrong\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ The answer RFC 793 describes, octet for octet:
+ *   "<SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>"
+ *
+ * ⚠ And it is read back with our own parser, which ⚠ **checks the checksum
+ * before anything else** (hidetzu/tcpip-stack#41) — so ⚠ an answer that parses
+ * at all is one whose checksum agrees, without computing it a second way. */
+static bool case_the_answer_is_the_one_the_document_describes(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_one(&world, THEIR_ISN, &held)) {
+        return false;
+    }
+    struct handshake_outcome outcome;
+    {
+        /* Re-run so the outcome is to hand; `open_one` threw its away. */
+        a_world(&world);
+        struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        outcome = receive(&world, &syn);
+        struct connection_id id = the_connection();
+        held = connections_find(&world.connections, &id);
+    }
+    if (outcome.decision != HANDSHAKE_MOVED || held == NULL) {
+        fputs("  the SYN did not open a connection\n", stderr);
+        return false;
+    }
+
+    bool ok = true;
+    size_t expected = ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES +
+                      TCP_FIXED_HEADER_BYTES;
+    if (outcome.reply_bytes != expected) {
+        fprintf(stderr, "  the answer is %zu octets and a bare SYN-ACK is %zu\n",
+                outcome.reply_bytes, expected);
+        return false;
+    }
+
+    /* The ethernet header. */
+    if (memcmp(world.reply, THEIR_MAC, ETHERNET_ADDRESS_BYTES) != 0 ||
+        memcmp(world.reply + ETHERNET_ADDRESS_BYTES, OUR_MAC, ETHERNET_ADDRESS_BYTES)
+            != 0) {
+        fputs("  the answer's ethernet header is not ours to theirs\n", stderr);
+        ok = false;
+    }
+
+    /* The internet header, read back by our own parser. */
+    const unsigned char *datagram = world.reply + ETHERNET_HEADER_BYTES;
+    struct ipv4_header internet;
+    enum ipv4_parse read_back =
+        ipv4_parse_header(datagram, outcome.reply_bytes - ETHERNET_HEADER_BYTES,
+                          &internet);
+    if (read_back != IPV4_PARSE_OK) {
+        fprintf(stderr, "  the internet header we built came back as %d\n",
+                (int)read_back);
+        return false;
+    }
+    struct connection_id id = the_connection();
+    if (internet.protocol != IPV4_PROTOCOL_TCP ||
+        memcmp(internet.source_address, id.local.address, IPV4_ADDRESS_BYTES) != 0 ||
+        memcmp(internet.destination_address, id.remote.address, IPV4_ADDRESS_BYTES)
+            != 0) {
+        fputs("  the answer's internet header is not ours to theirs under TCP\n",
+              stderr);
+        ok = false;
+    }
+
+    /* ⚠ The segment, read back by `tcp_parse_header` — which judges the checksum
+     * first, so reaching OK is what says the checksum agrees. ⚠ The addresses go
+     * in the other way round, because this is a segment WE sent. */
+    struct tcp_header answer;
+    enum tcp_parse parsed =
+        tcp_parse_header(datagram + IPV4_FIXED_HEADER_BYTES,
+                         (size_t)internet.total_length - IPV4_FIXED_HEADER_BYTES,
+                         id.local.address, id.remote.address, &answer);
+    if (parsed != TCP_PARSE_OK) {
+        fprintf(stderr, "  the segment we built came back as %d "
+                        "(2 would mean its own checksum disagrees)\n", (int)parsed);
+        return false;
+    }
+
+    if (answer.control_bits != (TCP_CONTROL_SYN | TCP_CONTROL_ACK)) {
+        fprintf(stderr, "  the answer's control bits are 0x%02x, not SYN|ACK\n",
+                answer.control_bits);
+        ok = false;
+    }
+    if (answer.sequence_number != held->iss) {
+        fputs("  the answer's sequence number is not the ISS\n", stderr);
+        ok = false;
+    }
+    if (answer.acknowledgment_number != held->rcv_nxt) {
+        fputs("  the answer does not acknowledge RCV.NXT\n", stderr);
+        ok = false;
+    }
+    if (answer.source_port != OUR_PORT || answer.destination_port != THEIR_PORT) {
+        fputs("  the answer's ports are not ours to theirs\n", stderr);
+        ok = false;
+    }
+    /* ⚠ Owner Decision 3: zero, because nothing here accepts data. */
+    if (answer.window != 0) {
+        fprintf(stderr, "  the answer advertises a window of %u\n", answer.window);
+        ok = false;
+    }
+    /* ⚠ Owner Decision 2: no options at all. */
+    if (answer.data_offset != TCP_HEADER_LENGTH_MINIMUM) {
+        fprintf(stderr, "  the answer carries %u octets of options\n",
+                (answer.data_offset - TCP_HEADER_LENGTH_MINIMUM) * 4);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ Nothing is answered for anything but a SYN that opened a connection.
+ * ⚠ RFC 793 §3.9 asks for a reset in two of these and an ack in the third;
+ * ⚠ **none is sent**, and `docs/SPEC.md` §2 names all three. */
+static bool case_nothing_is_answered_except_a_syn_that_opened_one(void)
+{
+    bool ok = true;
+    static const struct { unsigned control; uint32_t seq; uint32_t ack; bool open_first;
+                          const char *what; } quiet[] = {
+        { TCP_CONTROL_ACK, THEIR_ISN, 1, false, "an acknowledgment with nothing held" },
+        { TCP_CONTROL_SYN, THEIR_ISN, 0, true,  "a retransmitted SYN" },
+        { TCP_CONTROL_ACK, THEIR_ISN + 1u, 0x0badf00du, true,
+          "an acknowledgment outside the window" },
+        { 0, THEIR_ISN + 1u, 0, true, "a segment with no control bits" },
+    };
+
+    for (size_t i = 0; i < sizeof quiet / sizeof quiet[0]; i++) {
+        struct world world;
+        a_world(&world);
+        if (quiet[i].open_first) {
+            struct transmission_control_block *held = NULL;
+            if (!open_one(&world, THEIR_ISN, &held)) {
+                return false;
+            }
+            memset(world.reply, 0xaa, sizeof world.reply);
+        }
+        struct tcp_header header =
+            a_segment(quiet[i].control, quiet[i].seq, quiet[i].ack);
+        struct handshake_outcome outcome = receive(&world, &header);
+
+        if (outcome.reply_bytes != 0) {
+            fprintf(stderr, "  %s: %zu octets were built to send\n", quiet[i].what,
+                    outcome.reply_bytes);
+            ok = false;
+        }
+        for (size_t j = 0; j < sizeof world.reply; j++) {
+            if (world.reply[j] != 0xaa) {
+                fprintf(stderr, "  %s: octet %zu of the reply buffer was written into\n",
+                        quiet[i].what, j);
+                ok = false;
+                break;
+            }
+        }
+    }
+
+    /* ⚠ The other half: a SYN that opens one IS answered, or the loop above
+     * would pass for a stack that never answered anything. */
+    struct world world;
+    a_world(&world);
+    struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+    struct handshake_outcome outcome = receive(&world, &syn);
+    if (outcome.reply_bytes == 0) {
+        fputs("  a SYN that opened a connection was not answered\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ Ours, not the sender's, ⚠ counted, and ⚠ the connection is given back so the
+ * next SYN is not refused for want of room by one nothing will ever answer. */
+static bool case_an_answer_that_would_not_fit_is_counted_as_ours(void)
+{
+    struct world world;
+    a_world(&world);
+    size_t needed =
+        ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES + TCP_FIXED_HEADER_BYTES;
+
+    bool ok = true;
+    for (size_t room = 0; room < needed; room++) {
+        struct connections connections;
+        connections_forget_everything(&connections);
+        struct handshake_counts counts;
+        memset(&counts, 0, sizeof counts);
+        unsigned char reply[256];
+        memset(reply, 0xaa, sizeof reply);
+
+        struct connection_id id = the_connection();
+        struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        struct handshake_outcome outcome;
+        handshake_receive(&syn, &id, OUR_PORT, THEIR_MAC, OUR_MAC, &connections, reply,
+                          room, &counts, &outcome);
+
+        if (outcome.decision != HANDSHAKE_STAYED ||
+            outcome.reason != HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY ||
+            counts.we_could_not_build_the_reply != 1 || counts.opened != 0) {
+            fprintf(stderr, "  %zu octets of room: decision %d reason %d, counted %lu\n",
+                    room, (int)outcome.decision, (int)outcome.reason,
+                    counts.we_could_not_build_the_reply);
+            ok = false;
+            break;
+        }
+        if (outcome.reply_bytes != 0) {
+            fprintf(stderr, "  %zu octets of room: it says it built %zu\n", room,
+                    outcome.reply_bytes);
+            ok = false;
+            break;
+        }
+        /* ⚠ The block came back, so a later SYN is not refused for want of room
+         * by a connection nothing will ever answer. */
+        if (connections_find(&connections, &id) != NULL) {
+            fprintf(stderr, "  %zu octets of room: the connection was kept\n", room);
+            ok = false;
+            break;
+        }
+    }
+
+    /* ⚠ The other half: exactly enough room answers. */
+    struct connections connections;
+    connections_forget_everything(&connections);
+    struct handshake_counts counts;
+    memset(&counts, 0, sizeof counts);
+    unsigned char reply[256];
+    struct connection_id id = the_connection();
+    struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+    struct handshake_outcome outcome;
+    handshake_receive(&syn, &id, OUR_PORT, THEIR_MAC, OUR_MAC, &connections, reply,
+                      needed, &counts, &outcome);
+    if (outcome.decision != HANDSHAKE_MOVED || outcome.reply_bytes != needed) {
+        fprintf(stderr, "  exactly %zu octets of room was declined, reason %d\n", needed,
+                (int)outcome.reason);
         ok = false;
     }
     return ok;
@@ -390,8 +634,10 @@ static bool case_each_reason_moves_only_its_own_count(void)
 
         struct connection_id id = the_connection();
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, &connections, &counts, &outcome);
+        handshake_receive(&syn, &id, OUR_PORT, THEIR_MAC, OUR_MAC, &connections, reply,
+                          sizeof reply, &counts, &outcome);
         if (outcome.reason != HANDSHAKE_REASON_NO_ROOM ||
             counts.room.refused_for_want_of_room != 1 || counts.opened != 0) {
             fprintf(stderr, "  a SYN with no room: reason %d, counted %lu\n",
@@ -408,8 +654,10 @@ static bool case_each_reason_moves_only_its_own_count(void)
         memset(&counts, 0, sizeof counts);
         struct connection_id id = the_connection();
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT + 1, &connections, &counts, &outcome);
+        handshake_receive(&syn, &id, OUR_PORT + 1, THEIR_MAC, OUR_MAC, &connections,
+                          reply, sizeof reply, &counts, &outcome);
         if (outcome.reason != HANDSHAKE_REASON_NO_CONNECTION_HELD ||
             counts.opened != 0) {
             fputs("  a SYN for a port we do not listen on opened a connection\n",
@@ -433,8 +681,10 @@ static bool case_a_block_taken_again_holds_none_of_the_last_connections_numbers(
 
     struct connection_id first = the_connection();
     struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+    unsigned char reply[256];
     struct handshake_outcome outcome;
-    handshake_receive(&syn, &first, OUR_PORT, &connections, &counts, &outcome);
+    handshake_receive(&syn, &first, OUR_PORT, THEIR_MAC, OUR_MAC, &connections, reply,
+                      sizeof reply, &counts, &outcome);
 
     struct transmission_control_block *block = connections_find(&connections, &first);
     if (block == NULL || block->state != CONNECTION_SYN_RECEIVED) {
@@ -477,6 +727,12 @@ static const struct test_case cases[] = {
     { "the_window_still_works_where_the_sequence_space_wraps",
       case_the_window_still_works_where_the_sequence_space_wraps },
     { "a_retransmitted_syn_changes_nothing", case_a_retransmitted_syn_changes_nothing },
+    { "the_answer_is_the_one_the_document_describes",
+      case_the_answer_is_the_one_the_document_describes },
+    { "nothing_is_answered_except_a_syn_that_opened_one",
+      case_nothing_is_answered_except_a_syn_that_opened_one },
+    { "an_answer_that_would_not_fit_is_counted_as_ours",
+      case_an_answer_that_would_not_fit_is_counted_as_ours },
     { "each_reason_moves_only_its_own_count", case_each_reason_moves_only_its_own_count },
     { "a_block_taken_again_holds_none_of_the_last_connections_numbers",
       case_a_block_taken_again_holds_none_of_the_last_connections_numbers },

@@ -15,6 +15,7 @@
 
 #include "arp_responder.h"
 #include "echo_responder.h"
+#include "handshake.h"
 #include "ethernet.h"
 #include "tap.h"
 
@@ -117,6 +118,43 @@ void report_echo_outcome(FILE *out, const struct echo_outcome *outcome,
  * like one that was simply not addressed to us. ⚠ Printed even when every count
  * is zero (`CLAUDE.md` §1). */
 void report_echo_summary(FILE *out, const struct echo_counts *counts);
+
+/* Counts of segments the Parse layer would not hand on. ⚠ Each on its own: a
+ * segment we could not read is not one whose checksum disagrees
+ * (`.claude/rules/c.md`). */
+struct tcp_counts {
+    unsigned long malformed;
+    unsigned long checksum_disagrees;
+};
+
+/* ⚠ Why a segment never reached the state machine. ⚠ Its own line, because the
+ * reasons a segment is unreadable and the reasons a connection does not move
+ * are different things (`.claude/rules/layers.md`). */
+void report_tcp_not_read(FILE *out, enum tcp_parse answer);
+
+void report_tcp_summary(FILE *out, const struct tcp_counts *counts);
+
+/* What happened to one TCP segment, and why.
+ *
+ * ⚠ The same two-line shape ARP and ICMP already print
+ * (hidetzu/tcpip-stack#43 Owner Decision 2, #44 Owner Decision 4).
+ *
+ * ⚠ The state names in brackets are RFC 793's own. ⚠ That is not the internal
+ * name `CLAUDE.md` §4 forbids — ⚠ **it is the document's vocabulary, shown to a
+ * reader on purpose.**
+ *
+ * ⚠ A transition gets a line of its own, not only the ends: ⚠ **there is no
+ * clock, so a handshake that stops half way stops there forever**, and printing
+ * nothing would leave no trace of where.
+ *
+ * ⚠ The two reasons that are ours say so rather than pointing at the sender
+ * (`CLAUDE.md` §4-1). */
+void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome);
+
+/* ⚠ Each reason counted on its own, and ⚠ printed even when every count is
+ * zero. ⚠ `answered` moves only once the wire took the whole answer — a reply
+ * that was built is not a reply that left. */
+void report_handshake_summary(FILE *out, const struct handshake_counts *counts);
 
 void report_usage(FILE *out, const char *program_name);
 
