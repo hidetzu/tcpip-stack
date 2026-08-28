@@ -58,6 +58,28 @@
  * accident (hidetzu/tcpip-stack#43 Owner Decision 1). */
 #define HANDSHAKE_INITIAL_SEND_SEQUENCE 0xdeadbeefu
 
+/* How long until the answer goes out again, and how long until we stop.
+ *
+ * ⚠ RFC 793 read verbatim on 2026-08-28: ⚠ **"the retransmission timeout must
+ * be dynamically determined"**, and the procedure it gives needs a Round Trip
+ * Time. ⚠ **Nothing here measures a round trip**, so ⚠ **this stack does not do
+ * what the document asks**, and `docs/SPEC.md` §2 names that gap.
+ *
+ * ⚠ 1000 is the document's own example lower bound — "LBOUND is a lower bound on
+ * the timeout (e.g., 1 second)". ⚠ **Going below it would mean going under the
+ * only floor the document offers, and the reason would have been that a check is
+ * cheaper that way** (hidetzu/tcpip-stack#57 Owner Decision 1).
+ *
+ * ⚠ 3000 is ours and has no grounds in the document. ⚠ Its example upper bound is
+ * a minute; ⚠ **a check that waits a minute would change what the real tier
+ * costs by an order of magnitude** (`docs/SPEC.md` §3 holds what it costs).
+ * ⚠ **Chosen for what a check can afford, and recorded as that** (ADR 0019).
+ *
+ * ⚠ So the answer goes out again twice — after a second and after two — and
+ * ⚠ **the connection is given up on at three.** */
+#define HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS 1000u
+#define HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS 3000u
+
 enum handshake_decision {
     /* ⚠ The connection moved to a state it was not in. `outcome->state` says
      * which. */
@@ -99,6 +121,12 @@ enum handshake_reason {
      * (hidetzu/tcpip-stack#42 Owner Decision 1). */
     HANDSHAKE_REASON_NO_ROOM,
 
+    /* ⚠ Nobody confirmed it, and we stopped waiting. ⚠ Not the sender being
+     * wrong about anything — ⚠ **the sentence a human reads says so**
+     * (`CLAUDE.md` §4-1). ⚠ RFC 793's USER TIMEOUT is what this follows:
+     * "delete the TCB, enter the CLOSED state and return." */
+    HANDSHAKE_REASON_NOBODY_CONFIRMED_IT,
+
     /* ⚠ Ours, not the sender's. ⚠ The connection moved and ⚠ the answer could
      * not be built into the buffer we were given. ⚠ Counted rather than dropped
      * in silence (`.claude/rules/c.md`), and ⚠ the sentence a human reads says
@@ -114,6 +142,7 @@ struct handshake_counts {
     unsigned long not_expected_in_this_state;
     unsigned long no_connection_held;
     unsigned long we_could_not_build_the_reply;
+    unsigned long given_up_on;
 
     /* ⚠ Counted only once the wire took the whole answer. ⚠ A reply that was
      * built is not a reply that left — the same division `arp_respond` and
@@ -185,12 +214,54 @@ struct handshake_outcome {
  * RFC 793 §3.9 asks for a reset or an ack produce a counted reason and nothing
  * on the wire; `docs/SPEC.md` §2 names them. */
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
-                       uint16_t listening_port,
+                       uint16_t listening_port, struct moment now,
                        const uint8_t *requester_hardware_address,
                        const uint8_t *our_hardware_address,
                        struct connections *connections,
                        uint8_t *reply, size_t reply_bytes,
                        struct handshake_counts *counts,
                        struct handshake_outcome *outcome);
+
+/* What a timer says should happen now. ⚠ An enum never reaches a human. */
+enum handshake_due {
+    /* ⚠ Nothing is waiting, or what is waiting is not due yet. */
+    HANDSHAKE_NOTHING_DUE = 0,
+
+    /* ⚠ The answer should go out again. ⚠ The timer is already reinitialised
+     * when this is returned — RFC 793 makes sending again and reinitialising one
+     * step, and ⚠ **a caller that then fails to send has spent the attempt.**
+     * ⚠ It cannot spin: the give-up timer still runs. */
+    HANDSHAKE_ANSWER_AGAIN,
+
+    /* ⚠ Nobody confirmed it and we have stopped waiting. ⚠ The connection is
+     * already released when this is returned, so ⚠ **the next SYN can open
+     * one** — there is room for exactly one (ADR 0015). */
+    HANDSHAKE_GIVE_UP
+};
+
+/* Say what `now` makes due, and move the state accordingly.
+ *
+ * ⚠ `now` is handed in and never read here (ADR 0018), which is why ⚠ **every
+ * check of this runs with no clock and no waiting.**
+ *
+ * ⚠ Giving up is decided before answering again, so ⚠ **at the moment both are
+ * due the connection is given up on rather than answered a third time.**
+ *
+ * ⚠ `counts` gains exactly one when a connection is given up on. ⚠ Answering
+ * again is NOT counted here — ⚠ **a reply that was built is not a reply that
+ * left**, and the caller counts what the wire took (`CLAUDE.md` §1).
+ *
+ * ⚠ Nothing is sent here and nothing is printed here. */
+enum handshake_due handshake_what_is_due(struct connections *connections,
+                                         struct moment now,
+                                         struct handshake_counts *counts,
+                                         struct handshake_outcome *outcome);
+
+/* The next moment anything is waiting for, if anything is.
+ *
+ * ⚠ Returns false when nothing is waiting. ⚠ For a caller about to decide how
+ * long to wait (hidetzu/tcpip-stack#58). */
+bool handshake_next_moment(const struct connections *connections,
+                           struct moment *due);
 
 #endif /* HANDSHAKE_H */

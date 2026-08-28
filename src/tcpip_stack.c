@@ -18,6 +18,7 @@
 #include "arp_responder.h"
 #include "echo_responder.h"
 #include "handshake.h"
+#include "moment.h"
 #include "ethernet.h"
 #include "report.h"
 #include "tap.h"
@@ -440,7 +441,7 @@ int main(int argc, char **argv)
 
                         uint8_t reply[TAP_FRAME_BUFFER_BYTES];
                         struct handshake_outcome handshake;
-                        handshake_receive(&tcp, &id, options.tcp_port, header.source,
+                        handshake_receive(&tcp, &id, options.tcp_port, moment_now(), header.source,
                                           options.hardware_address, &connections, reply,
                                           sizeof reply, &handshake_counts, &handshake);
                         report_handshake_outcome(stdout, &handshake);
