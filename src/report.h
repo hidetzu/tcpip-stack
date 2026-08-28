@@ -156,6 +156,35 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
  * that was built is not a reply that left. */
 void report_handshake_summary(FILE *out, const struct handshake_counts *counts);
 
+/* Which option was given something it cannot take, or which pair of them cannot
+ * stand as given.
+ *
+ * ⚠ An enum reaching this layer is the point of the layer: ⚠ **it never reaches
+ * a human** (`CLAUDE.md` §4). The same shape `report_attach_failure` uses for a
+ * `tap_step`. */
+enum option_problem {
+    OPTION_HARDWARE_ADDRESS = 0,
+    OPTION_PROTOCOL_ADDRESS,
+    OPTION_TCP_PORT,
+    OPTION_COUNT,
+    OPTION_TIMEOUT,
+    OPTION_HALF_AN_IDENTITY,
+    OPTION_PORT_WITHOUT_IDENTITY,
+    OPTION_ARGUMENTS_BEYOND_THE_OPTIONS
+};
+
+/* ⚠ `program_name` is used by one of them and passed for all, so a caller never
+ * has to know which. */
+void report_option_problem(FILE *out, enum option_problem problem,
+                           const char *program_name);
+
+/* ⚠ Nothing here is the signal's fault, and the sentence does not say it is. */
+void report_could_not_arrange_to_stop(FILE *out, int errnum);
+
+/* ⚠ Reads that could not be made, one after another, until the program stopped
+ * trying. ⚠ The number is what it counted, not a guess about why. */
+void report_gave_up_on_reads(FILE *out, unsigned int consecutive_failures);
+
 void report_usage(FILE *out, const char *program_name);
 
 #endif /* REPORT_H */

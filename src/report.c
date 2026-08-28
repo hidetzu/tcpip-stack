@@ -430,6 +430,58 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
             counts->we_could_not_build_the_reply == 1 ? "" : "s");
 }
 
+void report_option_problem(FILE *out, enum option_problem problem,
+                           const char *program_name)
+{
+    /* ⚠ Every sentence below is the one that was written in
+     * src/tcpip_stack.c before hidetzu/tcpip-stack#51 moved it, ⚠ **word for
+     * word.** ⚠ The issue moved where they live and ⚠ decided nothing about what
+     * they say — that is the owner's (hidetzu/tcpip-stack#2). */
+    switch (problem) {
+    case OPTION_HARDWARE_ADDRESS:
+        fputs("--mac takes six hexadecimal octets, as 02:00:00:00:00:02.\n", out);
+        return;
+    case OPTION_PROTOCOL_ADDRESS:
+        fputs("--ipv4 takes four octets from 0 to 255, as 10.0.0.2.\n", out);
+        return;
+    case OPTION_TCP_PORT:
+        fputs("--tcp-port takes a whole number from 1 to 65535.\n", out);
+        return;
+    case OPTION_COUNT:
+        fputs("--count takes a whole number of frames, 0 or more.\n", out);
+        return;
+    case OPTION_TIMEOUT:
+        fputs("--timeout takes a whole number of milliseconds, 0 or more.\n", out);
+        return;
+    case OPTION_HALF_AN_IDENTITY:
+        fputs("--mac and --ipv4 are given together or not at all.\n", out);
+        return;
+    case OPTION_PORT_WITHOUT_IDENTITY:
+        fputs("--tcp-port needs --mac and --ipv4 as well: "
+              "nothing can be answered without them.\n", out);
+        return;
+    case OPTION_ARGUMENTS_BEYOND_THE_OPTIONS:
+        fprintf(out, "%s takes no arguments beyond its options.\n", program_name);
+        return;
+    }
+    /* ⚠ Reached only if a problem is added above without a sentence for it. Say
+     * that plainly rather than printing the number (`CLAUDE.md` §4). */
+    fprintf(out, "%s was asked for something it cannot do, and this build has no "
+                 "wording for what.\n", program_name);
+}
+
+void report_could_not_arrange_to_stop(FILE *out, int errnum)
+{
+    fprintf(out, "could not arrange to stop cleanly on a signal: %s\n",
+            strerror(errnum));
+}
+
+void report_gave_up_on_reads(FILE *out, unsigned int consecutive_failures)
+{
+    fprintf(out, "gave up after %u reads in a row that could not be made.\n",
+            consecutive_failures);
+}
+
 void report_usage(FILE *out, const char *program_name)
 {
     fprintf(out,

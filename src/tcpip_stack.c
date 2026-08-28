@@ -176,21 +176,21 @@ int main(int argc, char **argv)
         switch (option) {
         case 'm':
             if (!parse_hardware_address(optarg, options.hardware_address)) {
-                fprintf(stderr, "--mac takes six hexadecimal octets, as 02:00:00:00:00:02.\n");
+                report_option_problem(stderr, OPTION_HARDWARE_ADDRESS, argv[0]);
                 return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
             }
             given_hardware_address = true;
             break;
         case '4':
             if (!parse_protocol_address(optarg, options.protocol_address)) {
-                fprintf(stderr, "--ipv4 takes four octets from 0 to 255, as 10.0.0.2.\n");
+                report_option_problem(stderr, OPTION_PROTOCOL_ADDRESS, argv[0]);
                 return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
             }
             given_protocol_address = true;
             break;
         case 'p':
             if (!parse_bounded_long(optarg, 1, 65535, &value)) {
-                fprintf(stderr, "--tcp-port takes a whole number from 1 to 65535.\n");
+                report_option_problem(stderr, OPTION_TCP_PORT, argv[0]);
                 return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
             }
             options.tcp_port = (uint16_t)value;
@@ -200,14 +200,14 @@ int main(int argc, char **argv)
             break;
         case 'c':
             if (!parse_bounded_long(optarg, 0, LONG_MAX, &value)) {
-                fprintf(stderr, "--count takes a whole number of frames, 0 or more.\n");
+                report_option_problem(stderr, OPTION_COUNT, argv[0]);
                 return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
             }
             options.count = value;
             break;
         case 't':
             if (!parse_bounded_long(optarg, 0, INT_MAX, &value)) {
-                fprintf(stderr, "--timeout takes a whole number of milliseconds, 0 or more.\n");
+                report_option_problem(stderr, OPTION_TIMEOUT, argv[0]);
                 return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
             }
             options.timeout_ms = (int)value;
@@ -227,7 +227,7 @@ int main(int argc, char **argv)
      * silently declined to answer would look exactly like one nobody asked
      * (Owner Decision 6). */
     if (given_hardware_address != given_protocol_address) {
-        fprintf(stderr, "--mac and --ipv4 are given together or not at all.\n");
+        report_option_problem(stderr, OPTION_HALF_AN_IDENTITY, argv[0]);
         return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
     }
     options.has_identity = given_hardware_address;
@@ -236,19 +236,17 @@ int main(int argc, char **argv)
      * accepting it and staying silent — a stack that quietly declined would look
      * exactly like one nobody asked (the shape Owner Decision 6 set). */
     if (options.tcp_port != 0 && !options.has_identity) {
-        fprintf(stderr, "--tcp-port needs --mac and --ipv4 as well: "
-                        "nothing can be answered without them.\n");
+        report_option_problem(stderr, OPTION_PORT_WITHOUT_IDENTITY, argv[0]);
         return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
     }
 
     if (optind != argc) {
-        fprintf(stderr, "%s takes no arguments beyond its options.\n", argv[0]);
+        report_option_problem(stderr, OPTION_ARGUMENTS_BEYOND_THE_OPTIONS, argv[0]);
         return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
     }
 
     if (!install_stop_handler(SIGINT) || !install_stop_handler(SIGTERM)) {
-        fprintf(stderr, "could not arrange to stop cleanly on a signal: %s\n",
-                strerror(errno));
+        report_could_not_arrange_to_stop(stderr, errno);
         return EXIT_COULD_NOT_USE_THE_DEVICE;
     }
 
@@ -262,8 +260,7 @@ int main(int argc, char **argv)
 
     sigset_t deliverable_while_waiting;
     if (sigprocmask(SIG_BLOCK, &stop_signals, &deliverable_while_waiting) != 0) {
-        fprintf(stderr, "could not arrange to stop cleanly on a signal: %s\n",
-                strerror(errno));
+        report_could_not_arrange_to_stop(stderr, errno);
         return EXIT_COULD_NOT_USE_THE_DEVICE;
     }
 
@@ -326,8 +323,7 @@ int main(int argc, char **argv)
             consecutive_read_failures++;
             report_read_failure(stderr, frames_read + 1, &failure);
             if (consecutive_read_failures >= CONSECUTIVE_READ_FAILURES_ALLOWED) {
-                fprintf(stderr, "gave up after %u reads in a row that could not be made.\n",
-                        consecutive_read_failures);
+                report_gave_up_on_reads(stderr, consecutive_read_failures);
                 exit_code = EXIT_COULD_NOT_USE_THE_DEVICE;
                 break;
             }
