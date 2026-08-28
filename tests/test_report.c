@@ -661,6 +661,10 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
         { HANDSHAKE_REASON_NO_ROOM,
           "  no answer: we are already holding a connection, and this build has\n"
           "    room for one. That is ours, not the sender's\n" },
+        /* ⚠ Our timer fired — ⚠ **not them asking again**, which is what this
+         * sentence said until hidetzu/tcpip-stack#59. */
+        { HANDSHAKE_REASON_THE_ANSWER_WENT_OUT_AGAIN,
+          "  10.0.0.1:50568 has not confirmed it; the answer went out again\n" },
         /* ⚠ Nobody confirmed it — ⚠ not the sender being wrong about anything
          * (`CLAUDE.md` §4-1). */
         { HANDSHAKE_REASON_NOBODY_CONFIRMED_IT,
@@ -700,6 +704,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "0 reached open. 0 acknowledged a number we are not waiting for, 0 arrived "
         "for no connection we hold, 0 arrived where the connection's state did not "
         "expect them\n"
+        "0 answers went out again because nobody had confirmed them\n"
         "0 connections were given up on after nobody confirmed them\n"
         "0 were refused for want of room and 0 answers never left the device, which "
         "are ours and not the sender's\n");
@@ -715,6 +720,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.no_connection_held = 1;
     one.we_could_not_build_the_reply = 1;
     one.given_up_on = 1;
+    one.answered_again = 1;
     one.answered = 1;
     one.room.refused_for_want_of_room = 1;
 
@@ -725,6 +731,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "1 reached open. 1 acknowledged a number we are not waiting for, 1 arrived "
         "for no connection we hold, 1 arrived where the connection's state did not "
         "expect them\n"
+        "1 answer went out again because nobody had confirmed it\n"
         "1 connection was given up on after nobody confirmed it\n"
         "1 was refused for want of room and 1 answer never left the device, which "
         "are ours and not the sender's\n") && ok;

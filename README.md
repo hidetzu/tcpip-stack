@@ -71,28 +71,28 @@ print(subprocess.run([\"ss\", \"-tn\"], capture_output=True, text=True).stdout, 
 What `ping` said:
 
 ```text
-2 packets transmitted, 2 received, 0% packet loss, time 305ms
-rtt min/avg/max/mdev = 0.046/0.055/0.065/0.009 ms
+2 packets transmitted, 2 received, 0% packet loss, time 303ms
+rtt min/avg/max/mdev = 0.057/0.066/0.075/0.009 ms
 ```
 
 What `ss` said:
 
 ```text
 State Recv-Q Send-Q Local Address:Port  Peer Address:Port
-ESTAB 0      0           10.0.0.1:55896     10.0.0.2:80
+ESTAB 0      0           10.0.0.1:46860     10.0.0.2:80
 ```
 
-What the stack said (⚠ **the ethernet header line of every frame is left out here; a real run prints
-one for each**):
+What the stack said (⚠ **the ethernet header line of every frame is left out
+here; a real run prints one for each**):
 
 ```text
 listening on tap0
   answered it: 10.0.0.2 is ours, and 10.0.0.1 was told our hardware address
   answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back
   answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back
-  10.0.0.1:55896 asked to open a connection; now waiting for it to
+  10.0.0.1:46860 asked to open a connection; now waiting for it to
     confirm (SYN-RECEIVED)
-  10.0.0.1:55896 confirmed it; the connection is open (ESTABLISHED)
+  10.0.0.1:46860 confirmed it; the connection is open (ESTABLISHED)
   no answer: nothing in this connection's state expects that
   no answer: nothing in this connection's state expects that
   no answer: nothing in this connection's state expects that
@@ -107,6 +107,8 @@ answered 2 echo requests. 0 were not for us, 0 carried a protocol we do not act 
 0 TCP headers were malformed and 0 had a checksum that does not agree
 1 connection was opened and 1 answered. 0 asked again
 1 reached open. 0 acknowledged a number we are not waiting for, 0 arrived for no connection we hold, 4 arrived where the connection's state did not expect them
+0 answers went out again because nobody had confirmed them
+0 connections were given up on after nobody confirmed them
 0 were refused for want of room and 0 answers never left the device, which are ours and not the sender's
 ```
 
@@ -133,6 +135,22 @@ Development tooling is Node (the hooks under `.claude/` use only Node built-ins 
 there are no npm dependencies). The product itself is C.
 
 ## Milestones
+
+### The stack keeps its own time
+
+⚠ **Met, on 2026-08-29.** ⚠ **A connection nobody confirms is answered again on
+the wire — twice, a second apart — and then given up on**, counted by an
+`AF_PACKET` socket rather than by our own output (`tests/real.sh`
+`the_answer_really_goes_out_again`).
+
+⚠ **The State layer still reads no clock.** It is handed a moment, which is what
+keeps every one of its checks running with no waiting at all
+([ADR 0018](docs/adr/0018-the-state-layer-is-handed-a-moment-and-never-reads-one.md)).
+
+⚠ **What is not in it:** ⚠ **RFC 793 says the retransmission timeout must be
+determined from a round trip, and nothing here measures one** — a fixed second is
+used instead, which is the document's own example lower bound.
+[`docs/SPEC.md`](docs/SPEC.md) §2 records that as our gap.
 
 ### The kernel's own `connect()` succeeds
 

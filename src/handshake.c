@@ -212,6 +212,8 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     /* ⚠ RFC 793: the retransmission timer is reinitialised on each send, so it
      * starts here and not when the connection was found. ⚠ The give-up moment
      * is from now and is never moved again. */
+    memcpy(taken->requester_hardware_address, requester_hardware_address,
+           CONNECTION_HARDWARE_ADDRESS_BYTES);
     taken->answer_due = moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
     taken->give_up_at = moment_after(now, HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS);
 
@@ -248,6 +250,8 @@ static struct transmission_control_block *the_one_waiting(struct connections *co
 
 enum handshake_due handshake_what_is_due(struct connections *connections,
                                          struct moment now,
+                                         const uint8_t *our_hardware_address,
+                                         uint8_t *reply, size_t reply_bytes,
                                          struct handshake_counts *counts,
                                          struct handshake_outcome *outcome)
 {
@@ -286,8 +290,25 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
          * that woke late does not immediately owe another. */
         waiting->answer_due =
             moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
+
+        /* ⚠ Addressed from what the connection remembers: ⚠ **there is no
+         * arriving frame to read it from** (hidetzu/tcpip-stack#59). */
+        outcome->reply_bytes =
+            build_the_answer(waiting, &waiting->id, waiting->requester_hardware_address,
+                             our_hardware_address, reply, reply_bytes);
+        if (outcome->reply_bytes == 0) {
+            /* ⚠ Ours, not the sender's. ⚠ The attempt is spent either way — the
+             * timer has already moved — and ⚠ the give-up timer still runs. */
+            outcome->decision = HANDSHAKE_STAYED;
+            outcome->reason = HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY;
+            counts->we_could_not_build_the_reply++;
+            return HANDSHAKE_NOTHING_DUE;
+        }
+
         outcome->decision = HANDSHAKE_STAYED;
-        outcome->reason = HANDSHAKE_REASON_ASKED_AGAIN;
+        /* ⚠ Its own reason. ⚠ Until hidetzu/tcpip-stack#59 this said the sender
+         * had asked again, ⚠ **which was false: our timer fired.** */
+        outcome->reason = HANDSHAKE_REASON_THE_ANSWER_WENT_OUT_AGAIN;
         return HANDSHAKE_ANSWER_AGAIN;
     }
 

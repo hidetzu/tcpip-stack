@@ -35,6 +35,7 @@
  * octets here and that is all it needs to know (the same shape `src/tcp.h`
  * takes for the pseudo-header). */
 #define CONNECTION_ADDRESS_BYTES 4
+#define CONNECTION_HARDWARE_ADDRESS_BYTES 6
 
 /* One of RFC 793's sockets: "an internet address identifying the TCP with a
  * port identifier". */
@@ -118,6 +119,16 @@ struct transmission_control_block {
      * ⚠ **not measured from when the connection opened** (ADR 0019). */
     struct moment answer_due;
     struct moment give_up_at;
+
+    /* Where an answer has to go on the wire.
+     *
+     * ⚠ Read out of the frame that asked, and ⚠ **kept because a retransmission
+     * has no frame to read it from** (hidetzu/tcpip-stack#59).
+     *
+     * ⚠ This is not a neighbour cache, and `docs/SPEC.md` §2 says which:
+     * ⚠ **it is one field of one connection, it cannot be looked up by address,
+     * no other connection can see it, and it goes when the connection does.** */
+    uint8_t requester_hardware_address[CONNECTION_HARDWARE_ADDRESS_BYTES];
 };
 
 /* Room for the connections this build can hold at once.
