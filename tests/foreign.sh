@@ -778,6 +778,290 @@ print("ss", " ".join(line.split()[0] for line in after.splitlines()[1:]) or "non
         "$(awk '$1 == "ss" { $1 = ""; print substr($0, 2) }' "$work/closing.txt")"
 }
 
+# ⚠ hidetzu/tcpip-stack#67. ⚠ **The milestone's proof, and the verdict is the
+# kernel's**: `TIME-WAIT` is the state RFC 793 Figures 6 and 13 put on the side
+# that closed first, ⚠ **entered only once it has had our FIN and acknowledged
+# it.** ⚠ Reaching it is somebody else's judgement on our sequence numbers.
+#
+# ⚠ **The connection disappearing after 2 MSL is deliberately not asserted**
+# (hidetzu/tcpip-stack#67 Owner Decision 2): ⚠ that wait is the peer's own and
+# ⚠ **nothing here can shorten it**, so a check that waited it out would be
+# measuring the Linux kernel's timer and not this stack.
+#
+# ⚠ **The second `connect()` is evidence about OUR connection block and nothing
+# else** (Owner Decision 3). ⚠ It is never called evidence that `TIME-WAIT`
+# ended — ⚠ **the peer's `TIME-WAIT` is on the peer, and our block is here.**
+inside_the_kernel_reaches_time_wait_and_our_block_is_free_again() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+    port=80
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port "$port" \
+        --timeout 6000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    # ⚠ python holds nothing of ours: it calls connect(), close(), reads ss, and
+    # ⚠ **prints only what those told it.**
+    LC_ALL=C python3 -c '
+import socket, subprocess, sys, time
+
+def what_ss_says():
+    return subprocess.run(["ss", "-tan"], capture_output=True, text=True).stdout
+
+first = socket.socket()
+first.settimeout(5)
+try:
+    first.connect(("10.0.0.2", 80))
+except Exception as why:
+    print("first-connect-failed", why); sys.exit(1)
+here = first.getsockname()
+first.close()
+
+# ⚠ Watched for a moment, because the closing exchange is not instant. ⚠ What is
+# waited for is the state changing, ⚠ **never a fixed sleep long enough to hide
+# a slow answer.**
+state = "none"
+deadline = time.time() + 4.0
+while time.time() < deadline:
+    for line in what_ss_says().splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 5 and parts[3] == "%s:%d" % here:
+            state = parts[0]
+            break
+    if state not in ("none", "ESTAB", "FIN-WAIT-1", "FIN-WAIT-2"):
+        break
+    time.sleep(0.1)
+print("state-after-close", state)
+
+# ⚠ A second connect(), and ⚠ **what it is evidence of is our connection block
+# being free again** — not the first connection being gone from the peer.
+second = socket.socket()
+second.settimeout(5)
+try:
+    second.connect(("10.0.0.2", 80))
+    print("second-connect", "yes")
+except Exception as why:
+    print("second-connect", "no", why)
+second.close()
+' >"$work/closing.txt" 2>&1
+    watched=$?
+
+    # ⚠ Long enough for the second connection to be answered and reported.
+    sleep 1
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$watched" -ne 0 ]; then
+        note_failure "connect() to $ours:$port did not succeed, so nothing was closed"
+        sed 's/^/      /' "$work/closing.txt" >&2
+        return
+    fi
+
+    state=$(awk '$1 == "state-after-close" { print $2 }' "$work/closing.txt")
+    second=$(awk '$1 == "second-connect" { print $2 }' "$work/closing.txt")
+
+    # ⚠ AC 1. ⚠ **TIME-WAIT and nothing else**: `FIN-WAIT-1` or `FIN-WAIT-2`
+    # would mean the kernel is still waiting for our close, and `CLOSE-WAIT`
+    # would mean it thinks we closed first.
+    if [ "$state" != "TIME-WAIT" ]; then
+        note_failure "the kernel is in $state after close(), not TIME-WAIT, so it has not accepted our closing sequence"
+        sed 's/^/      /' "$work/closing.txt" >&2
+        printf '    what the stack said:\n' >&2
+        grep -v '^  [0-9a-f]' "$work/out.txt" | tail -20 | sed 's/^/      /' >&2
+        return
+    fi
+
+    # ⚠ AC 3, and ⚠ **it is evidence about our block and about nothing on the
+    # peer** (Owner Decision 3). ⚠ The first connection is still in TIME-WAIT
+    # over there while this succeeds, which is exactly why the two must not be
+    # spoken of as one thing.
+    if [ "$second" != "yes" ]; then
+        note_failure "a later connect() was refused, so our own connection block was not freed"
+        sed 's/^/      /' "$work/closing.txt" >&2
+        return
+    fi
+
+    # ⚠ Both connections are closed by the peer, so ⚠ **both finish** — and
+    # ⚠ the second could only be opened at all because the first gave its block
+    # back. ⚠ That is what "our slot was freed" means here, and ⚠ **it says
+    # nothing about the first connection's TIME-WAIT on the peer.**
+    assert_file_contains "$work/out.txt" "2 connections finished" \
+        "both connections were released when our closes were acknowledged"
+    assert_file_contains "$work/out.txt" "2 connections were opened and 2 answered" \
+        "the block the first connection gave back was used by the second"
+    assert_file_contains "$work/out.txt" "0 were refused for want of room" \
+        "the second SYN was not refused, which it would have been had the block stayed taken"
+
+    printf '    ss said %s after close(), and a later connect() then succeeded, which\n' "$state"
+    printf '    says our own connection block was free again and nothing about TIME-WAIT\n'
+}
+
+# ⚠ hidetzu/tcpip-stack#67 AC 2, and ⚠ **it is what stops the case above passing
+# for a stack that never checked.**
+#
+# ⚠ The pattern hidetzu/tcpip-stack#35 and #44 both hit: ⚠ **a stack that answers
+# a ping while computing the checksum wrong still answers the ping.** ⚠ A stack
+# that closed back on any FIN at all would still reach `TIME-WAIT` above.
+#
+# ⚠ The whole connection is driven by hand over `AF_PACKET`, from a hardware
+# address and an address nobody owns, ⚠ **so the kernel never joins in** — not
+# even with a RST. ⚠ Our own answer is read off the wire to learn the sequence
+# number we chose, ⚠ **never assumed from a constant in src/**.
+inside_a_fin_whose_sequence_number_we_do_not_expect_is_not_answered() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 6000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    fin_bit=$(constant src/tcp.h TCP_CONTROL_FIN)
+    ack_bit=$(constant src/tcp.h TCP_CONTROL_ACK)
+    syn_bit=$(constant src/tcp.h TCP_CONTROL_SYN)
+
+    LC_ALL=C python3 -c '
+import socket, struct, sys, time
+
+fin_bit, ack_bit, syn_bit = (int(a.rstrip("uU"), 0) for a in sys.argv[1:4])
+
+OURS = b"\x02\x00\x00\x00\x00\x02"
+THEIRS = b"\x02\xaa\xaa\xaa\xaa\xaa"
+source = socket.inet_aton("10.0.0.99")
+destination = socket.inet_aton("10.0.0.2")
+THEIR_PORT = 40001
+THEIR_ISN = 700000
+
+def sum_of(octets):
+    total = 0
+    for i in range(0, len(octets) - 1, 2):
+        total += (octets[i] << 8) | octets[i + 1]
+    if len(octets) % 2:
+        total += octets[-1] << 8
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
+
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.settimeout(0.3)
+
+def send(bits, sequence, acknowledgment):
+    segment = struct.pack("!HHIIBBHHH", THEIR_PORT, 80, sequence, acknowledgment,
+                          5 << 4, bits, 64240, 0, 0)
+    pseudo = source + destination + bytes([0, 6, 0, len(segment)])
+    segment = segment[:16] + struct.pack("!H", sum_of(pseudo + segment)) + segment[18:]
+    header = struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(segment), 1, 0, 64, 6, 0) \
+        + source + destination
+    header = header[:10] + struct.pack("!H", sum_of(header)) + header[12:]
+    wire.send(OURS + THEIRS + b"\x08\x00" + header + segment)
+
+# ⚠ Every segment WE sent, for that long.
+def ours_within(seconds):
+    out = []
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            frame = wire.recv(2048)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if len(frame) < 54 or frame[12:14] != b"\x08\x00" or frame[14 + 9] != 6:
+            continue
+        if frame[6:12] != OURS:
+            continue
+        at = 14 + (frame[14] & 0x0f) * 4
+        out.append((frame[at + 13], int.from_bytes(frame[at + 4:at + 8], "big"),
+                    int.from_bytes(frame[at + 8:at + 12], "big")))
+    return out
+
+send(syn_bit, THEIR_ISN, 0)
+answers = [a for a in ours_within(1.5) if a[0] & syn_bit]
+if not answers:
+    print("no-answer-to-our-syn"); sys.exit(1)
+our_iss = answers[0][1]
+print("our-iss", our_iss)
+print("answer-acknowledges", answers[0][2])
+
+send(ack_bit, THEIR_ISN + 1, our_iss + 1)
+time.sleep(0.3)
+
+# ⚠ A FIN far past the window we promised. ⚠ Nothing may come back for it.
+send(fin_bit | ack_bit, THEIR_ISN + 1 + 500, our_iss + 1)
+print("closes-after-a-wrong-fin",
+      len([a for a in ours_within(1.5) if a[0] & fin_bit]))
+
+# ⚠ The same FIN at the sequence number we ARE waiting for. ⚠ Without this half
+# the case would pass for a stack that answers nothing at all.
+send(fin_bit | ack_bit, THEIR_ISN + 1, our_iss + 1)
+ours = [a for a in ours_within(1.5) if a[0] & fin_bit]
+print("closes-after-the-right-fin", len(ours))
+for bits, sequence, acknowledgment in ours[:1]:
+    print("our-close-acknowledges", acknowledgment)
+' "$fin_bit" "$ack_bit" "$syn_bit" >"$work/crafted.txt" 2>&1
+    crafted=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$crafted" -ne 0 ]; then
+        note_failure "the crafted connection could not be driven"
+        sed 's/^/      /' "$work/crafted.txt" >&2
+        return
+    fi
+
+    wrong=$(awk '$1 == "closes-after-a-wrong-fin" { print $2 }' "$work/crafted.txt")
+    right=$(awk '$1 == "closes-after-the-right-fin" { print $2 }' "$work/crafted.txt")
+    acknowledges=$(awk '$1 == "our-close-acknowledges" { print $2 }' "$work/crafted.txt")
+    their_isn=700000
+
+    if [ "${wrong:-1}" -ne 0 ]; then
+        note_failure "a FIN 500 past what we asked for was answered $wrong times"
+        sed 's/^/      /' "$work/crafted.txt" >&2
+        return
+    fi
+    if [ "${right:-0}" -lt 1 ]; then
+        note_failure "a FIN at the sequence number we are waiting for was not answered, so refusing the other one proves nothing"
+        sed 's/^/      /' "$work/crafted.txt" >&2
+        return
+    fi
+    # ⚠ And it acknowledges past THAT FIN, not past the one we refused.
+    if [ "$acknowledges" != "$(( their_isn + 2 ))" ]; then
+        note_failure "our close acknowledges $acknowledges, and the FIN we accepted sat at $(( their_isn + 1 ))"
+        sed 's/^/      /' "$work/crafted.txt" >&2
+        return
+    fi
+    # ⚠ Counted apart, and ⚠ **the refusal is not silent** (`.claude/rules/c.md`).
+    assert_file_contains "$work/out.txt" \
+        "1 FIN arrived that was not the next thing we were waiting for" \
+        "a FIN we do not expect is counted on its own"
+    assert_file_contains "$work/out.txt" "the other side closed 1 connection" \
+        "only the FIN we were waiting for closed the connection"
+
+    printf '    a FIN 500 past the window drew %s closes from us and the right one drew %s\n' \
+        "$wrong" "$right"
+}
+
 # ⚠ The half that stops the case above passing for a stack that never looked at
 # a checksum (hidetzu/tcpip-stack#44 AC 2, and `CLAUDE.md` §1).
 #
@@ -886,6 +1170,12 @@ case_a_fin_reaches_us_once_the_window_is_open() {
 case_the_kernel_stops_retransmitting_once_we_close_back() {
     in_namespace the_kernel_stops_retransmitting_once_we_close_back
 }
+case_the_kernel_reaches_time_wait_and_our_block_is_free_again() {
+    in_namespace the_kernel_reaches_time_wait_and_our_block_is_free_again
+}
+case_a_fin_whose_sequence_number_we_do_not_expect_is_not_answered() {
+    in_namespace a_fin_whose_sequence_number_we_do_not_expect_is_not_answered
+}
 case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
     in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
 }
@@ -896,7 +1186,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)
