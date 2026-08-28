@@ -17,8 +17,8 @@ BUILD   := build
 # a sanitizer that reports and continues turns a defect into a log line.
 SANITIZE := -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
 
-HEADERS      := src/tap.h src/report.h src/ethernet.h src/arp.h src/arp_responder.h src/checksum.h src/ipv4.h src/icmp.h src/echo_responder.h src/tcp.h src/connection.h src/handshake.h
-LIB_SOURCES  := src/tap.c src/report.c src/ethernet.c src/arp.c src/arp_responder.c src/checksum.c src/ipv4.c src/icmp.c src/echo_responder.c src/tcp.c src/connection.c src/handshake.c
+HEADERS      := src/tap.h src/report.h src/ethernet.h src/arp.h src/arp_responder.h src/checksum.h src/ipv4.h src/icmp.h src/echo_responder.h src/tcp.h src/connection.h src/handshake.h src/moment.h
+LIB_SOURCES  := src/tap.c src/report.c src/ethernet.c src/arp.c src/arp_responder.c src/checksum.c src/ipv4.c src/icmp.c src/echo_responder.c src/tcp.c src/connection.c src/handshake.c src/moment.c
 MAIN_SOURCE  := src/tcpip_stack.c
 
 # What a static-tier check binary links besides its own case file. ⚠ The same
@@ -31,12 +31,12 @@ MAIN_SOURCE  := src/tcpip_stack.c
 # added to (`CLAUDE.md` §5: a stale comment misleads harder than stale code).
 #
 # ⚠ All but two of them have a caller in the program: it answers ARP requests
-# and ICMP echo requests (hidetzu/tcpip-stack#35). ⚠ src/tcp.c, src/connection.c and
-# src/handshake.c do not yet — nothing decides anything about a segment until
+# and ICMP echo requests (hidetzu/tcpip-stack#35). ⚠ src/tcp.c, src/connection.c,
+# src/handshake.c and src/moment.c do not yet — nothing decides anything about a segment until
 # hidetzu/tcpip-stack#44.
 # ⚠ It is compiled at -O2 with -Werror and the sanitizers either way, by the
 # checks below.
-PARSE_SOURCES := src/ethernet.c src/arp.c src/arp_responder.c src/checksum.c src/ipv4.c src/icmp.c src/echo_responder.c src/tcp.c src/connection.c src/handshake.c
+PARSE_SOURCES := src/ethernet.c src/arp.c src/arp_responder.c src/checksum.c src/ipv4.c src/icmp.c src/echo_responder.c src/tcp.c src/connection.c src/handshake.c src/moment.c
 
 # ⚠ verify §1's contract — one named case, counting without loading anything
 # heavy, the first line saying which subset ran — is implemented once, in
@@ -60,6 +60,7 @@ TEST_ECHO_SOURCE      := tests/test_echo_responder.c
 TEST_TCP_SOURCE       := tests/test_tcp.c
 TEST_CONNECTION_SOURCE := tests/test_connection.c
 TEST_HANDSHAKE_SOURCE := tests/test_handshake.c
+TEST_MOMENT_SOURCE    := tests/test_moment.c
 
 TCPIP_STACK         := $(BUILD)/tcpip-stack
 TCPIP_STACK_SANITIZED := $(BUILD)/tcpip-stack.sanitized
@@ -74,6 +75,7 @@ TEST_ECHO           := $(BUILD)/test_echo_responder.sanitized
 TEST_TCP            := $(BUILD)/test_tcp.sanitized
 TEST_CONNECTION     := $(BUILD)/test_connection.sanitized
 TEST_HANDSHAKE      := $(BUILD)/test_handshake.sanitized
+TEST_MOMENT         := $(BUILD)/test_moment.sanitized
 SEND_ONE_FRAME      := $(BUILD)/send-one-frame
 
 # Passed through to a check script, so one named case can be run on its own:
@@ -86,7 +88,7 @@ all: build
 
 build: $(TCPIP_STACK)
 
-build-sanitized: $(TCPIP_STACK_SANITIZED) $(TEST_REPORT) $(TEST_ETHERNET) $(TEST_ARP) $(TEST_RESPONDER) $(TEST_CHECKSUM) $(TEST_IPV4) $(TEST_ICMP) $(TEST_ECHO) $(TEST_TCP) $(TEST_CONNECTION) $(TEST_HANDSHAKE)
+build-sanitized: $(TCPIP_STACK_SANITIZED) $(TEST_REPORT) $(TEST_ETHERNET) $(TEST_ARP) $(TEST_RESPONDER) $(TEST_CHECKSUM) $(TEST_IPV4) $(TEST_ICMP) $(TEST_ECHO) $(TEST_TCP) $(TEST_CONNECTION) $(TEST_HANDSHAKE) $(TEST_MOMENT)
 
 build-harness: $(SEND_ONE_FRAME)
 
@@ -107,6 +109,11 @@ $(TEST_ETHERNET): $(TEST_ETHERNET_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES) $(HE
 	@mkdir -p $(@D)
 	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -Itests -o $@ \
 		$(TEST_ETHERNET_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES)
+
+$(TEST_MOMENT): $(TEST_MOMENT_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES) $(HEADERS) $(CHECK_HEADERS)
+	@mkdir -p $(@D)
+	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -Itests -o $@ \
+		$(TEST_MOMENT_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES)
 
 $(TEST_HANDSHAKE): $(TEST_HANDSHAKE_SOURCE) $(CHECK_SOURCES) $(PARSE_SOURCES) $(HEADERS) $(CHECK_HEADERS)
 	@mkdir -p $(@D)

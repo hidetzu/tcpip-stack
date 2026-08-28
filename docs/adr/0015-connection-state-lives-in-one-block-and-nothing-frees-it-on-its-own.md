@@ -1,8 +1,15 @@
 # 0015 — Connection state lives in one block, and nothing frees it on its own
 
 Date: 2026-08-28
-Status: accepted
+Status: accepted; ⚠ **the clock section is superseded by ADR 0018**
 Issue: hidetzu/tcpip-stack#42
+
+> ⚠ **Owner Decision 2 below said having no clock was a deliberate gap for the
+> handshake only, and said where it stops holding.** ⚠ **hidetzu/tcpip-stack#56
+> removed that premise and ADR 0018 records it.** ⚠ Everything else here —
+> where connection state lives, room for one, nothing allocated — still stands.
+> ⚠ **This is not edited into agreement with the newer one: what was decided
+> then is what it says** (`CLAUDE.md` §5).
 
 ## Context
 
