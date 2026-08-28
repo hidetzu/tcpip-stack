@@ -279,6 +279,82 @@ case_a_device_name_that_is_too_long_is_refused() {
         "a device name that cannot exist"
 }
 
+# ⚠ No sentence a human reads is written outside src/report.c.
+#
+# ⚠ The rule, `.claude/rules/layers.md`:
+#
+#     ### Report (what a human reads)
+#     - MUST: ⚠ **All prose is written here, and only here.**
+#
+# ⚠ Why a check and not a reading: ⚠ **it had grown, not shrunk.** Nine lines
+# when hidetzu/tcpip-stack#35 reported it, eleven when #51 moved them
+# (hidetzu/tcpip-stack#44 added two). ⚠ **A reading stops the eleventh; a check
+# stops the twelfth.**
+#
+# ⚠ How it decides what counts: ⚠ **a string literal handed to an output
+# function** — fprintf, printf, fputs, fputc, puts, perror — in any src/ file
+# but report.c. ⚠ That is narrow on purpose and ⚠ **here is what it does not
+# stop**, said rather than left to be discovered:
+#
+#   ⚠ a sentence built into a variable and printed from it
+#   ⚠ a sentence written with write(2) or with a function this list does not name
+#   ⚠ a sentence inside src/report.c that belongs to no layer at all
+#
+# ⚠ Comments are stripped first (`CLAUDE.md` §5: when a check reads code or
+# comments, strip the comments, or it picks up the very words written to
+# describe it).
+#
+# ⚠ **Measured 2026-08-28, and said rather than assumed: stripping changes
+# nothing today.** ⚠ No comment in any src/*.c contains a call shaped like the
+# ones searched for, so ⚠ **removing the stripping breaks no check** — it is
+# the one mutation of this case that does not fail.
+#
+# ⚠ It stays because the comments here quote code and documents freely — RFC
+# text, struct layouts, `<SEQ=ISS><ACK=RCV.NXT>` — and ⚠ **a comment quoting one
+# of these calls would otherwise be reported as prose in the wrong layer.**
+# ⚠ That is a reason to keep it, ⚠ **not a claim that it is asserted.**
+case_prose_lives_only_in_report() {
+    offenders=0
+    files=0
+    for source in src/*.c; do
+        [ "$source" = "src/report.c" ] && continue
+        files=$((files + 1))
+
+        # ⚠ Each of /* and */ alone on a line first, so a comment that opens and
+        # closes on ONE line still forms a range (the defect #50 found).
+        sed 's|/\*|\n/*\n|g; s|\*/|\n*/\n|g' "$source" |
+            sed '/^\/\*$/,/^\*\/$/d' >"$work/no-comments.c"
+
+        found=$(grep -cE '(fprintf|fputs|fputc|perror)[[:space:]]*\([^)]*"' \
+            "$work/no-comments.c")
+        found=$((found + $(grep -cE '(printf|puts)[[:space:]]*\("' \
+            "$work/no-comments.c")))
+        if [ "$found" -ne 0 ]; then
+            note_failure "$source writes $found string(s) a human reads, and only src/report.c may"
+            grep -nE '(fprintf|fputs|fputc|perror)[[:space:]]*\([^)]*"|(printf|puts)[[:space:]]*\("' \
+                "$work/no-comments.c" | sed 's/^/      /' >&2
+            offenders=$((offenders + 1))
+        fi
+    done
+
+    # ⚠ The other halves (`verify` §5). ⚠ Reading no files, or a comment
+    # stripper that removed everything, would each make this green for nothing.
+    if [ "$files" -lt 5 ]; then
+        note_failure "read $files files out of src/, which cannot be right"
+        return
+    fi
+    sed 's|/\*|\n/*\n|g; s|\*/|\n*/\n|g' src/report.c | sed '/^\/\*$/,/^\*\/$/d' \
+        >"$work/report-no-comments.c"
+    if [ "$(grep -cE '(fprintf|fputs)[[:space:]]*\([^)]*"' \
+        "$work/report-no-comments.c")" -lt 10 ]; then
+        note_failure "the same search finds almost nothing in src/report.c, so it is not looking for what it should"
+        return
+    fi
+
+    printf '    %d files in src/ besides report.c, %d writing prose\n' \
+        "$files" "$offenders"
+}
+
 # ⚠ Half an identity is refused rather than quietly ignored, and ⚠ **so is a port
 # with no identity to answer for it**.
 #
@@ -473,5 +549,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
 run_selected_cases

@@ -725,6 +725,88 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     return ok;
 }
 
+/* ⚠ The sentences hidetzu/tcpip-stack#51 moved out of `src/tcpip_stack.c`.
+ * ⚠ **Word for word what they were** — the issue moved where they live and
+ * decided nothing about what they say (hidetzu/tcpip-stack#2).
+ *
+ * ⚠ Every one of them, including the fallback, ⚠ **because a problem added
+ * without a sentence is the thing that fallback exists for.** */
+static bool case_every_option_problem_has_its_own_sentence(void)
+{
+    static const struct { enum option_problem problem; const char *line; } said[] = {
+        { OPTION_HARDWARE_ADDRESS,
+          "--mac takes six hexadecimal octets, as 02:00:00:00:00:02.\n" },
+        { OPTION_PROTOCOL_ADDRESS,
+          "--ipv4 takes four octets from 0 to 255, as 10.0.0.2.\n" },
+        { OPTION_TCP_PORT, "--tcp-port takes a whole number from 1 to 65535.\n" },
+        { OPTION_COUNT, "--count takes a whole number of frames, 0 or more.\n" },
+        { OPTION_TIMEOUT,
+          "--timeout takes a whole number of milliseconds, 0 or more.\n" },
+        { OPTION_HALF_AN_IDENTITY,
+          "--mac and --ipv4 are given together or not at all.\n" },
+        { OPTION_PORT_WITHOUT_IDENTITY,
+          "--tcp-port needs --mac and --ipv4 as well: nothing can be answered "
+          "without them.\n" },
+        { OPTION_ARGUMENTS_BEYOND_THE_OPTIONS,
+          "tcpip-stack takes no arguments beyond its options.\n" },
+    };
+
+    struct produced produced;
+    bool ok = true;
+    for (size_t i = 0; i < sizeof said / sizeof said[0]; i++) {
+        produced_open(&produced);
+        report_option_problem(produced.out, said[i].problem, "tcpip-stack");
+        char what[48];
+        snprintf(what, sizeof what, "problem %d", (int)said[i].problem);
+        ok = matches(what, &produced, said[i].line) && ok;
+        produced_close(&produced);
+    }
+
+    /* ⚠ The fallback, reached only by a value with no sentence. ⚠ It names the
+     * program and says plainly that this build has no wording — ⚠ it does not
+     * print the number (`CLAUDE.md` §4). */
+    produced_open(&produced);
+    report_option_problem(produced.out, (enum option_problem)99, "tcpip-stack");
+    ok = matches("a problem with no sentence", &produced,
+                 "tcpip-stack was asked for something it cannot do, and this build "
+                 "has no wording for what.\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
+/* ⚠ Written twice in `src/tcpip_stack.c` before #51, and ⚠ once now. */
+static bool case_failing_to_arrange_a_clean_stop_names_its_errno(void)
+{
+    struct produced produced;
+    produced_open(&produced);
+    report_could_not_arrange_to_stop(produced.out, EINVAL);
+    bool ok = matches("could not arrange to stop", &produced,
+                      "could not arrange to stop cleanly on a signal: "
+                      "Invalid argument\n");
+    produced_close(&produced);
+    return ok;
+}
+
+/* ⚠ The number is what was counted, and ⚠ the sentence claims nothing about
+ * why (`CLAUDE.md` §1). */
+static bool case_giving_up_on_reads_says_how_many(void)
+{
+    struct produced produced;
+    produced_open(&produced);
+    report_gave_up_on_reads(produced.out, 8);
+    bool ok = matches("gave up on reads", &produced,
+                      "gave up after 8 reads in a row that could not be made.\n");
+    produced_close(&produced);
+
+    /* ⚠ The other half: the number is the one it was handed, not a constant. */
+    produced_open(&produced);
+    report_gave_up_on_reads(produced.out, 1);
+    ok = matches("gave up after one", &produced,
+                 "gave up after 1 reads in a row that could not be made.\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
 static const struct test_case cases[] = {
     { "frame_line", case_frame_line },
     { "frame_line_when_the_buffer_was_filled", case_frame_line_when_the_buffer_was_filled },
@@ -742,6 +824,11 @@ static const struct test_case cases[] = {
     { "the_echo_summary_counts_every_reason_apart",
       case_the_echo_summary_counts_every_reason_apart },
     { "the_listening_line", case_the_listening_line },
+    { "every_option_problem_has_its_own_sentence",
+      case_every_option_problem_has_its_own_sentence },
+    { "failing_to_arrange_a_clean_stop_names_its_errno",
+      case_failing_to_arrange_a_clean_stop_names_its_errno },
+    { "giving_up_on_reads_says_how_many", case_giving_up_on_reads_says_how_many },
     { "a_wait_that_failed_names_its_errno", case_a_wait_that_failed_names_its_errno },
     { "the_usage_names_every_option", case_the_usage_names_every_option },
     { "a_segment_that_was_not_read_says_which_it_was",
