@@ -279,6 +279,85 @@ case_a_device_name_that_is_too_long_is_refused() {
         "a device name that cannot exist"
 }
 
+# A moment in time and the arithmetic on it, including where the count wraps.
+# This binary announces its own case count — ⚠ never copy that number into a
+# document (`docs/SPEC.md`).
+case_moment() {
+    $MAKE -s build-sanitized >/dev/null 2>&1 || {
+        note_failure "the sanitized build did not succeed"
+        return
+    }
+    if ! ./build/test_moment.sanitized >"$work/moment.txt" 2>&1; then
+        note_failure "a moment was compared or advanced wrongly"
+        sed 's/^/      /' "$work/moment.txt" >&2
+        return
+    fi
+    sed 's/^/    /' "$work/moment.txt"
+}
+
+# ⚠ The clock is read in exactly one place.
+#
+# ⚠ Why: ⚠ **the State layer is handed a moment rather than reading one**
+# (hidetzu/tcpip-stack#56 Owner Decision 1), and ⚠ **that is what keeps its
+# checks running with no clock and no waiting** — `handshake`,
+# `connection_state`, `arp_responder`, `echo_responder` all do today.
+# ⚠ A check that waits in real time is the least reproducible thing there is
+# (`CLAUDE.md` §6), and ⚠ a check that installs a clock of its own is a second
+# implementation of what time is (`CLAUDE.md` §3).
+#
+# ⚠ What this stops: a second `clock_gettime` anywhere in src/.
+#
+# ⚠ What it does NOT stop, said rather than left to be found:
+#
+#   ⚠ time read through something this does not name — time(2), gettimeofday(2),
+#     a read of /proc, a timer fd
+#   ⚠ a moment threaded so far down that a layer is deciding on time without
+#     saying so. ⚠ **Reading the code is still the reviewer's job.**
+#
+# ⚠ Comments are stripped first (`CLAUDE.md` §5), for the same reason
+# `prose_lives_only_in_report` does it.
+#
+# ⚠ **Measured 2026-08-28, and said rather than assumed: stripping changes
+# nothing today.** ⚠ `src/moment.h` does quote the clock's documentation, but it
+# writes `man 2 clock_gettime` with no bracket after it, ⚠ **and the search
+# wants the call**. ⚠ So removing the stripping breaks no check — ⚠ it is the one
+# mutation of this case that does not fail, the same as in
+# `prose_lives_only_in_report`.
+#
+# ⚠ It stays because that quote is one edit away from naming the call, and
+# ⚠ **a comment quoting it would then be read as a second reader.** ⚠ That is a
+# reason to keep it, ⚠ **not a claim that it is asserted.**
+case_the_clock_is_read_in_one_place() {
+    readers=0
+    for source in src/*.c src/*.h; do
+        sed 's|/\*|\n/*\n|g; s|\*/|\n*/\n|g' "$source" |
+            sed '/^\/\*$/,/^\*\/$/d' >"$work/no-comments"
+
+        if grep -qE 'clock_gettime[[:space:]]*\(' "$work/no-comments"; then
+            readers=$((readers + 1))
+            if [ "$source" != "src/moment.c" ]; then
+                note_failure "$source reads the clock, and only src/moment.c may"
+            fi
+        fi
+    done
+
+    # ⚠ The other halves (`verify` §5). ⚠ Finding none would mean the search is
+    # not looking for what it should — src/moment.c does read the clock.
+    if [ "$readers" -eq 0 ]; then
+        note_failure "no file in src/ reads the clock, so this case is not looking for what it should"
+        return
+    fi
+    # ⚠ And the comment stripping must not have removed everything.
+    sed 's|/\*|\n/*\n|g; s|\*/|\n*/\n|g' src/moment.c | sed '/^\/\*$/,/^\*\/$/d' \
+        >"$work/moment-no-comments"
+    if [ "$(wc -c <"$work/moment-no-comments")" -lt 400 ]; then
+        note_failure "stripping comments left almost nothing of src/moment.c, which cannot be right"
+        return
+    fi
+
+    printf '    %d file(s) in src/ read the clock\n' "$readers"
+}
+
 # ⚠ No sentence a human reads is written outside src/report.c.
 #
 # ⚠ The rule, `.claude/rules/layers.md`:
@@ -549,5 +628,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case moment ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_clock_is_read_in_one_place the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
 run_selected_cases
