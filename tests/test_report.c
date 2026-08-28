@@ -639,6 +639,12 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
         { CONNECTION_CLOSE_WAIT,
           "  10.0.0.1:50568 has closed its side; we read the FIN and have not answered\n"
           "    it yet (CLOSE-WAIT)\n" },
+        { CONNECTION_LAST_ACK,
+          "  10.0.0.1:50568 has closed its side; we read the FIN, closed ours in the same\n"
+          "    segment, and are waiting for that to be acknowledged (LAST-ACK)\n" },
+        { CONNECTION_CLOSED,
+          "  10.0.0.1:50568 acknowledged our own close; the connection is finished and\n"
+          "    the room it held is free again (CLOSED)\n" },
     };
     for (size_t i = 0; i < sizeof moved / sizeof moved[0]; i++) {
         memset(&outcome, 0, sizeof outcome);
@@ -680,6 +686,14 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
           "    not the sender's\n" },
         /* ⚠ Which of the two it was is not claimed, because ⚠ **this build does
          * not tell them apart** (hidetzu/tcpip-stack#64). */
+        /* ⚠ Our timer fired — ⚠ **not them asking for anything.** */
+        { HANDSHAKE_REASON_OUR_FIN_WENT_OUT_AGAIN,
+          "  10.0.0.1:50568 has not acknowledged our close; it went out again\n" },
+        /* ⚠ We stopped waiting, and ⚠ **it is not the same event as a handshake
+         * nobody confirmed** (the sentence above it in this table). */
+        { HANDSHAKE_REASON_NOBODY_ACKNOWLEDGED_OUR_FIN,
+          "  10.0.0.1:50568 never acknowledged our close; we stopped waiting and freed the\n"
+          "    room the connection held\n" },
         { HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW,
           "  no answer: that FIN is not the next thing we are waiting for. Either\n"
           "    we have read it already, or it begins past what we asked for\n" },
@@ -779,6 +793,9 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "0 reached open. 0 acknowledged a number we are not waiting for, 0 arrived "
         "for no connection we hold, 0 arrived where the connection's state did not "
         "expect them\n"
+        "0 of our own closes left the device and 0 went out again because nobody "
+        "had acknowledged them. 0 connections finished, and 0 were given up on with "
+        "our close unacknowledged\n"
         "0 answers went out again because nobody had confirmed them\n"
         "0 connections were given up on after nobody confirmed them\n"
         "0 octets of data were taken and discarded, and 0 segments carried data "
@@ -805,6 +822,10 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.octets_taken_and_discarded = 1;
     one.data_outside_the_window = 1;
     one.the_other_side_closed = 1;
+    one.our_fin_left = 1;
+    one.our_fin_went_out_again = 1;
+    one.closed = 1;
+    one.never_acknowledged_our_fin = 1;
     one.fin_outside_the_window = 1;
     one.fin_we_could_not_place = 1;
 
@@ -815,6 +836,9 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "1 reached open. 1 acknowledged a number we are not waiting for, 1 arrived "
         "for no connection we hold, 1 arrived where the connection's state did not "
         "expect them\n"
+        "1 of our own closes left the device and 1 went out again because nobody "
+        "had acknowledged them. 1 connection finished, and 1 was given up on with "
+        "our close unacknowledged\n"
         "1 answer went out again because nobody had confirmed it\n"
         "1 connection was given up on after nobody confirmed it\n"
         "1 octet of data was taken and discarded, and 1 segment carried data none "
@@ -844,6 +868,10 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.not_expected_in_this_state = 8;
     each.answered_again = 9;
     each.given_up_on = 10;
+    each.our_fin_left = 18;
+    each.our_fin_went_out_again = 19;
+    each.closed = 20;
+    each.never_acknowledged_our_fin = 21;
     each.octets_taken_and_discarded = 11;
     each.data_outside_the_window = 12;
     each.the_other_side_closed = 13;
@@ -859,6 +887,9 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "5 reached open. 6 acknowledged a number we are not waiting for, 7 arrived "
         "for no connection we hold, 8 arrived where the connection's state did not "
         "expect them\n"
+        "18 of our own closes left the device and 19 went out again because nobody "
+        "had acknowledged them. 20 connections finished, and 21 were given up on "
+        "with our close unacknowledged\n"
         "9 answers went out again because nobody had confirmed them\n"
         "10 connections were given up on after nobody confirmed them\n"
         "11 octets of data were taken and discarded, and 12 segments carried data "

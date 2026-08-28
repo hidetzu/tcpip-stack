@@ -402,6 +402,24 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
                 write_the_data_we_took(out, outcome->octets_taken);
             }
             return;
+        case CONNECTION_LAST_ACK:
+            fputs("  ", out);
+            write_socket(out, &outcome->id.remote);
+            /* ⚠ What we did first, then what is still owed. ⚠ Nothing here is
+             * the sender's fault (`CLAUDE.md` §4-1). */
+            fputs(" has closed its side; we read the FIN, closed ours in the same\n"
+                  "    segment, and are waiting for that to be acknowledged (LAST-ACK)\n",
+                  out);
+            if (outcome->octets_taken != 0) {
+                write_the_data_we_took(out, outcome->octets_taken);
+            }
+            return;
+        case CONNECTION_CLOSED:
+            fputs("  ", out);
+            write_socket(out, &outcome->id.remote);
+            fputs(" acknowledged our own close; the connection is finished and\n"
+                  "    the room it held is free again (CLOSED)\n", out);
+            return;
         case CONNECTION_LISTEN:
             break;
         }
@@ -464,6 +482,21 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
         write_socket(out, &outcome->id.remote);
         fputs(" has not confirmed it; the answer went out again\n", out);
         return;
+    case HANDSHAKE_REASON_OUR_FIN_WENT_OUT_AGAIN:
+        /* ⚠ Our timer fired, ⚠ **not them asking for anything** — the same
+         * distinction hidetzu/tcpip-stack#59 had to make for the answer. */
+        fputs("  ", out);
+        write_socket(out, &outcome->id.remote);
+        fputs(" has not acknowledged our close; it went out again\n", out);
+        return;
+    case HANDSHAKE_REASON_NOBODY_ACKNOWLEDGED_OUR_FIN:
+        /* ⚠ We stopped waiting. ⚠ Not the sender being wrong about anything,
+         * and ⚠ **not the same event as a handshake nobody confirmed.** */
+        fputs("  ", out);
+        write_socket(out, &outcome->id.remote);
+        fputs(" never acknowledged our close; we stopped waiting and freed the\n"
+              "    room the connection held\n", out);
+        return;
     case HANDSHAKE_REASON_NOBODY_CONFIRMED_IT:
         /* ⚠ Nobody confirmed it. ⚠ Not "they did not answer" and not anything
          * about them being wrong — ⚠ we stopped waiting (`CLAUDE.md` §4-1). */
@@ -492,6 +525,12 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
                  "connection's state did not expect them\n",
             counts->established, counts->acknowledgment_we_are_not_waiting_for,
             counts->no_connection_held, counts->not_expected_in_this_state);
+    fprintf(out, "%lu of our own closes left the device and %lu went out again "
+                 "because nobody had acknowledged them. %lu connection%s finished, "
+                 "and %lu %s given up on with our close unacknowledged\n",
+            counts->our_fin_left, counts->our_fin_went_out_again, counts->closed,
+            counts->closed == 1 ? "" : "s", counts->never_acknowledged_our_fin,
+            counts->never_acknowledged_our_fin == 1 ? "was" : "were");
     fprintf(out, "%lu answer%s went out again because nobody had confirmed %s\n",
             counts->answered_again, counts->answered_again == 1 ? "" : "s",
             counts->answered_again == 1 ? "it" : "them");
@@ -597,8 +636,9 @@ void report_usage(FILE *out, const char *program_name)
             "ARP and ICMP echo are what it answers so far.\n"
             "With --tcp-port it also answers a connection request on that port, as far\n"
             "as the connection being open. Data that arrives on it is taken and\n"
-            "discarded, and a FIN closing the other side is read, but the sender is\n"
-            "not told about either. Nothing else is sent after that.\n"
+            "discarded without the sender being told. When the other side closes,\n"
+            "its FIN is acknowledged and this end closes in the same segment, and\n"
+            "the connection is finished once that is acknowledged in return.\n"
             "The device exists only while this program holds it open.\n",
             program_name);
 }

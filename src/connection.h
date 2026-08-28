@@ -75,13 +75,17 @@ struct connection_id {
  *   "CLOSE-WAIT - represents waiting for a connection termination request
  *    from the local user."
  *
+ *   "LAST-ACK - represents waiting for an acknowledgment of the connection
+ *    termination request previously sent to the remote TCP (which includes an
+ *    acknowledgment of its connection termination request)."
+ *   "CLOSED - represents no connection state at all."
+ *
  * ⚠ Named exactly as the document names them (`.claude/rules/layers.md`).
  * ⚠ The states this milestone does not reach are not here: ⚠ **a state with no
- * transition into it would be a claim that we implement it.** ⚠ So `LAST-ACK`
- * is absent until something sends our own FIN (hidetzu/tcpip-stack#66), and
- * ⚠ **`TIME-WAIT` is not ours at all**: RFC 793 Figure 13 and Figure 6 both put
- * it on the side that closed first, and ⚠ **this stack never does**
- * (hidetzu/tcpip-stack#65, ADR 0022). */
+ * transition into it would be a claim that we implement it.** ⚠ So
+ * `TIME-WAIT`, `FIN-WAIT-1`, `FIN-WAIT-2` and `CLOSING` are absent:
+ * ⚠ **every one of them belongs to the side that closed first, and this stack
+ * never does** (RFC 793 Figures 6 and 13; ADR 0022). */
 enum connection_state {
     CONNECTION_LISTEN = 0,
     CONNECTION_SYN_RECEIVED,
@@ -89,8 +93,28 @@ enum connection_state {
 
     /* ⚠ The other side has closed and ⚠ **we have not.** ⚠ The document's own
      * definition names a local user, and ⚠ **there is none here** — what this
-     * stack does instead is ADR 0022's decision, not the document's. */
-    CONNECTION_CLOSE_WAIT
+     * stack does instead is ADR 0022's decision, not the document's.
+     *
+     * ⚠ **No connection rests here.** ⚠ Since hidetzu/tcpip-stack#66 the FIN's
+     * arrival is the CLOSE, so the same pass goes on to `LAST-ACK` — ⚠ this is
+     * where a connection is left only when the answer could not be built. */
+    CONNECTION_CLOSE_WAIT,
+
+    /* ⚠ Our own FIN has gone out and ⚠ **nobody has acknowledged it yet.**
+     *
+     * ⚠ RFC 793's CLOSE Call section says `CLOSE-WAIT` enters `CLOSING`;
+     * ⚠ **that is a known error.** ⚠ RFC 1122 §4.2.2.20 (a): "CLOSE Call,
+     * CLOSE-WAIT state, p. 61: enter LAST-ACK state, not CLOSING." ⚠ RFC 9293
+     * §3.10.4 carries the correction into the current specification (ADR 0022).
+     */
+    CONNECTION_LAST_ACK,
+
+    /* ⚠ **Nothing is ever in this state**, and that is the document's own
+     * framing: RFC 793 calls `CLOSED` "fictional" and defines it as "no
+     * connection state at all". ⚠ It is what an outcome says when the block was
+     * released — ⚠ **so that a connection finishing has a name a reader can
+     * see**, rather than simply vanishing (hidetzu/tcpip-stack#66). */
+    CONNECTION_CLOSED
 };
 
 struct transmission_control_block {
