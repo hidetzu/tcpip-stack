@@ -61,9 +61,50 @@ struct connection_id {
  * ⚠ Owner: `struct connections`. ⚠ Nothing here is allocated and nothing is
  * freed; a caller hands in the storage and it lives exactly as long as that
  * does (`.claude/rules/c.md`: prefer a caller-supplied buffer). */
+/* RFC 793's own state names, read on 2026-08-28 and quoted:
+ *
+ *   "LISTEN - represents waiting for a connection request from any remote TCP
+ *    and port."
+ *   "SYN-RECEIVED - represents waiting for a confirming connection request
+ *    acknowledgment after having both received and sent a connection request."
+ *   "ESTABLISHED - represents an open connection, data received can be
+ *    delivered to the user."
+ *
+ * ⚠ Named exactly as the document names them (`.claude/rules/layers.md`).
+ * ⚠ The states this milestone does not reach are not here: ⚠ **a state with no
+ * transition into it would be a claim that we implement it.** */
+enum connection_state {
+    CONNECTION_LISTEN = 0,
+    CONNECTION_SYN_RECEIVED,
+    CONNECTION_ESTABLISHED
+};
+
 struct transmission_control_block {
     bool in_use;
     struct connection_id id;
+
+    enum connection_state state;
+
+    /* RFC 793's own send-sequence names, from the LISTEN state's rules:
+     *
+     *   "ISS should be selected and a SYN segment sent of the form:
+     *      <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>
+     *    SND.NXT is set to ISS+1 and SND.UNA to ISS."
+     *
+     * ⚠ `iss` is what we chose; `snd_una` and `snd_nxt` are the window an
+     * acknowledgment has to fall inside (hidetzu/tcpip-stack#43, ADR 0016). */
+    uint32_t iss;
+    uint32_t snd_una;
+    uint32_t snd_nxt;
+
+    /* RFC 793's own receive-sequence names, same rules:
+     *
+     *   "Set RCV.NXT to SEG.SEQ+1, IRS is set to SEG.SEQ"
+     *
+     * ⚠ `irs` is the sequence number their SYN carried; `rcv_nxt` is the next
+     * one we expect from them. */
+    uint32_t irs;
+    uint32_t rcv_nxt;
 };
 
 /* Room for the connections this build can hold at once.
