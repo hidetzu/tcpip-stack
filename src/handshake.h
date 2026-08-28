@@ -80,6 +80,30 @@
 #define HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS 1000u
 #define HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS 3000u
 
+/* How many octets the answer's Window promises, and ⚠ **it is a promise.**
+ *
+ * ⚠ RFC 793: "Window: 16 bits - The number of data octets beginning with the
+ * one indicated in the acknowledgment field which the sender of this segment is
+ * willing to accept."
+ *
+ * ⚠ 1, and 1 is a measurement rather than a taste. Same conditions as
+ * `docs/SPEC.md` §3, 2026-08-29 — a `connect()`, a wait, a `close()`, watched on
+ * the wire:
+ *
+ *     window 0   SYN ACK ACK ACK ACK ACK            ⚠ no FIN, ever
+ *     window 1   SYN ACK ACK|FIN ACK|FIN ...        ⚠ the FIN arrives
+ *     window 2   SYN ACK ACK|FIN ACK|FIN ...        the same
+ *
+ * ⚠ **A window of 0 makes closing impossible**, and ⚠ **1 is the smallest that
+ * lets a FIN through** (hidetzu/tcpip-stack#64 Owner Decision 1).
+ *
+ * ⚠ Until hidetzu/tcpip-stack#64 this was 0, and 0 was equally the truth then:
+ * ⚠ **nothing accepted a single octet, so promising one would have been a claim
+ * this stack could not back** (hidetzu/tcpip-stack#44 Owner Decision 3). ⚠ The
+ * number moved because ⚠ **what backs it moved** — `take_the_data` below —
+ * ⚠ not because a check was easier that way. */
+#define HANDSHAKE_WINDOW 1u
+
 enum handshake_decision {
     /* ⚠ The connection moved to a state it was not in. `outcome->state` says
      * which. */
@@ -136,6 +160,35 @@ enum handshake_reason {
      * "delete the TCB, enter the CLOSED state and return." */
     HANDSHAKE_REASON_NOBODY_CONFIRMED_IT,
 
+    /* ⚠ Data arrived on an open connection, ⚠ **we took delivery of it, and we
+     * had nobody to give it to** (hidetzu/tcpip-stack#64 Owner Decision 2).
+     *
+     * ⚠ Counted apart from a segment the state did not expect: ⚠ **this one was
+     * expected** — it is exactly what advertising a window invites — and the two
+     * are not the same event.
+     *
+     * ⚠ `RCV.NXT` advanced, so ⚠ **the same octet is not taken twice.**
+     * ⚠ **Nothing tells the sender**, because nothing is sent from this layer at
+     * all: ⚠ **the window is a promise kept in taking and not yet in telling**,
+     * and `docs/SPEC.md` §2 names hidetzu/tcpip-stack#66 as what closes it.
+     * ⚠ The peer retransmits meanwhile, and that is the measured consequence,
+     * not a surprise. */
+    HANDSHAKE_REASON_THE_DATA_WAS_TAKEN_AND_DISCARDED,
+
+    /* ⚠ Data arrived that ⚠ **none of the window we promised covers** — every
+     * octet of it is behind `RCV.NXT`, or every octet is beyond what was
+     * promised.
+     *
+     * ⚠ RFC 793's sequence number check, verbatim: "segments with higher
+     * beginning sequence numbers may be held for later processing." ⚠ Nothing
+     * here holds anything, and ⚠ `docs/SPEC.md` §2 names that gap rather than
+     * leaving it silent.
+     *
+     * ⚠ Counted apart from data that was taken: ⚠ **one is octets that reached
+     * us, the other is a segment that reached us and had nothing in it we had
+     * room for.** */
+    HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW,
+
     /* ⚠ Ours, not the sender's. ⚠ The connection moved and ⚠ the answer could
      * not be built into the buffer we were given. ⚠ Counted rather than dropped
      * in silence (`.claude/rules/c.md`), and ⚠ the sentence a human reads says
@@ -153,6 +206,16 @@ struct handshake_counts {
     unsigned long we_could_not_build_the_reply;
     unsigned long given_up_on;
     unsigned long answered_again;
+
+    /* ⚠ **Octets, not segments** — the denominator is stated because the
+     * counters around it are all segments (`CLAUDE.md` §6). ⚠ It is what we
+     * took delivery of and discarded, so ⚠ **one 5-octet segment taken one
+     * octet at a time over five arrivals moves this by 5, not by 1 and not by
+     * 25**: `RCV.NXT` advanced each time, so no octet is counted twice. */
+    unsigned long octets_taken_and_discarded;
+
+    /* ⚠ **Segments** — a segment none of whose octets the window covered. */
+    unsigned long data_outside_the_window;
 
     /* ⚠ Counted only once the wire took the whole answer. ⚠ A reply that was
      * built is not a reply that left — the same division `arp_respond` and
@@ -181,6 +244,15 @@ struct handshake_outcome {
      * we wait for. ⚠ Meaningful only for that reason. */
     uint32_t acknowledgment_we_had;
     uint32_t acknowledgment_we_expected;
+
+    /* ⚠ How many octets of data we took delivery of and discarded. ⚠ 0 unless
+     * the segment carried data the window covered, and ⚠ **it can be non-zero
+     * alongside a connection reaching ESTABLISHED**: the acknowledgment that
+     * opens a connection may carry data, and ⚠ **a payload nobody counted is
+     * indistinguishable from one that never arrived** (`.claude/rules/c.md`).
+     * ⚠ That is why this is a field and not a reason — ⚠ `counts` still gains
+     * exactly one reason per segment. */
+    uint16_t octets_taken;
 
     /* ⚠ How many octets of the caller's reply buffer were written. ⚠ 0 unless a
      * SYN opened a connection, and ⚠ a caller must not send what was not
@@ -215,9 +287,10 @@ struct handshake_outcome {
  *                      <CTL=SYN,ACK>"
  *     Sequence Number  ISS
  *     Acknowledgment   RCV.NXT
- *     Window           ⚠ 0, because this stack accepts no data at all and
- *                      ⚠ anything else would be a claim it cannot back
- *                      (hidetzu/tcpip-stack#44 Owner Decision 3)
+ *     Window           ⚠ `HANDSHAKE_WINDOW`, and ⚠ **it is a promise this
+ *                      stack keeps in taking**: `take_the_data` accepts that
+ *                      many octets and discards them
+ *                      (hidetzu/tcpip-stack#64 Owner Decisions 1 and 2)
  *     Options          ⚠ none (Owner Decision 2)
  *
  * ⚠ An answer is built only when a SYN opened a connection. ⚠ The three places

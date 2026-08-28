@@ -479,6 +479,144 @@ sys.exit(0)
     printf '    ss said: %s\n' "$(grep ESTAB "$work/connect.txt" | head -1)"
 }
 
+# ⚠ hidetzu/tcpip-stack#64 AC 4, and ⚠ **the point of the whole change.**
+#
+# ⚠ Measured before the change, same conditions, 2026-08-29: with the answer's
+# window at 0 the kernel's close() produced no FIN at all — five bare ACKs and
+# nothing else — and ⚠ **with it at 1 the FIN arrives.** ⚠ So this case is what
+# says the window is a number that does something, not a number that is written.
+#
+# ⚠ The issue named the real tier for this. ⚠ It cannot be real: ⚠ **the FIN is
+# produced by the Linux kernel's own close()**, and who the other end is is what
+# separates the tiers (`.claude/skills/verify/SKILL.md` §1). ⚠ A real-tier check
+# would have had to craft the FIN itself, which would assert that we can send
+# ourselves a FIN and nothing about the window.
+#
+# ⚠ The control bits are cut out of the hex here, by this file, ⚠ never by
+# asking src/tcp.c what the segment is — the same independence
+# `an_arp_request_the_kernel_generated_is_read_intact` keeps.
+inside_a_fin_reaches_us_once_the_window_is_open() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+    port=80
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port "$port" \
+        --timeout 6000 --hex >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+
+    # ⚠ IPv6 off, so the frames counted below are the ones this case is about.
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    # ⚠ connect(), then close(). ⚠ Nothing of ours is consulted: the FIN is
+    # whatever the kernel decides to send when the socket is closed.
+    LC_ALL=C python3 -c '
+import socket, sys, time
+s = socket.socket()
+s.settimeout(5)
+try:
+    s.connect(("10.0.0.2", 80))
+except Exception as why:
+    print("connect failed:", why)
+    sys.exit(1)
+print("connect succeeded")
+s.close()
+time.sleep(2)
+' >"$work/close.txt" 2>&1
+    connect_exit=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$connect_exit" -ne 0 ]; then
+        note_failure "connect() to $ours:$port did not succeed, so nothing was closed"
+        sed 's/^/      /' "$work/close.txt" >&2
+        return
+    fi
+
+    # ⚠ Every offset and every bit comes from the constants src/ uses, ⚠ never
+    # written here a second time (`CLAUDE.md` §3).
+    ethernet_header=$(constant src/ethernet.h ETHERNET_HEADER_BYTES)
+    ipv4_type=$(constant src/ipv4.h IPV4_ETHERNET_LENGTH_TYPE)
+    tcp_number=$(constant src/tcp.h TCP_PROTOCOL_NUMBER)
+    fin_bit=$(constant src/tcp.h TCP_CONTROL_FIN)
+    syn_bit=$(constant src/tcp.h TCP_CONTROL_SYN)
+
+    # ⚠ Counted apart: a check that called every segment a FIN would report the
+    # SYN as one too, and ⚠ **bare acknowledgments are what arrived before this
+    # change** (`verify` §5: never leave only the positive half).
+    #
+    # ⚠ python and not awk, because ⚠ `strtonum` and `and` are gawk's and
+    # nothing else in this file needs them.
+    LC_ALL=C frames_as_hex "$work/out.txt" | python3 -c '
+import sys
+
+def number(text):
+    return int(text.rstrip("uU"), 0)
+
+ethernet_header, ipv4_type, tcp_number, fin_bit, syn_bit = (
+    number(argument) for argument in sys.argv[1:6])
+
+syns = fins = others = 0
+for line in sys.stdin:
+    parts = line.split()
+    if len(parts) != 2:
+        continue
+    octets = bytes.fromhex(parts[1])
+    if len(octets) < ethernet_header + 20:
+        continue
+    if int.from_bytes(octets[ethernet_header - 2:ethernet_header], "big") != ipv4_type:
+        continue
+    internet_header = (octets[ethernet_header] & 0x0f) * 4
+    if octets[ethernet_header + 9] != tcp_number:
+        continue
+    at = ethernet_header + internet_header
+    if len(octets) < at + 20:
+        continue
+    bits = octets[at + 13]
+    if bits & syn_bit:
+        syns += 1
+    elif bits & fin_bit:
+        fins += 1
+    else:
+        others += 1
+print(syns, fins, others)
+' "$ethernet_header" "$ipv4_type" "$tcp_number" "$fin_bit" "$syn_bit" \
+        >"$work/counted.txt"
+
+    read -r syns fins others <"$work/counted.txt"
+
+    if [ "$fins" -lt 1 ]; then
+        note_failure "close() produced no FIN, so the window we advertise is not opening one"
+        printf '    %s SYNs and %s other segments arrived\n' "$syns" "$others" >&2
+        sed 's/^/      /' "$work/out.txt" | head -40 >&2
+        return
+    fi
+    # ⚠ The other half: the bits are being read, not guessed. ⚠ The SYN and the
+    # acknowledgment that opened the connection are neither of them FINs.
+    if [ "$syns" -lt 1 ] || [ "$others" -lt 1 ]; then
+        note_failure "no SYN or no plain acknowledgment was seen, so counting FINs proves nothing"
+        printf '    %s SYNs, %s FINs, %s others\n' "$syns" "$fins" "$others" >&2
+        return
+    fi
+
+    # ⚠ Our own stack's word, which says less than the octets above — it is here
+    # so that a FIN arriving can never be mistaken for the connection never
+    # having opened at all.
+    assert_file_contains "$work/out.txt" "1 reached open." \
+        "the connection reached ESTABLISHED before it was closed"
+
+    printf '    %s SYN, %s FIN and %s other segments arrived\n' "$syns" "$fins" "$others"
+}
+
 # ⚠ The half that stops the case above passing for a stack that never looked at
 # a checksum (hidetzu/tcpip-stack#44 AC 2, and `CLAUDE.md` §1).
 #
@@ -581,6 +719,9 @@ case_ping_reports_no_loss_against_our_own_stack() {
 case_the_kernel_opens_a_connection_to_us() {
     in_namespace the_kernel_opens_a_connection_to_us
 }
+case_a_fin_reaches_us_once_the_window_is_open() {
+    in_namespace a_fin_reaches_us_once_the_window_is_open
+}
 case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
     in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
 }
@@ -591,7 +732,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

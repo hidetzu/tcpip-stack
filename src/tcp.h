@@ -156,6 +156,17 @@ struct tcp_header {
      * options are read for. ⚠ It is `data_offset` in octets, and it is
      * meaningful only when OK is returned. */
     size_t data_begins_at;
+
+    /* ⚠ How many octets of data the segment carries: `segment_bytes` less
+     * `data_begins_at`, and ⚠ meaningful only when OK is returned.
+     *
+     * ⚠ It is derived here rather than by each caller on purpose. ⚠ Both
+     * numbers it comes from are already checked against each other above, and
+     * ⚠ a caller doing the subtraction itself would be a second place deciding
+     * the same question — which is how the two silently diverge
+     * (`CLAUDE.md` §3). ⚠ It cannot underflow: `segment_bytes < header_bytes`
+     * is malformed and never reaches here. */
+    size_t data_bytes;
 };
 
 /* Read the header of one TCP segment.

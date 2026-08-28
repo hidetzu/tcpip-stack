@@ -707,6 +707,65 @@ static bool case_the_tcp_length_comes_from_the_extent_it_was_handed(void)
     return ok;
 }
 
+/* ⚠ How many octets of data the segment carries, ⚠ **derived here so that the
+ * layer above never subtracts two numbers itself** (`src/tcp.h`).
+ *
+ * ⚠ What it exists to stop is the State layer taking delivery of octets that
+ * are not there, or missing octets that are. ⚠ Both directions are asserted:
+ * the kernel's own SYN carries none, and appending data changes it by exactly
+ * what was appended — ⚠ **not by the options, which sit in front of it.** */
+static bool case_the_data_length_comes_from_what_was_handed_over(void)
+{
+    struct segment bare;
+    if (!load_the_syn(&bare)) {
+        return false;
+    }
+    bool ok = true;
+
+    struct tcp_header header;
+    if (tcp_parse_header(bare.octets, bare.bytes, bare.source_address,
+                         bare.destination_address, &header) != TCP_PARSE_OK) {
+        fputs("  the kernel's own SYN was declined\n", stderr);
+        return false;
+    }
+    /* ⚠ The kernel's SYN carries options and no data. ⚠ A `data_bytes` that
+     * counted the options would be non-zero here. */
+    if (header.data_bytes != 0) {
+        fprintf(stderr, "  a SYN carrying no data reported %zu octets of it\n",
+                header.data_bytes);
+        ok = false;
+    }
+
+    for (size_t appended = 1; appended <= 5; appended++) {
+        struct segment with_data = bare;
+        for (size_t i = 0; i < appended; i++) {
+            with_data.octets[with_data.bytes + i] = (unsigned char)('a' + i);
+        }
+        with_data.bytes += appended;
+        repair_the_checksum(&with_data);
+
+        struct tcp_header carrying;
+        if (tcp_parse_header(with_data.octets, with_data.bytes,
+                             with_data.source_address, with_data.destination_address,
+                             &carrying) != TCP_PARSE_OK) {
+            fprintf(stderr, "  a segment carrying %zu octets was declined\n", appended);
+            ok = false;
+            continue;
+        }
+        if (carrying.data_bytes != appended) {
+            fprintf(stderr, "  %zu octets were appended and %zu were reported\n",
+                    appended, carrying.data_bytes);
+            ok = false;
+        }
+        /* ⚠ And the header did not move: the data is what changed. */
+        if (carrying.data_begins_at != header.data_begins_at) {
+            fputs("  appending data moved where the data begins\n", stderr);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 /* ⚠ The order, asserted rather than assumed (ADR 0014).
  *
  * ⚠ The checksum is decided before any field's content, so a segment whose
@@ -822,6 +881,8 @@ static const struct test_case cases[] = {
     { "the_kernels_checksum_is_reproduced", case_the_kernels_checksum_is_reproduced },
     { "the_tcp_length_comes_from_the_extent_it_was_handed",
       case_the_tcp_length_comes_from_the_extent_it_was_handed },
+    { "the_data_length_comes_from_what_was_handed_over",
+      case_the_data_length_comes_from_what_was_handed_over },
     { "the_order_the_answers_are_decided_in", case_the_order_the_answers_are_decided_in },
     { "a_read_that_cannot_be_made_leaves_nothing_behind",
       case_a_read_that_cannot_be_made_leaves_nothing_behind },

@@ -14,6 +14,12 @@
 _Static_assert(TCP_PROTOCOL_NUMBER == IPV4_PROTOCOL_TCP,
                "the pseudo-header's Protocol must be the one the internet header carries");
 
+/* ⚠ The window goes into a sixteen-bit field and into `outcome->octets_taken`,
+ * which is sixteen bits too. ⚠ A larger promise would be truncated on the way
+ * out, and ⚠ **the number a peer read would not be the number we chose.** */
+_Static_assert(HANDSHAKE_WINDOW <= 0xffffu,
+               "the window must fit the field RFC 793 gives it");
+
 /* ⚠ `a` is at or before `b` on a sequence space that wraps at 2^32.
  *
  * ⚠ Written with unsigned arithmetic on purpose. ⚠ The usual
@@ -73,9 +79,9 @@ static size_t build_the_answer(const struct transmission_control_block *block,
     fields.sequence_number = block->iss;
     fields.acknowledgment_number = block->rcv_nxt;
     fields.control_bits = TCP_CONTROL_SYN | TCP_CONTROL_ACK;
-    /* ⚠ Zero, and it is the truth: nothing here accepts a single octet of data
-     * (hidetzu/tcpip-stack#44 Owner Decision 3). */
-    fields.window = 0;
+    /* ⚠ A promise of exactly this many octets, and ⚠ `take_the_data` is what
+     * backs it (hidetzu/tcpip-stack#64 Owner Decision 1). */
+    fields.window = HANDSHAKE_WINDOW;
 
     uint8_t *segment = reply + ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES;
     size_t segment_bytes = 0;
@@ -98,6 +104,57 @@ static size_t build_the_answer(const struct transmission_control_block *block,
         return 0;
     }
     return ETHERNET_HEADER_BYTES + datagram_bytes;
+}
+
+/* Take delivery of as much of the segment's data as the window promised, and
+ * ⚠ **discard it** (hidetzu/tcpip-stack#64 Owner Decision 2). ⚠ How many were
+ * taken goes into `outcome->octets_taken`, and is 0 when none were.
+ *
+ * ⚠ RFC 793's sequence number check, quoted: "Segments are processed in
+ * sequence ... segments with higher beginning sequence numbers may be held for
+ * later processing." ⚠ **Nothing here holds anything**, so a segment beginning
+ * beyond `RCV.NXT` is refused rather than kept, and `docs/SPEC.md` §2 names it.
+ *
+ * ⚠ The document also says of a partly-acceptable segment: "if the segment
+ * contains data that begins outside the window, that data is trimmed." ⚠ That is
+ * what the arithmetic below does — ⚠ **it takes the octets from `RCV.NXT`
+ * onward, not the octets the segment starts with.**
+ *
+ * ⚠ Every comparison is unsigned subtraction on a space that wraps at 2^32, for
+ * the reason `at_or_before` above gives. ⚠ `behind_us >= header->data_bytes`
+ * catches both a segment entirely already taken and one entirely in the future:
+ * ⚠ **for the future one the subtraction wraps to something enormous**, which is
+ * the comparison working, not it failing.
+ *
+ * ⚠ `RCV.NXT` advances by what was taken, so ⚠ **the same octet is never taken
+ * twice** — a retransmission of it is then entirely behind us. ⚠ Nothing tells
+ * the sender: sending is not this layer's, and ⚠ **the window is a promise kept
+ * in taking and not yet in telling** (`docs/SPEC.md` §2, closed by
+ * hidetzu/tcpip-stack#66). */
+static void take_the_data(struct transmission_control_block *block,
+                          const struct tcp_header *header,
+                          struct handshake_outcome *outcome,
+                          struct handshake_counts *counts)
+{
+    outcome->octets_taken = 0;
+    if (header->data_bytes == 0) {
+        return;
+    }
+
+    uint32_t behind_us = block->rcv_nxt - header->sequence_number;
+    if (behind_us >= header->data_bytes) {
+        return;
+    }
+
+    size_t still_to_come = header->data_bytes - behind_us;
+    size_t take = still_to_come < HANDSHAKE_WINDOW ? still_to_come : HANDSHAKE_WINDOW;
+
+    block->rcv_nxt += (uint32_t)take;
+    /* ⚠ The number reported and the number counted are set from one place, so
+     * they cannot diverge — the same pairing `stayed()` enforces for a reason
+     * and its counter. */
+    outcome->octets_taken = (uint16_t)take;
+    counts->octets_taken_and_discarded += (unsigned long)take;
 }
 
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
@@ -151,6 +208,14 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
             if (at_or_before(held->snd_una, header->acknowledgment_number) &&
                 at_or_before(header->acknowledgment_number, held->snd_nxt)) {
                 held->state = CONNECTION_ESTABLISHED;
+                /* ⚠ The acknowledgment that opens a connection may carry data —
+                 * ⚠ **the window we advertised is what invites it.** ⚠ Taken
+                 * before the transition is reported, because ⚠ a payload nobody
+                 * counted is indistinguishable from one that never arrived
+                 * (`.claude/rules/c.md`). ⚠ The reason stays the transition:
+                 * ⚠ `counts` still gains exactly one reason per segment, and the
+                 * octets are their own number. */
+                take_the_data(held, header, outcome, counts);
                 moved(outcome, CONNECTION_ESTABLISHED, &counts->established);
                 return;
             }
@@ -160,6 +225,32 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
              * gap rather than leaving it silent. */
             stayed(outcome, HANDSHAKE_REASON_ACKNOWLEDGMENT_WE_ARE_NOT_WAITING_FOR,
                    &counts->acknowledgment_we_are_not_waiting_for);
+            return;
+        }
+
+        /* ⚠ Data on an open connection is not a segment the state did not
+         * expect — ⚠ **it is exactly what advertising a window invites**, and
+         * the two are counted apart. ⚠ A segment carrying no data still falls
+         * through to the line below, which is what keeps a FIN outside this
+         * change (hidetzu/tcpip-stack#65 reads one).
+         *
+         * ⚠ A segment carrying BOTH data and a FIN is reported for its data and
+         * ⚠ **says nothing about the FIN.** ⚠ That is not new — before this it
+         * said nothing about either — and ⚠ **it is named rather than left to be
+         * found**: hidetzu/tcpip-stack#65 is what reads the bit. */
+        if (held->state == CONNECTION_ESTABLISHED && header->data_bytes != 0) {
+            take_the_data(held, header, outcome, counts);
+            if (outcome->octets_taken != 0) {
+                /* ⚠ The one other reason that does not go through `stayed()`,
+                 * and for the same cause `NO_ROOM` gives below:
+                 * ⚠ **`take_the_data` has already counted it**, in octets.
+                 * ⚠ Counting again here would make one octet look like two. */
+                outcome->decision = HANDSHAKE_STAYED;
+                outcome->reason = HANDSHAKE_REASON_THE_DATA_WAS_TAKEN_AND_DISCARDED;
+            } else {
+                stayed(outcome, HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW,
+                       &counts->data_outside_the_window);
+            }
             return;
         }
 

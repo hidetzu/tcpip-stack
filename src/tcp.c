@@ -210,6 +210,8 @@ enum tcp_parse tcp_parse_header(const uint8_t *segment, size_t segment_bytes,
     }
 
     header->data_begins_at = header_bytes;
+    /* ⚠ Safe because `segment_bytes < header_bytes` was refused above. */
+    header->data_bytes = segment_bytes - header_bytes;
     return TCP_PARSE_OK;
 }
 

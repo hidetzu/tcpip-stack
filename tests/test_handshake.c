@@ -51,6 +51,15 @@ static struct tcp_header a_segment(unsigned control_bits, uint32_t sequence_numb
     return header;
 }
 
+/* ⚠ A segment carrying `data_bytes` octets of data. ⚠ The octets themselves are
+ * never given: ⚠ **this layer is handed a header that was already read**, and
+ * ⚠ how many there are is the only thing it may act on (`src/tcp.h`). */
+static struct tcp_header carrying(struct tcp_header header, size_t data_bytes)
+{
+    header.data_bytes = data_bytes;
+    return header;
+}
+
 /* ⚠ A moment made up here. ⚠ Every case works on these, ⚠ **which is what
  * handing "now" in buys** (ADR 0018): no clock, no waiting. */
 static struct moment at(uint64_t milliseconds)
@@ -438,9 +447,14 @@ static bool case_the_answer_is_the_one_the_document_describes(void)
         fputs("  the answer's ports are not ours to theirs\n", stderr);
         ok = false;
     }
-    /* ⚠ Owner Decision 3: zero, because nothing here accepts data. */
-    if (answer.window != 0) {
-        fprintf(stderr, "  the answer advertises a window of %u\n", answer.window);
+    /* ⚠ hidetzu/tcpip-stack#64 Owner Decision 1: the window we promise.
+     * ⚠ Asserted against the constant AND against 0, because ⚠ **0 was the
+     * value before #64 and a window of 0 makes a FIN impossible** — measured,
+     * `src/handshake.h`. ⚠ Comparing only with the constant would pass if both
+     * moved back to 0 together. */
+    if (answer.window != HANDSHAKE_WINDOW || answer.window == 0) {
+        fprintf(stderr, "  the answer advertises a window of %u, not %u\n",
+                answer.window, (unsigned)HANDSHAKE_WINDOW);
         ok = false;
     }
     /* ⚠ Owner Decision 2: no options at all. */
@@ -571,6 +585,254 @@ static bool case_an_answer_that_would_not_fit_is_counted_as_ours(void)
     if (outcome.decision != HANDSHAKE_MOVED || outcome.reply_bytes != needed) {
         fprintf(stderr, "  exactly %zu octets of room was declined, reason %d\n", needed,
                 (int)outcome.reason);
+        ok = false;
+    }
+    return ok;
+}
+
+/* Opens one and confirms it, so a case can start from ESTABLISHED. */
+static bool open_and_confirm(struct world *world,
+                             struct transmission_control_block **held)
+{
+    if (!open_one(world, THEIR_ISN, held)) {
+        return false;
+    }
+    struct tcp_header ack = a_segment(TCP_CONTROL_ACK, THEIR_ISN + 1u, (*held)->iss + 1u);
+    struct handshake_outcome outcome = receive(world, &ack);
+    if (outcome.decision != HANDSHAKE_MOVED ||
+        outcome.state != CONNECTION_ESTABLISHED) {
+        fputs("  the connection did not reach ESTABLISHED\n", stderr);
+        return false;
+    }
+    return true;
+}
+
+/* ⚠ hidetzu/tcpip-stack#64 Owner Decision 2: taken, discarded, ⚠ and counted.
+ *
+ * ⚠ What this exists to stop is the payload going by uncounted: ⚠ **an octet
+ * nobody counted is indistinguishable from one that never arrived**
+ * (`.claude/rules/c.md`). */
+static bool case_data_on_an_open_connection_is_taken_and_discarded(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    uint32_t was = held->rcv_nxt;
+
+    bool ok = true;
+    struct tcp_header data =
+        carrying(a_segment(TCP_CONTROL_ACK, was, held->iss + 1u), 1);
+    struct handshake_outcome outcome = receive(&world, &data);
+
+    if (outcome.reason != HANDSHAKE_REASON_THE_DATA_WAS_TAKEN_AND_DISCARDED) {
+        fprintf(stderr, "  one octet of data came back as reason %d\n",
+                (int)outcome.reason);
+        ok = false;
+    }
+    if (outcome.octets_taken != 1 || world.counts.octets_taken_and_discarded != 1) {
+        fprintf(stderr, "  %u octets reported and %lu counted, for one octet sent\n",
+                (unsigned)outcome.octets_taken,
+                world.counts.octets_taken_and_discarded);
+        ok = false;
+    }
+    /* ⚠ RCV.NXT advanced, which is what taking delivery MEANS. ⚠ Without this
+     * the count could move while nothing was actually accepted. */
+    if (held->rcv_nxt != was + 1u) {
+        fprintf(stderr, "  RCV.NXT is %lu and one octet was taken from %lu\n",
+                (unsigned long)held->rcv_nxt, (unsigned long)was);
+        ok = false;
+    }
+    /* ⚠ Not folded in with a segment the state did not expect
+     * (hidetzu/tcpip-stack#64 AC 2). */
+    if (world.counts.not_expected_in_this_state != 0 ||
+        world.counts.data_outside_the_window != 0) {
+        fputs("  data on an open connection moved somebody else's counter\n", stderr);
+        ok = false;
+    }
+    /* ⚠ Nothing is sent for it. Telling the sender is hidetzu/tcpip-stack#66. */
+    if (outcome.reply_bytes != 0) {
+        fprintf(stderr, "  %zu octets were built in answer to data\n",
+                outcome.reply_bytes);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ Data none of which the window covers, both ways it can happen. */
+static bool case_data_outside_the_window_is_refused_and_nothing_moves(void)
+{
+    bool ok = true;
+
+    /* ⚠ Behind us: every octet has been taken already. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        struct tcp_header first =
+            carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u), 1);
+        (void)receive(&world, &first);
+        uint32_t was = held->rcv_nxt;
+
+        struct handshake_outcome outcome = receive(&world, &first);
+        if (outcome.reason != HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW ||
+            world.counts.data_outside_the_window != 1) {
+            fprintf(stderr, "  the same octet again came back as reason %d\n",
+                    (int)outcome.reason);
+            ok = false;
+        }
+        if (outcome.octets_taken != 0 || held->rcv_nxt != was ||
+            world.counts.octets_taken_and_discarded != 1) {
+            fprintf(stderr, "  the same octet was taken twice: %lu counted\n",
+                    world.counts.octets_taken_and_discarded);
+            ok = false;
+        }
+    }
+
+    /* ⚠ Past the window: it begins beyond what we asked for. ⚠ RFC 793 would
+     * hold it for later; ⚠ **nothing here holds anything** (`docs/SPEC.md` §2). */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        uint32_t was = held->rcv_nxt;
+        struct tcp_header ahead =
+            carrying(a_segment(TCP_CONTROL_ACK, was + 4096u, held->iss + 1u), 1);
+        struct handshake_outcome outcome = receive(&world, &ahead);
+        if (outcome.reason != HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW ||
+            outcome.octets_taken != 0 || held->rcv_nxt != was ||
+            world.counts.octets_taken_and_discarded != 0) {
+            fprintf(stderr, "  data beginning past the window came back as reason %d, "
+                            "%lu octets counted\n",
+                    (int)outcome.reason, world.counts.octets_taken_and_discarded);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* ⚠ A segment longer than the window is trimmed, not refused and not swallowed
+ * whole. ⚠ RFC 793: "if the segment contains data that begins outside the
+ * window, that data is trimmed."
+ *
+ * ⚠ This is what stops the window being a number that means nothing:
+ * ⚠ **five octets against a promise of one must move RCV.NXT by one.** */
+static bool case_a_segment_longer_than_the_window_is_taken_a_window_at_a_time(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    uint32_t began_at = held->rcv_nxt;
+
+    bool ok = true;
+    struct tcp_header five =
+        carrying(a_segment(TCP_CONTROL_ACK, began_at, held->iss + 1u), 5);
+
+    /* ⚠ The same segment arriving five times, which is what an unacknowledged
+     * sender actually does — measured, `src/handshake.h`. */
+    for (unsigned arrival = 1; arrival <= 5; arrival++) {
+        struct handshake_outcome outcome = receive(&world, &five);
+        if (outcome.octets_taken != HANDSHAKE_WINDOW) {
+            fprintf(stderr, "  arrival %u of five octets took %u, not %u\n",
+                    arrival, (unsigned)outcome.octets_taken,
+                    (unsigned)HANDSHAKE_WINDOW);
+            ok = false;
+        }
+        if (held->rcv_nxt != began_at + arrival * HANDSHAKE_WINDOW) {
+            fprintf(stderr, "  after arrival %u RCV.NXT had moved by %lu\n", arrival,
+                    (unsigned long)(held->rcv_nxt - began_at));
+            ok = false;
+        }
+    }
+    /* ⚠ Five octets, taken once each. ⚠ Not 1, and ⚠ not 25. */
+    if (world.counts.octets_taken_and_discarded != 5) {
+        fprintf(stderr, "  %lu octets were counted for five octets sent five times\n",
+                world.counts.octets_taken_and_discarded);
+        ok = false;
+    }
+    /* ⚠ A sixth arrival is entirely behind us now. */
+    struct handshake_outcome sixth = receive(&world, &five);
+    if (sixth.reason != HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW ||
+        world.counts.octets_taken_and_discarded != 5) {
+        fprintf(stderr, "  a sixth arrival took more: reason %d, %lu counted\n",
+                (int)sixth.reason, world.counts.octets_taken_and_discarded);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ The acknowledgment that opens the connection may carry data. ⚠ The
+ * transition is what is reported, and ⚠ **the octets are still counted** —
+ * otherwise a payload would vanish exactly where nobody looks. */
+static bool case_data_riding_the_acknowledgment_that_opens_it_is_counted(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_one(&world, THEIR_ISN, &held)) {
+        return false;
+    }
+    uint32_t was = held->rcv_nxt;
+
+    bool ok = true;
+    struct tcp_header ack =
+        carrying(a_segment(TCP_CONTROL_ACK, was, held->iss + 1u), 1);
+    struct handshake_outcome outcome = receive(&world, &ack);
+
+    if (outcome.decision != HANDSHAKE_MOVED ||
+        outcome.state != CONNECTION_ESTABLISHED ||
+        world.counts.established != 1) {
+        fprintf(stderr, "  an acknowledgment carrying data did not open it: state %d\n",
+                (int)outcome.state);
+        ok = false;
+    }
+    if (outcome.octets_taken != 1 || world.counts.octets_taken_and_discarded != 1 ||
+        held->rcv_nxt != was + 1u) {
+        fprintf(stderr, "  the octet it carried was not taken: %u reported, %lu counted\n",
+                (unsigned)outcome.octets_taken,
+                world.counts.octets_taken_and_discarded);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ The boundary hidetzu/tcpip-stack#64 must not cross: ⚠ **a segment carrying
+ * no data is still nothing this state has a rule for**, so a FIN stays
+ * hidetzu/tcpip-stack#65's. ⚠ Without this, opening the window could quietly
+ * swallow one. */
+static bool case_a_segment_carrying_no_data_is_still_not_expected(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    uint32_t was = held->rcv_nxt;
+
+    bool ok = true;
+    struct tcp_header fin =
+        a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, was, held->iss + 1u);
+    struct handshake_outcome outcome = receive(&world, &fin);
+    if (outcome.reason != HANDSHAKE_REASON_NOT_EXPECTED_IN_THIS_STATE ||
+        world.counts.not_expected_in_this_state != 1) {
+        fprintf(stderr, "  a FIN came back as reason %d\n", (int)outcome.reason);
+        ok = false;
+    }
+    if (outcome.octets_taken != 0 || held->rcv_nxt != was ||
+        world.counts.octets_taken_and_discarded != 0) {
+        fputs("  a FIN carrying no data moved RCV.NXT or the octet count\n", stderr);
         ok = false;
     }
     return ok;
@@ -1092,6 +1354,16 @@ static const struct test_case cases[] = {
     { "an_answer_that_would_not_fit_is_counted_as_ours",
       case_an_answer_that_would_not_fit_is_counted_as_ours },
     { "each_reason_moves_only_its_own_count", case_each_reason_moves_only_its_own_count },
+    { "data_on_an_open_connection_is_taken_and_discarded",
+      case_data_on_an_open_connection_is_taken_and_discarded },
+    { "data_outside_the_window_is_refused_and_nothing_moves",
+      case_data_outside_the_window_is_refused_and_nothing_moves },
+    { "a_segment_longer_than_the_window_is_taken_a_window_at_a_time",
+      case_a_segment_longer_than_the_window_is_taken_a_window_at_a_time },
+    { "data_riding_the_acknowledgment_that_opens_it_is_counted",
+      case_data_riding_the_acknowledgment_that_opens_it_is_counted },
+    { "a_segment_carrying_no_data_is_still_not_expected",
+      case_a_segment_carrying_no_data_is_still_not_expected },
     { "the_answer_is_due_a_second_after_each_send",
       case_the_answer_is_due_a_second_after_each_send },
     { "a_connection_nobody_confirms_is_given_up_on",
