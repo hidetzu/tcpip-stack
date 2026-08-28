@@ -382,8 +382,143 @@ case_a_frame_handed_over_reaches_the_kernel() {
 case_a_write_that_could_not_be_made_is_not_a_frame_sent() {
     in_namespace a_write_that_could_not_be_made_is_not_a_frame_sent
 }
+case_each_kind_of_frame_moves_its_own_counter() {
+    in_namespace each_kind_of_frame_moves_its_own_counter
+}
 
-ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused the_wait_says_the_device_stopped_being_usable a_frame_handed_over_reaches_the_kernel a_write_that_could_not_be_made_is_not_a_frame_sent"
+# ⚠ A frame of each kind moves the counter that belongs to it, and no other.
+#
+# ⚠ What was held before this and what was not (hidetzu/tcpip-stack#52):
+#
+#   ethernet_parse_header gives the right answer      ⚠ yes, tests/static.sh
+#   report_ethernet_summary prints what it is handed  ⚠ yes, tests/static.sh
+#   ⚠ an arriving frame moves the right counter        ⚠ **nothing**
+#
+# ⚠ So the two ends were held and the wire between them was not: ⚠ **swapping two
+# lines of that switch broke no check.** ⚠ `.claude/rules/c.md` — an uncounted
+# drop is invisible — and ⚠ **a count under the wrong name is worse, because it
+# looks like a measurement.**
+#
+# ⚠ The frames are put on the wire with AF_PACKET, ⚠ **because two processes
+# cannot hold one TAP device** (`a_second_attach_to_the_same_device_is_refused`
+# asserts that, and hidetzu/tcpip-stack#44 hit it). ⚠ AF_PACKET needs only what
+# `unshare -Urn` already gives, the same standing ADR 0001 gave CAP_NET_ADMIN,
+# and ⚠ **it needs no address and no route** — the device merely has to be up.
+#
+# ⚠ Why `real` and not `foreign`: ⚠ **the other end is not the kernel's stack.**
+# The frames are ours and the kernel only carries them (`verify` §1).
+#
+# ⚠ **One of the three cannot be reached at all, and that is measured, not
+# assumed**: see `docs/SPEC.md` §2. ⚠ A frame shorter than an ethernet header is
+# refused by AF_PACKET with EINVAL, ⚠ **and by the tun fd too**
+# (hidetzu/tcpip-stack#17, recorded in src/tap.h). ⚠ So `malformed` stays 0 here
+# and this case asserts that it does — ⚠ **not that it can be made to move.**
+inside_each_kind_of_frame_moves_its_own_counter() {
+    # ⚠ No --count: the kernel puts IPv6 frames on a device it has just brought
+    # up, and ⚠ a count would stop the reader before our own frames arrived.
+    # ⚠ Those frames carry a Type, so they move none of the three counters —
+    # which is what the third frame below asserts on purpose.
+    "$TCPIP_STACK" --dev tap0 --timeout 2000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    i=0
+    while [ "$i" -lt 60 ] && ! ip link show tap0 >/dev/null 2>&1; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+    if ! ip link show tap0 >/dev/null 2>&1; then
+        note_failure "tap0 never appeared while tcpip-stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    # ⚠ Up, and nothing else. No address, no route: the kernel is only the wire.
+    ip link set tap0 up
+
+    # ⚠ The three length/type values, taken from the constants src/ uses so this
+    # file cannot drift from the parser (`CLAUDE.md` §3): one at the top of the
+    # Length range, one just above it in the gap the standard does not define,
+    # and one that is plainly a Type.
+    # ⚠ The trailing `u` the header writes on these is stripped: it is C's, not
+    # part of the number.
+    length_max=$(awk '$1 == "#define" && $2 == "ETHERNET_LENGTH_MAX" { sub(/[uU]$/, "", $3); print $3 }' \
+        src/ethernet.h)
+    type_min=$(awk '$1 == "#define" && $2 == "ETHERNET_TYPE_MIN" { sub(/[uU]$/, "", $3); print $3 }' \
+        src/ethernet.h)
+    if [ -z "$length_max" ] || [ -z "$type_min" ]; then
+        note_failure "the length/type boundaries could not be read out of src/ethernet.h"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+
+    LC_ALL=C ETHERNET_LENGTH_MAX="$length_max" ETHERNET_TYPE_MIN="$type_min" \
+        python3 -c '
+import os, socket, sys
+
+a_length = int(os.environ["ETHERNET_LENGTH_MAX"], 0)          # at the top of Length
+undefined = a_length + 1                                       # in the gap
+a_type = int(os.environ["ETHERNET_TYPE_MIN"], 0)               # plainly a Type
+
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+wire.bind(("tap0", 0))
+destination = b"\x02\x00\x00\x00\x00\x02"
+source = b"\x02\x11\x11\x11\x11\x11"
+# ⚠ Different numbers of each, and that is not decoration: ⚠ **with one of each
+# the two counters are symmetric and swapping them changes nothing.** ⚠ Measured
+# — the first version of this case sent one of each and ⚠ **passed with the two
+# counters exchanged**, which is the very defect it exists to catch.
+for value, how_many in ((a_length, 1), (undefined, 2), (a_type, 1)):
+    for _ in range(how_many):
+        frame = destination + source + value.to_bytes(2, "big") + bytes(46)
+        if wire.send(frame) != len(frame):
+            print("a frame was not handed over whole", file=sys.stderr)
+            sys.exit(1)
+
+# ⚠ The one that cannot be sent, asserted as unsendable rather than skipped.
+try:
+    wire.send(destination + source + b"\x01")
+    print("a frame shorter than an ethernet header was accepted", file=sys.stderr)
+    sys.exit(1)
+except OSError:
+    pass
+' >"$work/sent.txt" 2>&1
+    sent_exit=$?
+
+    wait "$reader"
+    reader_exit=$?
+
+    if [ "$sent_exit" -ne 0 ]; then
+        note_failure "the frames could not be put on the wire"
+        sed 's/^/      /' "$work/sent.txt" >&2
+        return
+    fi
+    if [ "$reader_exit" -ne 0 ] && [ "$reader_exit" -ne 2 ]; then
+        note_failure "tcpip-stack stopped with exit code $reader_exit"
+        sed 's/^/      /' "$work/err.txt" >&2
+        return
+    fi
+
+    # ⚠ Read out of what the program printed, never out of a structure of ours.
+    #
+    # ⚠ One Length and TWO undefined, so ⚠ **the two counters cannot be swapped
+    # without the numbers saying so.** ⚠ Zero malformed, because a frame shorter
+    # than an ethernet header cannot be sent at all. ⚠ And the Type frame — plus
+    # whatever IPv6 the kernel sent — moves none of the three.
+    assert_file_contains "$work/out.txt" \
+        "0 frames were malformed, 1 carried an IEEE 802.3 Length, 2 carried a length/type the standard does not define" \
+        "each kind of frame moves its own counter"
+
+    # ⚠ The other half: frames really did arrive. ⚠ Without this the line above
+    # would pass for a run where nothing was read and every count stayed 0 —
+    # except the two that are not 0, which is why the numbers differ.
+    if ! grep -qE "^read [1-9][0-9]* frames?, 0 read errors" "$work/out.txt"; then
+        note_failure "no frames were read, so the counts above say nothing"
+        sed 's/^/      /' "$work/out.txt" >&2
+    fi
+}
+
+ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused the_wait_says_the_device_stopped_being_usable a_frame_handed_over_reaches_the_kernel a_write_that_could_not_be_made_is_not_a_frame_sent each_kind_of_frame_moves_its_own_counter"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)
