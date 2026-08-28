@@ -1067,13 +1067,19 @@ for bits, sequence, acknowledgment in ours[:1]:
 # numbers it accepts, so ⚠ **`Send-Q` reaching 0 is somebody else's judgement on
 # our acknowledgment numbers.**
 #
-# ⚠ Measured before this change, same conditions, 2026-08-29: ⚠ **the peer sent
-# one octet at one sequence number seven times and its `Send-Q` stayed at 5 for
-# twelve seconds.**
+# ⚠ Measured before hidetzu/tcpip-stack#74, same conditions, 2026-08-29:
+# ⚠ **the peer sent one octet at one sequence number seven times and its
+# `Send-Q` stayed at 5 for twelve seconds.**
 #
-# ⚠ The window is still 1 here (hidetzu/tcpip-stack#75 owns the number), so
-# ⚠ **the peer advances one octet at a time** — which is what makes the sequence
-# numbers visible at all.
+# ⚠ **This case is also `CLAUDE.md` §9's wall**, and it has fired once: raising
+# the window from 1 to 1460 (hidetzu/tcpip-stack#75) failed it with "the peer
+# sent segments of 5 octets, and the window we advertise is 1". ⚠ **That is the
+# wall working** — ⚠ a sentence about the peer must be re-measured when the
+# window changes, never carried across.
+#
+# ⚠ **Re-measured at 1460**: five octets handed to `send()` arrive as ⚠ **one
+# segment**, because the window now allows the peer to send them together.
+# ⚠ Lower the window without re-measuring and this fails again.
 inside_the_peers_send_queue_drains_once_we_acknowledge() {
     ours=10.0.0.2
     our_mac=02:00:00:00:00:02
@@ -1146,9 +1152,9 @@ print("send-q", last)
     ipv4_type=$(constant src/ipv4.h IPV4_ETHERNET_LENGTH_TYPE)
     tcp_number=$(constant src/tcp.h TCP_PROTOCOL_NUMBER)
 
-    # ⚠ The peer advanced: ⚠ **five octets at five different sequence numbers**,
-    # which is what "it moved on" means. ⚠ Before this change all five arrivals
-    # carried the same one.
+    # ⚠ The peer put all five in one segment, ⚠ **because the window allows it**,
+    # and it never had to send any of them twice. ⚠ Before hidetzu/tcpip-stack#74
+    # the same five arrived seven times, all at one sequence number.
     LC_ALL=C frames_as_hex "$work/out.txt" | python3 -c '
 import sys
 
@@ -1188,26 +1194,28 @@ print("distinct-lengths", " ".join(str(d) for d in sorted(set(d for d, _ in carr
     # ⚠ **The window decides how much the peer puts on the wire at a time**, and
     # ⚠ this is the wall for `CLAUDE.md` §9's row: ⚠ **a sentence about the peer
     # must be re-measured when the window changes, never carried across.**
-    # ⚠ At a window of 1 every data segment carries exactly 1 octet; ⚠ **at 5 the
-    # peer would send all five in one, and the count below would be 1, not 5.**
-    if [ "$lengths" != "1" ]; then
-        note_failure "the peer sent segments of $lengths octets, and the window we advertise is 1"
+    # ⚠ At a window of 1460 all five octets fit in one segment; ⚠ **at 1 there
+    # would be five segments of one octet, and both numbers below would be 5.**
+    if [ "$lengths" != "5" ]; then
+        note_failure "the peer sent segments of $lengths octets, and five were handed to send() with a window that fits them all"
         sed 's/^/      /' "$work/counted.txt" >&2
         return
     fi
-    if [ "${distinct:-0}" -ne 5 ]; then
-        note_failure "the five octets arrived at $distinct different sequence numbers, not 5, so the peer did not advance one at a time"
+    if [ "${distinct:-0}" -ne 1 ]; then
+        note_failure "the five octets arrived at $distinct different sequence numbers, so the peer did not send them together"
         sed 's/^/      /' "$work/counted.txt" >&2
         return
     fi
     # ⚠ Our own count agrees, and ⚠ **the two numbers are kept apart**: how many
     # octets arrived, and how many times we said so.
-    assert_file_contains "$work/out.txt" "5 acknowledgments for data left the device" \
-        "one acknowledgment left for each octet taken"
+    # ⚠ One acknowledgment, ⚠ **because one segment arrived** — the two numbers
+    # are in different units and the line says which is which.
+    assert_file_contains "$work/out.txt" "1 acknowledgment for data left the device" \
+        "one acknowledgment left for the one segment that arrived"
     assert_file_contains "$work/out.txt" "5 octets of data were taken and discarded" \
         "all five octets were taken"
 
-    printf '    the peer sent %s segments of %s octet at %s sequence numbers, and its\n' \
+    printf '    the peer sent %s segment of %s octets at %s sequence number, and its\n' \
         "$arrived" "$lengths" "$distinct"
     printf '    Send-Q reached %s\n' "$left"
 }
