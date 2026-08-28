@@ -135,6 +135,76 @@ case_connection_state() {
     sed 's/^/    /' "$work/connection.txt"
 }
 
+# ⚠ Every function the Report layer declares is named by a case that runs it.
+#
+# ⚠ Why this exists: ⚠ **`CLAUDE.md` §9 already has a row for a docs/SPEC.md
+# claim naming a check that did not assert it**, and ⚠ **it happened a second
+# time** — hidetzu/tcpip-stack#44 shipped four Report functions and a §1 row
+# saying `report_lines` asserted them, ⚠ **while no case touched one of them**
+# (#50). ⚠ Three more had been unasserted for longer than that.
+#
+# ⚠ What this stops: a Report function with no case at all. ⚠ Seven of twenty had
+# none when it was written, and ⚠ **it would have caught every one before a §1
+# row was written about them.**
+#
+# ⚠ What this does NOT stop, and it matters: ⚠ **a case that names a function and
+# asserts the wrong sentence.** ⚠ Naming is not asserting. ⚠ **Reading the case
+# is still the reviewer's job** (`docs/SPEC.md` §1 says so, and §9 says why).
+#
+# ⚠ Comments are stripped from the case file before it is searched. ⚠ Otherwise
+# this picks up the very words written to describe it (`CLAUDE.md` §5) — every
+# comment in tests/test_report.c names the function it is about.
+#
+# ⚠ The loop below must not use `name`: ⚠ **that is what run_selected_cases holds
+# the current case's name in**, and a case that clobbers it makes the runner
+# print the wrong name for itself. ⚠ Measured — the first version of this case
+# did exactly that and announced itself as `report_usage`.
+case_every_report_function_has_a_case() {
+    # ⚠ Each of /* and */ is put alone on a line first, so that ⚠ a comment
+    # opening and closing on ONE line still forms a range sed can delete.
+    # ⚠ Without that step a single-line comment opens a range that only ends at
+    # the NEXT comment, and everything between — real code — goes with it.
+    # ⚠ Measured: that is what the first version of this case did, and it
+    # reported six functions as unasserted when they were not.
+    sed 's|/\*|\n/*\n|g; s|\*/|\n*/\n|g' tests/test_report.c |
+        sed '/^\/\*$/,/^\*\/$/d' >"$work/report-cases.txt"
+
+    # ⚠ Two halves of the stripping, and both are needed (`verify` §5).
+    # ⚠ Removing too much would make this pass by finding nothing to check.
+    if [ "$(wc -c <"$work/report-cases.txt")" -lt 2000 ]; then
+        note_failure "stripping comments left almost nothing of tests/test_report.c, which cannot be right"
+        return
+    fi
+    # ⚠ Removing too little would let a name that appears only in a comment
+    # count as a case (`CLAUDE.md` §5). "Owner Decision" appears in the comments
+    # of that file and nowhere in its code.
+    if grep -q "Owner Decision" "$work/report-cases.txt"; then
+        note_failure "stripping comments left comment text behind, so a name in a comment would pass for a case"
+        return
+    fi
+
+    declared=0
+    unasserted=0
+    for reported in $(awk '/^void report_[a-z_]*\(/ { sub(/\(.*/, "", $2); print $2 }' \
+        src/report.h); do
+        declared=$((declared + 1))
+        if ! grep -q "$reported(" "$work/report-cases.txt"; then
+            note_failure "src/report.h declares $reported and no case in tests/test_report.c runs it"
+            unasserted=$((unasserted + 1))
+        fi
+    done
+
+    # ⚠ And the other half again: reading no declarations at all would make this
+    # green for a header that had been emptied or renamed.
+    if [ "$declared" -lt 10 ]; then
+        note_failure "read $declared functions out of src/report.h, which cannot be right"
+        return
+    fi
+
+    printf '    %d functions declared in src/report.h, %d with no case\n' \
+        "$declared" "$unasserted"
+}
+
 # The TCP header, against the SYN the kernel sent while opening a connection.
 # This binary announces its own case count — ⚠ never copy that number into a
 # document (`docs/SPEC.md`).
@@ -207,6 +277,53 @@ case_a_device_name_that_is_too_long_is_refused() {
     assert_file_is "$work/err.txt" \
         'could not attach to "a-name-that-is-far-too-long": a device name is 1 to 15 characters.' \
         "a device name that cannot exist"
+}
+
+# ⚠ Half an identity is refused rather than quietly ignored, and ⚠ **so is a port
+# with no identity to answer for it**.
+#
+# ⚠ Why this exists: ⚠ **`docs/SPEC.md` §1 claimed `report_lines` asserted this,
+# and it did not** — the sentence is written in `src/tcpip_stack.c` and
+# `tests/test_report.c` has never known about it. ⚠ **The row had been false
+# since hidetzu/tcpip-stack#19** and was found by reading every row that names
+# `report_lines` against the cases that exist (#50).
+#
+# ⚠ A stack that silently declined to answer would look exactly like one nobody
+# asked (hidetzu/tcpip-stack#19 Owner Decision 6), so ⚠ **the exit code is
+# asserted as well as the sentence.**
+case_half_an_identity_is_refused() {
+    $MAKE -s build >/dev/null 2>&1 || { note_failure "the build did not succeed"; return; }
+
+    ./build/tcpip-stack --dev tap0 --mac 02:00:00:00:00:02 --count 0 \
+        >"$work/out.txt" 2>"$work/err.txt"
+    assert_exit_code 1 $? "a hardware address with no protocol address"
+    assert_file_is "$work/err.txt" \
+        '--mac and --ipv4 are given together or not at all.' \
+        "a hardware address with no protocol address"
+
+    ./build/tcpip-stack --dev tap0 --ipv4 10.0.0.2 --count 0 \
+        >"$work/out.txt" 2>"$work/err.txt"
+    assert_exit_code 1 $? "a protocol address with no hardware address"
+    assert_file_is "$work/err.txt" \
+        '--mac and --ipv4 are given together or not at all.' \
+        "a protocol address with no hardware address"
+
+    ./build/tcpip-stack --dev tap0 --tcp-port 80 --count 0 \
+        >"$work/out.txt" 2>"$work/err.txt"
+    assert_exit_code 1 $? "a port with no identity"
+    assert_file_is "$work/err.txt" \
+        '--tcp-port needs --mac and --ipv4 as well: nothing can be answered without them.' \
+        "a port with no identity"
+
+    # ⚠ The other half: neither given is not refused — the program reads without
+    # answering, which is what it did before it could answer anything. ⚠ Without
+    # this the case would pass for a build that refused every set of options.
+    ./build/tcpip-stack --dev tap0 --count 0 >"$work/out.txt" 2>"$work/err.txt"
+    neither=$?
+    if [ "$neither" -eq 1 ]; then
+        note_failure "neither address given was refused, and reading without answering is allowed"
+        sed 's/^/      /' "$work/err.txt" >&2
+    fi
 }
 
 # ⚠ The one check that says the rename is finished. Without it nothing does:
@@ -356,5 +473,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
 run_selected_cases

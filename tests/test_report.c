@@ -494,6 +494,237 @@ static bool case_the_ethernet_summary_prints_its_zeros(void)
 
 /* ---- running them ------------------------------------------------------ */
 
+/* ⚠ The line that opens every run, and ⚠ it had no case at all until
+ * hidetzu/tcpip-stack#50 — for the whole life of the program. */
+static bool case_the_listening_line(void)
+{
+    struct produced produced;
+    produced_open(&produced);
+    report_listening(produced.out, "tap0");
+    bool ok = matches("listening", &produced, "listening on tap0\n");
+    produced_close(&produced);
+    return ok;
+}
+
+/* ⚠ A wait that failed with an errno, told apart from one that came back
+ * reporting an error on the fd — which has no errno and its own line
+ * (`the_device_going_away_names_no_errno`). ⚠ Both existed; ⚠ only one had a
+ * case. */
+static bool case_a_wait_that_failed_names_its_errno(void)
+{
+    struct tap_failure could_not_wait = { TAP_STEP_WAIT, EBADF };
+    struct produced produced;
+    produced_open(&produced);
+    report_wait_failure(produced.out, "tap0", &could_not_wait);
+    bool ok = matches("the wait failed", &produced,
+                      "could not keep listening on tap0: waiting for a frame failed: "
+                      "Bad file descriptor\n");
+    produced_close(&produced);
+    return ok;
+}
+
+/* ⚠ What `--help` prints. ⚠ Not asserted byte for byte: it is long, it changes
+ * whenever an option is added, and ⚠ **a case that pinned every word of it
+ * would be a case about the text rather than about the contract**
+ * (`.claude/rules/testing.md`: never pin down the current implementation's
+ * steps).
+ *
+ * ⚠ What IS asserted is the contract: ⚠ **every option the program accepts is
+ * named**, so an option can never be added without appearing here. ⚠ That is the
+ * half that goes wrong in silence. */
+static bool case_the_usage_names_every_option(void)
+{
+    struct produced produced;
+    produced_open(&produced);
+    report_usage(produced.out, "tcpip-stack");
+    fflush(produced.out);
+
+    static const char *const options[] = {
+        "--dev", "--mac", "--ipv4", "--tcp-port", "--count", "--timeout", "--hex",
+        "--help",
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof options / sizeof options[0]; i++) {
+        if (produced.text == NULL || strstr(produced.text, options[i]) == NULL) {
+            fprintf(stderr, "  the usage does not name %s\n", options[i]);
+            ok = false;
+        }
+    }
+    /* ⚠ The other half: it says what the program is for, so this cannot pass
+     * for a usage that is only a list of flags. */
+    if (produced.text == NULL || strstr(produced.text, "tcpip-stack") == NULL) {
+        fputs("  the usage does not name the program\n", stderr);
+        ok = false;
+    }
+    produced_close(&produced);
+    return ok;
+}
+
+/* ⚠ Why a segment never reached the state machine. ⚠ Two sentences, and ⚠ the
+ * two must stay apart: a header we could not read is not one whose checksum
+ * disagrees (`.claude/rules/c.md`). */
+static bool case_a_segment_that_was_not_read_says_which_it_was(void)
+{
+    struct produced produced;
+    bool ok = true;
+
+    produced_open(&produced);
+    report_tcp_not_read(produced.out, TCP_PARSE_MALFORMED);
+    ok = matches("malformed", &produced,
+                 "  no answer: its TCP header does not hold what it says it holds\n")
+         && ok;
+    produced_close(&produced);
+
+    produced_open(&produced);
+    report_tcp_not_read(produced.out, TCP_PARSE_CHECKSUM_DISAGREES);
+    ok = matches("the checksum disagrees", &produced,
+                 "  no answer: its TCP checksum does not agree with the octets that "
+                 "arrived\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
+static bool case_the_tcp_summary_keeps_its_two_numbers_apart(void)
+{
+    struct produced produced;
+    struct tcp_counts none = { 0, 0 };
+    produced_open(&produced);
+    report_tcp_summary(produced.out, &none);
+    bool ok = matches("nothing at all", &produced,
+                      "0 TCP headers were malformed and 0 had a checksum that does not "
+                      "agree\n");
+    produced_close(&produced);
+
+    struct tcp_counts one = { 1, 1 };
+    produced_open(&produced);
+    report_tcp_summary(produced.out, &one);
+    ok = matches("one of each", &produced,
+                 "1 TCP header was malformed and 1 had a checksum that does not "
+                 "agree\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
+/* ⚠ The wording hidetzu/tcpip-stack#43 Owner Decision 2 and #44 Owner Decision 4
+ * approved — ⚠ **and which no case asserted until #50**, while
+ * `docs/SPEC.md` §1 said one did.
+ *
+ * ⚠ Every branch that has its own sentence, including the two that are ours and
+ * say so (`CLAUDE.md` §4-1). */
+static bool case_a_handshake_outcome_says_what_moved_and_why(void)
+{
+    struct produced produced;
+    struct handshake_outcome outcome;
+    bool ok = true;
+
+    /* The remote socket every line below names. */
+    struct connection_id id;
+    memset(&id, 0, sizeof id);
+    id.local.address[0] = 10;
+    id.local.address[3] = 2;
+    id.local.port = 80;
+    id.remote.address[0] = 10;
+    id.remote.address[3] = 1;
+    id.remote.port = 50568;
+
+    static const struct { enum connection_state state; const char *line; } moved[] = {
+        { CONNECTION_SYN_RECEIVED,
+          "  10.0.0.1:50568 asked to open a connection; now waiting for it to\n"
+          "    confirm (SYN-RECEIVED)\n" },
+        { CONNECTION_ESTABLISHED,
+          "  10.0.0.1:50568 confirmed it; the connection is open (ESTABLISHED)\n" },
+    };
+    for (size_t i = 0; i < sizeof moved / sizeof moved[0]; i++) {
+        memset(&outcome, 0, sizeof outcome);
+        outcome.decision = HANDSHAKE_MOVED;
+        outcome.state = moved[i].state;
+        outcome.id = id;
+        produced_open(&produced);
+        report_handshake_outcome(produced.out, &outcome);
+        char what[48];
+        snprintf(what, sizeof what, "moved to state %d", (int)moved[i].state);
+        ok = matches(what, &produced, moved[i].line) && ok;
+        produced_close(&produced);
+    }
+
+    static const struct { enum handshake_reason reason; const char *line; } stayed[] = {
+        { HANDSHAKE_REASON_ASKED_AGAIN,
+          "  10.0.0.1:50568 asked again; nothing changed\n" },
+        { HANDSHAKE_REASON_ACKNOWLEDGMENT_WE_ARE_NOT_WAITING_FOR,
+          "  no answer: it acknowledged 3735928559, and we are waiting for "
+          "3735928559 + 1\n" },
+        { HANDSHAKE_REASON_NOT_EXPECTED_IN_THIS_STATE,
+          "  no answer: nothing in this connection's state expects that\n" },
+        { HANDSHAKE_REASON_NO_CONNECTION_HELD,
+          "  no answer: nothing here is expecting a segment from 10.0.0.1:50568\n" },
+        /* ⚠ Ours, and it says so. */
+        { HANDSHAKE_REASON_NO_ROOM,
+          "  no answer: we are already holding a connection, and this build has\n"
+          "    room for one. That is ours, not the sender's\n" },
+        { HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY,
+          "  no answer: we could not hand the reply to the device. That is ours,\n"
+          "    not the sender's\n" },
+    };
+    for (size_t i = 0; i < sizeof stayed / sizeof stayed[0]; i++) {
+        memset(&outcome, 0, sizeof outcome);
+        outcome.decision = HANDSHAKE_STAYED;
+        outcome.reason = stayed[i].reason;
+        outcome.id = id;
+        outcome.acknowledgment_we_had = 3735928559u;
+        outcome.acknowledgment_we_expected = 3735928560u;
+        produced_open(&produced);
+        report_handshake_outcome(produced.out, &outcome);
+        char what[48];
+        snprintf(what, sizeof what, "reason %d", (int)stayed[i].reason);
+        ok = matches(what, &produced, stayed[i].line) && ok;
+        produced_close(&produced);
+    }
+    return ok;
+}
+
+/* ⚠ Seven numbers, each on its own, and ⚠ printed even when every one is zero. */
+static bool case_the_handshake_summary_counts_every_reason_apart(void)
+{
+    struct produced produced;
+    struct handshake_counts none;
+    memset(&none, 0, sizeof none);
+
+    produced_open(&produced);
+    report_handshake_summary(produced.out, &none);
+    bool ok = matches("nothing at all", &produced,
+        "0 connections were opened and 0 answered. 0 asked again\n"
+        "0 reached open. 0 acknowledged a number we are not waiting for, 0 arrived "
+        "for no connection we hold, 0 arrived where the connection's state did not "
+        "expect them\n"
+        "0 were refused for want of room and 0 answers never left the device, which "
+        "are ours and not the sender's\n");
+    produced_close(&produced);
+
+    struct handshake_counts one;
+    memset(&one, 0, sizeof one);
+    one.opened = 1;
+    one.established = 1;
+    one.asked_again = 1;
+    one.acknowledgment_we_are_not_waiting_for = 1;
+    one.not_expected_in_this_state = 1;
+    one.no_connection_held = 1;
+    one.we_could_not_build_the_reply = 1;
+    one.answered = 1;
+    one.room.refused_for_want_of_room = 1;
+
+    produced_open(&produced);
+    report_handshake_summary(produced.out, &one);
+    ok = matches("one of each", &produced,
+        "1 connection was opened and 1 answered. 1 asked again\n"
+        "1 reached open. 1 acknowledged a number we are not waiting for, 1 arrived "
+        "for no connection we hold, 1 arrived where the connection's state did not "
+        "expect them\n"
+        "1 was refused for want of room and 1 answer never left the device, which "
+        "are ours and not the sender's\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
 static const struct test_case cases[] = {
     { "frame_line", case_frame_line },
     { "frame_line_when_the_buffer_was_filled", case_frame_line_when_the_buffer_was_filled },
@@ -510,6 +741,17 @@ static const struct test_case cases[] = {
       case_an_echo_outcome_says_what_was_decided_and_why },
     { "the_echo_summary_counts_every_reason_apart",
       case_the_echo_summary_counts_every_reason_apart },
+    { "the_listening_line", case_the_listening_line },
+    { "a_wait_that_failed_names_its_errno", case_a_wait_that_failed_names_its_errno },
+    { "the_usage_names_every_option", case_the_usage_names_every_option },
+    { "a_segment_that_was_not_read_says_which_it_was",
+      case_a_segment_that_was_not_read_says_which_it_was },
+    { "the_tcp_summary_keeps_its_two_numbers_apart",
+      case_the_tcp_summary_keeps_its_two_numbers_apart },
+    { "a_handshake_outcome_says_what_moved_and_why",
+      case_a_handshake_outcome_says_what_moved_and_why },
+    { "the_handshake_summary_counts_every_reason_apart",
+      case_the_handshake_summary_counts_every_reason_apart },
     { "the_device_going_away_names_no_errno", case_the_device_going_away_names_no_errno },
     { "a_read_that_could_not_be_made_has_its_own_line",
       case_a_read_that_could_not_be_made_has_its_own_line },
