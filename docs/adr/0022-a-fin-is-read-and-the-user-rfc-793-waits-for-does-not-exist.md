@@ -93,18 +93,55 @@ silent.
 ⚠ **Nothing signals a user and nothing returns a pending RECEIVE** — the other two things that step
 asks for. ⚠ There is neither.
 
-## ⚠ A contradiction inside the document, recorded rather than resolved
+## ⚠ A contradiction inside RFC 793, and the two documents that settle it
 
-⚠ **The CLOSE Call section says of `CLOSE-WAIT`: "Queue this request until all preceding SENDs have
-been segmentized; then send a FIN segment, enter CLOSING state."**
+⚠ **RFC 793's CLOSE Call section says of `CLOSE-WAIT`: "Queue this request until all preceding SENDs
+have been segmentized; then send a FIN segment, enter CLOSING state."**
 
 ⚠ **Figure 6 and Figure 13 both say `LAST-ACK`**, and `LAST-ACK`'s own definition — "waiting for an
 acknowledgment of the connection termination request previously sent to the remote TCP" — is what
 that transition describes.
 
-⚠ **This is not settled here**, because ⚠ **nothing in this issue enters either state.**
-⚠ hidetzu/tcpip-stack#66 is where it has to be decided, and ⚠ **it is written down now so that
-whoever gets there does not silently pick one.**
+### ⚠ Settled on 2026-08-29: `CLOSE-WAIT` → `LAST-ACK`
+
+⚠ **This was left open when this ADR was first written**, on the grounds that nothing in
+hidetzu/tcpip-stack#65 enters either state. ⚠ **The owner settled it the same day, and named two
+documents that say so outright.** ⚠ Both were fetched and read here rather than taken on trust:
+
+⚠ **RFC 1122 §4.2.2.20 (a), verbatim** — under "Here are some detailed error corrections and notes
+on the Event Processing section of RFC-793":
+
+> "CLOSE Call, CLOSE-WAIT state, p. 61: enter LAST-ACK state, not CLOSING."
+
+⚠ **RFC 9293 §3.10.4, CLOSE-WAIT STATE, verbatim:**
+
+> "Queue this request until all preceding SENDs have been segmentized; then send a FIN segment,
+> enter LAST-ACK state."
+
+⚠ **So it is not a matter of choosing between two halves of RFC 793.** ⚠ **RFC 793's CLOSE Call
+text is a known error**, corrected in 1989 and carried into the current specification.
+
+⚠ **hidetzu/tcpip-stack#66 implements `CLOSE-WAIT` → `LAST-ACK`**, and ⚠ **the reason it may is
+these two sentences, not Figure 6 outvoting the prose.**
+
+### ⚠ What this does not settle, and it is bigger than this ADR
+
+⚠ **RFC 9293's own header reads `Obsoletes: 793, 879, 2873, 6093, 6429, 6528, 6691`.** ⚠ **The
+document this repository holds itself to is obsolete** (ADR 0013, ADR 0014, ADR 0016, ADR 0017,
+ADR 0019, ADR 0021 and this one all cite RFC 793).
+
+⚠ **Nothing is changed here on that account**, and ⚠ **no claim anywhere is withdrawn**: every
+sentence quoted so far was read from RFC 793 and is what RFC 793 says.
+
+⚠ **But two things follow, and they are the owner's:**
+
+- ⚠ **Which document `docs/SPEC.md` holds this stack to** is a change to what may be claimed
+  (`CLAUDE.md` §7-1).
+- ⚠ **RFC 1122 and RFC 9293 use the RFC 2119 keywords in capitals, and RFC 793 does not**
+  (ADR 0013 recorded that). ⚠ **`MUST`, `SHOULD` and silence are different things**
+  (`CLAUDE.md` §1), so ⚠ **reading a requirement out of the newer documents is not the same act as
+  reading one out of RFC 793** — several of this repository's decisions rest on RFC 793 stating
+  something without telling a receiver what to do.
 
 ## Consequences
 
