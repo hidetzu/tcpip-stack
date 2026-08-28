@@ -288,6 +288,23 @@ int main(int argc, char **argv)
     struct connections connections;
     connections_forget_everything(&connections);
     struct tcp_counts tcp_counts = { 0, 0 };
+
+    /* ⚠ When to give up reading, kept as a deadline rather than as a limit
+     * handed to each wait.
+     *
+     * ⚠ Why: ⚠ **a timer of ours shortens the wait**, and a per-wait limit would
+     * then be reset by our own timer firing — ⚠ `--timeout 1500` would stop
+     * meaning "1500 ms without a frame" (hidetzu/tcpip-stack#58 Owner Decision
+     * 1). ⚠ The deadline moves only when a frame arrives, so ⚠ **the number the
+     * timeout line prints keeps meaning what it meant** (`CLAUDE.md` §6).
+     *
+     * ⚠ It starts running now: `--timeout` applied from the start before this
+     * change too, and that does not move. */
+    struct deadline give_up_reading = { false, { 0 } };
+    if (options.timeout_ms >= 0) {
+        give_up_reading.set = true;
+        give_up_reading.at = moment_after(moment_now(), (uint64_t)options.timeout_ms);
+    }
     struct ethernet_counts ethernet_counts = { 0, 0, 0 };
     unsigned int consecutive_read_failures = 0;
     int exit_code = EXIT_READ_WHAT_WAS_ASKED;
@@ -297,12 +314,39 @@ int main(int argc, char **argv)
             break;
         }
 
-        enum tap_wait waited = tap_wait_readable(device, options.timeout_ms,
+        /* ⚠ The nearer of the two deadlines, ⚠ **so a timer of ours ends the wait
+         * as surely as a frame does.** ⚠ Neither set means wait without a
+         * limit, which is what the program did before it had any timer. */
+        struct deadline the_timer = { false, { 0 } };
+        the_timer.set = handshake_next_moment(&connections, &the_timer.at);
+        int wait_limit_ms =
+            moment_wait_limit(moment_now(), give_up_reading, the_timer);
+
+        enum tap_wait waited = tap_wait_readable(device, wait_limit_ms,
                                                  &deliverable_while_waiting, &failure);
         if (waited == TAP_WAIT_INTERRUPTED) {
             continue; /* the loop re-reads stop_requested at the top */
         }
         if (waited == TAP_WAIT_TIMEOUT) {
+            /* ⚠ A wait that ran out is not one thing any more. ⚠ Asking what is
+             * due now says which it was: ⚠ **our own timer, or nothing having
+             * arrived.** ⚠ No new outcome was needed from the wait — the caller
+             * knows what it asked for (hidetzu/tcpip-stack#58).
+             *
+             * ⚠ It cannot be mistaken: `moment_milliseconds_until` rounds up, so
+             * a wait shortened for a timer ends at or after that moment
+             * (`src/moment.h`). */
+            struct handshake_outcome handshake;
+            enum handshake_due due = handshake_what_is_due(&connections, moment_now(),
+                                                           &handshake_counts, &handshake);
+            if (due != HANDSHAKE_NOTHING_DUE) {
+                /* ⚠ Nothing is sent yet: hidetzu/tcpip-stack#59 puts the answer
+                 * back on the wire. ⚠ Until then an answer that became due is a
+                 * spent attempt, which `src/handshake.h` says out loud. */
+                report_handshake_outcome(stdout, &handshake);
+                fflush(stdout);
+                continue;
+            }
             report_timeout(stderr, options.device_name, options.timeout_ms, frames_read);
             exit_code = EXIT_TIMER_RAN_OUT;
             break;
@@ -333,6 +377,12 @@ int main(int argc, char **argv)
 
         consecutive_read_failures = 0;
         frames_read++;
+        /* ⚠ A frame arrived, so the deadline for giving up reading moves.
+         * ⚠ **Only a frame moves it** — a timer of ours must not, or `--timeout`
+         * would stop meaning what it says (Owner Decision 1). */
+        if (options.timeout_ms >= 0) {
+            give_up_reading.at = moment_after(moment_now(), (uint64_t)options.timeout_ms);
+        }
         report_frame(stdout, frames_read, (size_t)bytes, (size_t)bytes == sizeof frame);
         /* ⚠ Every frame, always (hidetzu/tcpip-stack#10 Owner Decision 1). The
          * header was already read to spot ARP; ⚠ until now none of what it
