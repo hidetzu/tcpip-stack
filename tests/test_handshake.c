@@ -443,6 +443,15 @@ static bool case_the_answer_is_the_one_the_document_describes(void)
         fputs("  the answer does not acknowledge RCV.NXT\n", stderr);
         ok = false;
     }
+    /* ⚠ And the number reported for it is the same one, so ⚠ **a caller told
+     * what we would acknowledge is told what actually goes out**
+     * (hidetzu/tcpip-stack#65). */
+    if (outcome.we_would_acknowledge != held->rcv_nxt) {
+        fprintf(stderr, "  we would acknowledge %lu and the answer carries %lu\n",
+                (unsigned long)outcome.we_would_acknowledge,
+                (unsigned long)held->rcv_nxt);
+        ok = false;
+    }
     if (answer.source_port != OUR_PORT || answer.destination_port != THEIR_PORT) {
         fputs("  the answer's ports are not ours to theirs\n", stderr);
         ok = false;
@@ -807,10 +816,13 @@ static bool case_data_riding_the_acknowledgment_that_opens_it_is_counted(void)
     return ok;
 }
 
-/* ⚠ The boundary hidetzu/tcpip-stack#64 must not cross: ⚠ **a segment carrying
- * no data is still nothing this state has a rule for**, so a FIN stays
- * hidetzu/tcpip-stack#65's. ⚠ Without this, opening the window could quietly
- * swallow one. */
+/* ⚠ A segment carrying no data and no FIN is still nothing this state has a
+ * rule for. ⚠ Without this, opening the window could quietly swallow one.
+ *
+ * ⚠ Until hidetzu/tcpip-stack#65 this fed a FIN, ⚠ **because a FIN was then
+ * nothing this state had a rule for either.** ⚠ It has one now, and the case
+ * feeds a bare acknowledgment instead — ⚠ **the assertion did not weaken, its
+ * subject moved.** */
 static bool case_a_segment_carrying_no_data_is_still_not_expected(void)
 {
     struct world world;
@@ -822,17 +834,438 @@ static bool case_a_segment_carrying_no_data_is_still_not_expected(void)
     uint32_t was = held->rcv_nxt;
 
     bool ok = true;
-    struct tcp_header fin =
-        a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, was, held->iss + 1u);
-    struct handshake_outcome outcome = receive(&world, &fin);
+    struct tcp_header bare = a_segment(TCP_CONTROL_ACK, was, held->iss + 1u);
+    struct handshake_outcome outcome = receive(&world, &bare);
     if (outcome.reason != HANDSHAKE_REASON_NOT_EXPECTED_IN_THIS_STATE ||
         world.counts.not_expected_in_this_state != 1) {
-        fprintf(stderr, "  a FIN came back as reason %d\n", (int)outcome.reason);
+        fprintf(stderr, "  a bare acknowledgment came back as reason %d\n",
+                (int)outcome.reason);
         ok = false;
     }
     if (outcome.octets_taken != 0 || held->rcv_nxt != was ||
         world.counts.octets_taken_and_discarded != 0) {
-        fputs("  a FIN carrying no data moved RCV.NXT or the octet count\n", stderr);
+        fputs("  a segment carrying nothing moved RCV.NXT or the octet count\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ RFC 793's eighth step, for ESTABLISHED: "Enter the CLOSE-WAIT state", after
+ * "advance RCV.NXT over the FIN".
+ *
+ * ⚠ Both halves asserted: ⚠ **the state's name, and the number we would
+ * acknowledge** — off by one there is the error that still looks like it
+ * works. */
+static bool case_a_fin_moves_the_connection_to_close_wait(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    uint32_t the_fins_sequence_number = held->rcv_nxt;
+
+    bool ok = true;
+    struct tcp_header fin =
+        a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, the_fins_sequence_number,
+                  held->iss + 1u);
+    struct handshake_outcome outcome = receive(&world, &fin);
+
+    if (outcome.decision != HANDSHAKE_MOVED ||
+        outcome.state != CONNECTION_CLOSE_WAIT ||
+        held->state != CONNECTION_CLOSE_WAIT) {
+        fprintf(stderr, "  a FIN left the connection in state %d\n",
+                (int)outcome.state);
+        ok = false;
+    }
+    if (!outcome.the_fin_was_read || world.counts.the_other_side_closed != 1) {
+        fprintf(stderr, "  the FIN was not counted: read %d, counted %lu\n",
+                (int)outcome.the_fin_was_read, world.counts.the_other_side_closed);
+        ok = false;
+    }
+    /* ⚠ RFC 793's glossary: a FIN is "A control bit (finis) occupying one
+     * sequence number". ⚠ Exactly one, and ⚠ **asserted against the FIN's own
+     * sequence number rather than against whatever RCV.NXT happens to be**, so
+     * a helper that moved it twice would show. */
+    if (held->rcv_nxt != the_fins_sequence_number + 1u ||
+        outcome.we_would_acknowledge != the_fins_sequence_number + 1u) {
+        fprintf(stderr, "  RCV.NXT is %lu and we would acknowledge %lu, for a FIN at %lu\n",
+                (unsigned long)held->rcv_nxt,
+                (unsigned long)outcome.we_would_acknowledge,
+                (unsigned long)the_fins_sequence_number);
+        ok = false;
+    }
+    /* ⚠ Nothing is sent for it. hidetzu/tcpip-stack#66 owns the wire. */
+    if (outcome.reply_bytes != 0) {
+        fprintf(stderr, "  %zu octets were built in answer to a FIN\n",
+                outcome.reply_bytes);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ RFC 793: "the FIN is considered to occur after the last actual data octet
+ * in a segment in which it occurs."
+ *
+ * ⚠ So a FIN riding one octet sits one past that octet, and ⚠ **RCV.NXT ends
+ * two past where the segment began.** ⚠ This is the off-by-one AC 2 names. */
+static bool case_a_fin_sits_after_the_data_it_rides_with(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    uint32_t began_at = held->rcv_nxt;
+
+    bool ok = true;
+    struct tcp_header fin_with_data =
+        carrying(a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, began_at, held->iss + 1u), 1);
+    struct handshake_outcome outcome = receive(&world, &fin_with_data);
+
+    if (outcome.state != CONNECTION_CLOSE_WAIT || !outcome.the_fin_was_read) {
+        fprintf(stderr, "  a FIN riding one octet left state %d\n", (int)outcome.state);
+        ok = false;
+    }
+    if (outcome.octets_taken != 1 || world.counts.octets_taken_and_discarded != 1) {
+        fprintf(stderr, "  the octet it rode with was not taken: %u\n",
+                (unsigned)outcome.octets_taken);
+        ok = false;
+    }
+    /* ⚠ One for the octet and one for the FIN. ⚠ A build that read the FIN
+     * before the data would land one short here. */
+    if (held->rcv_nxt != began_at + 2u ||
+        outcome.we_would_acknowledge != began_at + 2u) {
+        fprintf(stderr, "  RCV.NXT moved by %lu for one octet and a FIN\n",
+                (unsigned long)(held->rcv_nxt - began_at));
+        ok = false;
+    }
+
+    /* ⚠ The other half: a FIN riding MORE octets than the window covers is not
+     * read, because ⚠ **it sits past what we asked for** — and reading it would
+     * acknowledge data we never took. */
+    struct world second;
+    a_world(&second);
+    struct transmission_control_block *other = NULL;
+    if (!open_and_confirm(&second, &other)) {
+        return false;
+    }
+    uint32_t from = other->rcv_nxt;
+    struct tcp_header fin_with_more =
+        carrying(a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, from, other->iss + 1u), 3);
+    struct handshake_outcome refused = receive(&second, &fin_with_more);
+    if (refused.reason != HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW ||
+        refused.the_fin_was_read || other->state != CONNECTION_ESTABLISHED) {
+        fprintf(stderr, "  a FIN riding three octets came back as reason %d, state %d\n",
+                (int)refused.reason, (int)other->state);
+        ok = false;
+    }
+    /* ⚠ The one octet the window did cover was still taken. */
+    if (other->rcv_nxt != from + 1u) {
+        fprintf(stderr, "  RCV.NXT moved by %lu when only one octet fit\n",
+                (unsigned long)(other->rcv_nxt - from));
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ The measured case, and it is the common one: ⚠ **nothing acknowledges the
+ * FIN, so the peer sends it again.** ⚠ Five times in one `close()`, measured
+ * 2026-08-29.
+ *
+ * ⚠ RCV.NXT has moved over the first one, so every later copy is behind the
+ * window. ⚠ Counted apart, and ⚠ **the connection does not close twice.** */
+static bool case_a_fin_we_have_already_read_is_not_read_again(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+
+    bool ok = true;
+    struct tcp_header fin =
+        a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u);
+    (void)receive(&world, &fin);
+    uint32_t after_the_first = held->rcv_nxt;
+
+    for (unsigned again = 1; again <= 4; again++) {
+        struct handshake_outcome outcome = receive(&world, &fin);
+        if (outcome.reason != HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW) {
+            fprintf(stderr, "  retransmission %u came back as reason %d\n", again,
+                    (int)outcome.reason);
+            ok = false;
+        }
+        if (outcome.the_fin_was_read) {
+            fprintf(stderr, "  retransmission %u was read as a new FIN\n", again);
+            ok = false;
+        }
+    }
+    if (world.counts.the_other_side_closed != 1 ||
+        world.counts.fin_outside_the_window != 4) {
+        fprintf(stderr, "  one FIN and four copies were counted %lu and %lu\n",
+                world.counts.the_other_side_closed, world.counts.fin_outside_the_window);
+        ok = false;
+    }
+    if (held->rcv_nxt != after_the_first || held->state != CONNECTION_CLOSE_WAIT) {
+        fputs("  a retransmitted FIN moved RCV.NXT again\n", stderr);
+        ok = false;
+    }
+    /* ⚠ And nothing else moved: not the reason a state has no rule for a
+     * segment, and not the count of connections that reached open. */
+    if (world.counts.not_expected_in_this_state != 0 || world.counts.established != 1) {
+        fputs("  a retransmitted FIN moved somebody else's counter\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ RFC 793: "Do not process the FIN if the state is CLOSED, LISTEN or SYN-SENT
+ * since the SEG.SEQ cannot be validated; drop the segment and return."
+ *
+ * ⚠ Holding nothing is our LISTEN. ⚠ Counted apart from every other stray
+ * segment, because ⚠ **the document gives it its own reason.** */
+static bool case_a_fin_naming_no_connection_we_hold_is_its_own_outcome(void)
+{
+    struct world world;
+    a_world(&world);
+
+    bool ok = true;
+    struct tcp_header fin =
+        a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, THEIR_ISN, 1);
+    struct handshake_outcome outcome = receive(&world, &fin);
+
+    if (outcome.reason != HANDSHAKE_REASON_A_FIN_WE_CANNOT_PLACE ||
+        world.counts.fin_we_could_not_place != 1) {
+        fprintf(stderr, "  a FIN with nothing held came back as reason %d\n",
+                (int)outcome.reason);
+        ok = false;
+    }
+    /* ⚠ Not folded in with an acknowledgment arriving for no connection we
+     * hold, and ⚠ **not counted as a connection closing.** */
+    if (world.counts.no_connection_held != 0 ||
+        world.counts.the_other_side_closed != 0) {
+        fputs("  a FIN with nothing held moved somebody else's counter\n", stderr);
+        ok = false;
+    }
+    /* ⚠ The other half: a bare acknowledgment with nothing held still lands on
+     * its own reason, so this is about the FIN and not about the branch. */
+    struct world second;
+    a_world(&second);
+    struct tcp_header ack = a_segment(TCP_CONTROL_ACK, THEIR_ISN, 1);
+    struct handshake_outcome other = receive(&second, &ack);
+    if (other.reason != HANDSHAKE_REASON_NO_CONNECTION_HELD ||
+        second.counts.no_connection_held != 1) {
+        fprintf(stderr, "  an acknowledgment with nothing held came back as reason %d\n",
+                (int)other.reason);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ RFC 793: "if the ACK bit is off drop the segment and return" — the fifth
+ * step, ⚠ **before the FIN is ever looked at.**
+ *
+ * ⚠ So a FIN with no acknowledgment closes nothing. ⚠ That is the document's
+ * rule and not ours, and ⚠ **without this the two could not be told apart.** */
+static bool case_a_fin_with_no_acknowledgment_closes_nothing(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    uint32_t was = held->rcv_nxt;
+
+    bool ok = true;
+    struct tcp_header fin = a_segment(TCP_CONTROL_FIN, was, 0);
+    struct handshake_outcome outcome = receive(&world, &fin);
+    if (outcome.reason != HANDSHAKE_REASON_NOT_EXPECTED_IN_THIS_STATE ||
+        outcome.the_fin_was_read || held->state != CONNECTION_ESTABLISHED ||
+        held->rcv_nxt != was || world.counts.the_other_side_closed != 0) {
+        fprintf(stderr, "  a FIN with no acknowledgment came back as reason %d, state %d\n",
+                (int)outcome.reason, (int)held->state);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ RFC 793 for SYN-RECEIVED: "If SND.UNA =< SEG.ACK =< SND.NXT then enter
+ * ESTABLISHED state and continue processing" — ⚠ **and the FIN check is one of
+ * the steps that continue.**
+ *
+ * ⚠ So one segment can open a connection and close it. ⚠ Never observed here —
+ * the Linux kernel sends its acknowledgment and its FIN apart — ⚠ **but the
+ * document says it, and a reason cannot say two things, so both counters
+ * move.** */
+static bool case_one_segment_can_open_a_connection_and_close_it(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_one(&world, THEIR_ISN, &held)) {
+        return false;
+    }
+    uint32_t the_fins_sequence_number = held->rcv_nxt;
+
+    bool ok = true;
+    struct tcp_header both =
+        a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, the_fins_sequence_number,
+                  held->iss + 1u);
+    struct handshake_outcome outcome = receive(&world, &both);
+
+    if (outcome.decision != HANDSHAKE_MOVED ||
+        outcome.state != CONNECTION_CLOSE_WAIT) {
+        fprintf(stderr, "  one segment carrying both left state %d\n",
+                (int)outcome.state);
+        ok = false;
+    }
+    /* ⚠ Both, and ⚠ **neither instead of the other**: a connection did reach
+     * open, and a side did close. */
+    if (world.counts.established != 1 || world.counts.the_other_side_closed != 1) {
+        fprintf(stderr, "  reached open %lu, closed %lu\n", world.counts.established,
+                world.counts.the_other_side_closed);
+        ok = false;
+    }
+    if (held->rcv_nxt != the_fins_sequence_number + 1u) {
+        fprintf(stderr, "  RCV.NXT is %lu for a FIN at %lu\n",
+                (unsigned long)held->rcv_nxt,
+                (unsigned long)the_fins_sequence_number);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ AC 4, the same shape hidetzu/tcpip-stack#43 asserted for the acknowledgment
+ * window: ⚠ **the arithmetic must hold where the 32-bit space wraps.**
+ *
+ * ⚠ A plain `<` would be correct for years and then wrong once, here. */
+static bool case_a_fin_is_read_where_the_sequence_space_wraps(void)
+{
+    struct world world;
+    a_world(&world);
+    /* ⚠ Their SYN carries 0xffffffff, so RCV.NXT is 0 and the FIN sits at 0 —
+     * ⚠ **the wrap falls between the SYN and the FIN.** */
+    struct transmission_control_block *held = NULL;
+    if (!open_one(&world, 0xffffffffu, &held)) {
+        return false;
+    }
+    struct tcp_header ack = a_segment(TCP_CONTROL_ACK, 0u, held->iss + 1u);
+    if (receive(&world, &ack).state != CONNECTION_ESTABLISHED) {
+        fputs("  the connection did not reach ESTABLISHED at the wrap\n", stderr);
+        return false;
+    }
+
+    bool ok = true;
+    if (held->rcv_nxt != 0u) {
+        fprintf(stderr, "  RCV.NXT is %lu after a SYN at 0xffffffff\n",
+                (unsigned long)held->rcv_nxt);
+        ok = false;
+    }
+    struct tcp_header fin = a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, 0u,
+                                      held->iss + 1u);
+    struct handshake_outcome outcome = receive(&world, &fin);
+    if (outcome.state != CONNECTION_CLOSE_WAIT || !outcome.the_fin_was_read ||
+        held->rcv_nxt != 1u) {
+        fprintf(stderr, "  a FIN at 0 across the wrap: state %d, RCV.NXT %lu\n",
+                (int)outcome.state, (unsigned long)held->rcv_nxt);
+        ok = false;
+    }
+
+    /* ⚠ The other half, and it is what a plain comparison gets wrong: ⚠ **the
+     * FIN we already read, at 0xffffffff, is behind us across the wrap** and
+     * must not be read again. */
+    struct tcp_header behind = a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK,
+                                         0xffffffffu, held->iss + 1u);
+    struct handshake_outcome refused = receive(&world, &behind);
+    if (refused.reason != HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW ||
+        refused.the_fin_was_read || held->rcv_nxt != 1u) {
+        fprintf(stderr, "  a FIN at 0xffffffff was read again: reason %d, RCV.NXT %lu\n",
+                (int)refused.reason, (unsigned long)held->rcv_nxt);
+        ok = false;
+    }
+
+    /* ⚠ The half that a plain comparison actually gets wrong, and ⚠ **neither
+     * half above does.**
+     *
+     * ⚠ With `RCV.NXT` at 0xffffffff the far edge of the window is 0 — ⚠ **it
+     * has wrapped past the near edge.** ⚠ A FIN sitting exactly at `RCV.NXT` is
+     * inside the window and must be read; ⚠ **written as `far <= where`, the
+     * far edge being 0 refuses it.**
+     *
+     * ⚠ Measured: this is the only case here that separates the two.
+     * ⚠ Rewriting both comparisons as `>` and `<=` left the rest of this file
+     * passing. */
+    struct world at_the_edge;
+    a_world(&at_the_edge);
+    struct transmission_control_block *edge = NULL;
+    if (!open_one(&at_the_edge, 0xfffffffeu, &edge)) {
+        return false;
+    }
+    struct tcp_header confirm =
+        a_segment(TCP_CONTROL_ACK, 0xffffffffu, edge->iss + 1u);
+    if (receive(&at_the_edge, &confirm).state != CONNECTION_ESTABLISHED ||
+        edge->rcv_nxt != 0xffffffffu) {
+        fprintf(stderr, "  RCV.NXT is %lu after a SYN at 0xfffffffe\n",
+                (unsigned long)edge->rcv_nxt);
+        return false;
+    }
+    struct tcp_header on_the_edge =
+        a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, 0xffffffffu, edge->iss + 1u);
+    struct handshake_outcome read_it = receive(&at_the_edge, &on_the_edge);
+    if (read_it.state != CONNECTION_CLOSE_WAIT || !read_it.the_fin_was_read ||
+        edge->rcv_nxt != 0u) {
+        fprintf(stderr, "  a FIN at RCV.NXT with the window's far edge wrapped to 0: "
+                        "state %d, RCV.NXT %lu\n",
+                (int)read_it.state, (unsigned long)edge->rcv_nxt);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ AC 5. ⚠ The retransmission schedule covers a connection that is still
+ * opening. ⚠ **A connection whose other side has closed is not still opening**,
+ * and answering it again would send a SYN-ACK at something that has said
+ * goodbye. */
+static bool case_a_connection_that_has_seen_a_fin_is_due_nothing(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    struct tcp_header fin =
+        a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u);
+    if (receive(&world, &fin).state != CONNECTION_CLOSE_WAIT) {
+        fputs("  the FIN did not reach CLOSE-WAIT\n", stderr);
+        return false;
+    }
+
+    bool ok = true;
+    /* ⚠ Long past both timers, so ⚠ **nothing here is due because the clock has
+     * not got there** (ADR 0018: the moment is handed in). */
+    struct handshake_outcome outcome;
+    enum handshake_due due =
+        handshake_what_is_due(&world.connections, at(HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS * 10),
+                              OUR_MAC, world.reply, sizeof world.reply,
+                              &world.counts, &outcome);
+    if (due != HANDSHAKE_NOTHING_DUE || outcome.reply_bytes != 0) {
+        fprintf(stderr, "  a closed-down connection was due %d with %zu octets\n",
+                (int)due, outcome.reply_bytes);
+        ok = false;
+    }
+    if (world.counts.answered_again != 0 || world.counts.given_up_on != 0) {
+        fputs("  a closed-down connection was answered again or given up on\n", stderr);
+        ok = false;
+    }
+    struct moment next;
+    if (handshake_next_moment(&world.connections, &next)) {
+        fputs("  a closed-down connection is still waiting for a moment\n", stderr);
         ok = false;
     }
     return ok;
@@ -1364,6 +1797,22 @@ static const struct test_case cases[] = {
       case_data_riding_the_acknowledgment_that_opens_it_is_counted },
     { "a_segment_carrying_no_data_is_still_not_expected",
       case_a_segment_carrying_no_data_is_still_not_expected },
+    { "a_fin_moves_the_connection_to_close_wait",
+      case_a_fin_moves_the_connection_to_close_wait },
+    { "a_fin_sits_after_the_data_it_rides_with",
+      case_a_fin_sits_after_the_data_it_rides_with },
+    { "a_fin_we_have_already_read_is_not_read_again",
+      case_a_fin_we_have_already_read_is_not_read_again },
+    { "a_fin_naming_no_connection_we_hold_is_its_own_outcome",
+      case_a_fin_naming_no_connection_we_hold_is_its_own_outcome },
+    { "a_fin_with_no_acknowledgment_closes_nothing",
+      case_a_fin_with_no_acknowledgment_closes_nothing },
+    { "one_segment_can_open_a_connection_and_close_it",
+      case_one_segment_can_open_a_connection_and_close_it },
+    { "a_fin_is_read_where_the_sequence_space_wraps",
+      case_a_fin_is_read_where_the_sequence_space_wraps },
+    { "a_connection_that_has_seen_a_fin_is_due_nothing",
+      case_a_connection_that_has_seen_a_fin_is_due_nothing },
     { "the_answer_is_due_a_second_after_each_send",
       case_the_answer_is_due_a_second_after_each_send },
     { "a_connection_nobody_confirms_is_given_up_on",

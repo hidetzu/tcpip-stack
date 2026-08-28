@@ -390,6 +390,18 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
                 write_the_data_we_took(out, outcome->octets_taken);
             }
             return;
+        case CONNECTION_CLOSE_WAIT:
+            fputs("  ", out);
+            write_socket(out, &outcome->id.remote);
+            /* ⚠ What happened first, then what is missing and what closes it
+             * (`CLAUDE.md` §4-1). ⚠ Nothing here is the sender's fault: ⚠ **it
+             * did the closing properly and we have not answered yet.** */
+            fputs(" has closed its side; we read the FIN and have not answered\n"
+                  "    it yet (CLOSE-WAIT)\n", out);
+            if (outcome->octets_taken != 0) {
+                write_the_data_we_took(out, outcome->octets_taken);
+            }
+            return;
         case CONNECTION_LISTEN:
             break;
         }
@@ -411,6 +423,17 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
         return;
     case HANDSHAKE_REASON_THE_DATA_WAS_TAKEN_AND_DISCARDED:
         write_the_data_we_took(out, outcome->octets_taken);
+        return;
+    case HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW:
+        /* ⚠ The measured case: `RCV.NXT` moved over the first FIN, so every
+         * retransmission of it lands here. ⚠ Which of the two it was is not
+         * claimed, because this build does not tell them apart. */
+        fputs("  no answer: that FIN is not the next thing we are waiting for. Either\n"
+              "    we have read it already, or it begins past what we asked for\n", out);
+        return;
+    case HANDSHAKE_REASON_A_FIN_WE_CANNOT_PLACE:
+        fputs("  no answer: nothing here is holding the connection that FIN closes, so\n"
+              "    its sequence number cannot be checked against anything\n", out);
         return;
     case HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW:
         /* ⚠ Which of the two it was is not claimed, because ⚠ **this build does
@@ -485,6 +508,15 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
             counts->octets_taken_and_discarded == 1 ? "was" : "were",
             counts->data_outside_the_window,
             counts->data_outside_the_window == 1 ? "" : "s");
+    fprintf(out, "the other side closed %lu connection%s. %lu FIN%s arrived that %s not "
+                 "the next thing we were waiting for, and %lu named a connection we hold "
+                 "nothing for\n",
+            counts->the_other_side_closed,
+            counts->the_other_side_closed == 1 ? "" : "s",
+            counts->fin_outside_the_window,
+            counts->fin_outside_the_window == 1 ? "" : "s",
+            counts->fin_outside_the_window == 1 ? "was" : "were",
+            counts->fin_we_could_not_place);
     fprintf(out, "%lu %s refused for want of room and %lu answer%s never left the "
                  "device, which are ours and not the sender's\n",
             counts->room.refused_for_want_of_room,
@@ -565,7 +597,8 @@ void report_usage(FILE *out, const char *program_name)
             "ARP and ICMP echo are what it answers so far.\n"
             "With --tcp-port it also answers a connection request on that port, as far\n"
             "as the connection being open. Data that arrives on it is taken and\n"
-            "discarded, and the sender is not told so. Nothing else is sent after that.\n"
+            "discarded, and a FIN closing the other side is read, but the sender is\n"
+            "not told about either. Nothing else is sent after that.\n"
             "The device exists only while this program holds it open.\n",
             program_name);
 }

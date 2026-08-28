@@ -72,14 +72,25 @@ struct connection_id {
  *    acknowledgment after having both received and sent a connection request."
  *   "ESTABLISHED - represents an open connection, data received can be
  *    delivered to the user."
+ *   "CLOSE-WAIT - represents waiting for a connection termination request
+ *    from the local user."
  *
  * ⚠ Named exactly as the document names them (`.claude/rules/layers.md`).
  * ⚠ The states this milestone does not reach are not here: ⚠ **a state with no
- * transition into it would be a claim that we implement it.** */
+ * transition into it would be a claim that we implement it.** ⚠ So `LAST-ACK`
+ * is absent until something sends our own FIN (hidetzu/tcpip-stack#66), and
+ * ⚠ **`TIME-WAIT` is not ours at all**: RFC 793 Figure 13 and Figure 6 both put
+ * it on the side that closed first, and ⚠ **this stack never does**
+ * (hidetzu/tcpip-stack#65, ADR 0022). */
 enum connection_state {
     CONNECTION_LISTEN = 0,
     CONNECTION_SYN_RECEIVED,
-    CONNECTION_ESTABLISHED
+    CONNECTION_ESTABLISHED,
+
+    /* ⚠ The other side has closed and ⚠ **we have not.** ⚠ The document's own
+     * definition names a local user, and ⚠ **there is none here** — what this
+     * stack does instead is ADR 0022's decision, not the document's. */
+    CONNECTION_CLOSE_WAIT
 };
 
 struct transmission_control_block {
