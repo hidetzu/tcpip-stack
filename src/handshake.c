@@ -150,11 +150,68 @@ static void take_the_data(struct transmission_control_block *block,
     size_t take = still_to_come < HANDSHAKE_WINDOW ? still_to_come : HANDSHAKE_WINDOW;
 
     block->rcv_nxt += (uint32_t)take;
-    /* ⚠ The number reported and the number counted are set from one place, so
-     * they cannot diverge — the same pairing `stayed()` enforces for a reason
-     * and its counter. */
+    /* ⚠ Every move of `RCV.NXT` and the number reported for it are written
+     * together, so ⚠ **what a reader is told and what the connection holds
+     * cannot drift apart** — the pairing `stayed()` enforces for a reason and
+     * its counter. */
+    outcome->we_would_acknowledge = block->rcv_nxt;
     outcome->octets_taken = (uint16_t)take;
     counts->octets_taken_and_discarded += (unsigned long)take;
+}
+
+/* Read the FIN if the segment carries one the window covers, and ⚠ **move the
+ * connection to CLOSE-WAIT.**
+ *
+ * ⚠ RFC 793, the eighth step of SEGMENT ARRIVES, verbatim: "If the FIN bit is
+ * set, signal the user 'connection closing' and return any pending RECEIVEs
+ * with same message, advance RCV.NXT over the FIN, and send an acknowledgment
+ * for the FIN." ⚠ For SYN-RECEIVED and ESTABLISHED it then says: "Enter the
+ * CLOSE-WAIT state."
+ *
+ * ⚠ **Two of those four things are not done here, and neither is silent.**
+ * ⚠ There is no user to signal and no RECEIVE to return (ADR 0022), and
+ * ⚠ **nothing is sent** — hidetzu/tcpip-stack#66 owns the acknowledgment, and
+ * `docs/SPEC.md` §2 names the gap.
+ *
+ * ⚠ **`RCV.NXT` advances by exactly one**, because the document's glossary says
+ * a FIN is "A control bit (finis) occupying one sequence number", and because
+ * ⚠ **the FIN sits after any data**: "the FIN is considered to occur after the
+ * last actual data octet in a segment in which it occurs". ⚠ So this runs after
+ * `take_the_data`, never before — ⚠ **off by one here is the error that still
+ * looks like it works.**
+ *
+ * ⚠ The acceptability test is the document's, for a segment of length 1 against
+ * a window above zero: "RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND". ⚠ Written as
+ * unsigned subtraction so it holds where the space wraps, for the reason
+ * `at_or_before` gives.
+ *
+ * Returns false when the segment carries no FIN or carries one outside the
+ * window; ⚠ **`outcome->the_fin_was_read` says which of those it was not.** */
+static bool read_the_fin(struct transmission_control_block *block,
+                         const struct tcp_header *header,
+                         struct handshake_outcome *outcome,
+                         struct handshake_counts *counts)
+{
+    if ((header->control_bits & TCP_CONTROL_FIN) == 0) {
+        return false;
+    }
+
+    /* ⚠ The FIN's own sequence number is the one after the data it rides with,
+     * and `rcv_nxt` has already moved over whatever data was taken. */
+    uint32_t where_the_fin_sits = header->sequence_number + (uint32_t)header->data_bytes;
+    uint32_t past_the_window = block->rcv_nxt + HANDSHAKE_WINDOW;
+    if (!at_or_before(block->rcv_nxt, where_the_fin_sits) ||
+        at_or_before(past_the_window, where_the_fin_sits)) {
+        return false;
+    }
+
+    block->rcv_nxt = where_the_fin_sits + 1u;
+    block->state = CONNECTION_CLOSE_WAIT;
+    /* ⚠ Reported and counted from one place, so the two cannot diverge. */
+    outcome->we_would_acknowledge = block->rcv_nxt;
+    outcome->the_fin_was_read = true;
+    counts->the_other_side_closed++;
+    return true;
 }
 
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
@@ -177,6 +234,7 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
 
     if (held != NULL) {
         outcome->state = held->state;
+        outcome->we_would_acknowledge = held->rcv_nxt;
 
         /* ⚠ RFC 793, on a SYN reaching a connection past LISTEN: "If the SYN is
          * in the window it is an error, send a reset ... If the SYN is not in
@@ -216,7 +274,13 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                  * ⚠ `counts` still gains exactly one reason per segment, and the
                  * octets are their own number. */
                 take_the_data(held, header, outcome, counts);
-                moved(outcome, CONNECTION_ESTABLISHED, &counts->established);
+                /* ⚠ RFC 793: "enter ESTABLISHED state and continue processing"
+                 * — ⚠ **the same segment goes on to the FIN check.** ⚠ So the
+                 * state reported is the one it ended in, which may be
+                 * CLOSE-WAIT, and ⚠ **both counters move**: one connection did
+                 * reach open, and one side did close (ADR 0022). */
+                read_the_fin(held, header, outcome, counts);
+                moved(outcome, held->state, &counts->established);
                 return;
             }
 
@@ -238,6 +302,34 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
          * ⚠ **says nothing about the FIN.** ⚠ That is not new — before this it
          * said nothing about either — and ⚠ **it is named rather than left to be
          * found**: hidetzu/tcpip-stack#65 is what reads the bit. */
+        /* ⚠ RFC 793: "if the ACK bit is off drop the segment and return",
+         * before the FIN is ever looked at. ⚠ So a bare FIN reaches nothing
+         * here, and ⚠ **that is the document's rule and not ours.**
+         *
+         * ⚠ CLOSE-WAIT is included because the document says a FIN arriving
+         * there means "Remain in the CLOSE-WAIT state" — ⚠ but `RCV.NXT` has
+         * already moved over the first one, so ⚠ **every retransmission is
+         * outside the window and is counted as that.** */
+        if ((held->state == CONNECTION_ESTABLISHED ||
+             held->state == CONNECTION_CLOSE_WAIT) &&
+            carries_ack && (header->control_bits & TCP_CONTROL_FIN) != 0) {
+            take_the_data(held, header, outcome, counts);
+            if (read_the_fin(held, header, outcome, counts)) {
+                /* ⚠ It moved, and ⚠ **no counter moves here**: `read_the_fin`
+                 * has already counted it, the same way `take_the_data` and
+                 * `connections_take` count their own. ⚠ `established` must not
+                 * move — this connection reached open earlier, and counting it
+                 * again would say two did. */
+                outcome->decision = HANDSHAKE_MOVED;
+                outcome->reason = HANDSHAKE_REASON_NONE;
+                outcome->state = CONNECTION_CLOSE_WAIT;
+                return;
+            }
+            stayed(outcome, HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW,
+                   &counts->fin_outside_the_window);
+            return;
+        }
+
         if (held->state == CONNECTION_ESTABLISHED && header->data_bytes != 0) {
             take_the_data(held, header, outcome, counts);
             if (outcome->octets_taken != 0) {
@@ -267,6 +359,16 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
      *
      * ⚠ So a bare SYN is the only thing that opens one. ⚠ Nothing is sent for
      * the rest, and that gap is named in `docs/SPEC.md` §2. */
+    if ((header->control_bits & TCP_CONTROL_FIN) != 0) {
+        /* ⚠ RFC 793: "Do not process the FIN if the state is CLOSED, LISTEN or
+         * SYN-SENT since the SEG.SEQ cannot be validated". ⚠ Holding nothing is
+         * our LISTEN, and ⚠ **the document gives this its own reason** — so it
+         * is counted as its own and not as any other stray segment. */
+        stayed(outcome, HANDSHAKE_REASON_A_FIN_WE_CANNOT_PLACE,
+               &counts->fin_we_could_not_place);
+        return;
+    }
+
     if (!carries_syn || carries_ack || id->local.port != listening_port) {
         stayed(outcome, HANDSHAKE_REASON_NO_CONNECTION_HELD, &counts->no_connection_held);
         return;
@@ -300,6 +402,7 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     taken->snd_una = taken->iss;
     taken->snd_nxt = taken->iss + 1u;
     taken->state = CONNECTION_SYN_RECEIVED;
+    outcome->we_would_acknowledge = taken->rcv_nxt;
     /* ⚠ RFC 793: the retransmission timer is reinitialised on each send, so it
      * starts here and not when the connection was found. ⚠ The give-up moment
      * is from now and is never moved again. */
@@ -327,7 +430,10 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
 /* The one connection that is waiting for something, or NULL.
  *
  * ⚠ Only `SYN-RECEIVED` waits: a connection that reached `ESTABLISHED` is
- * waiting for nothing, and one that is not in use is not a connection. */
+ * waiting for nothing, ⚠ **a connection whose other side has closed is not
+ * still opening** — answering it again would send a SYN-ACK at something that
+ * has said goodbye (hidetzu/tcpip-stack#65) — and one that is not in use is not
+ * a connection. */
 static struct transmission_control_block *the_one_waiting(struct connections *connections)
 {
     for (size_t i = 0; i < CONNECTIONS_AT_ONCE; i++) {

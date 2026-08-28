@@ -633,6 +633,12 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
           "    confirm (SYN-RECEIVED)\n" },
         { CONNECTION_ESTABLISHED,
           "  10.0.0.1:50568 confirmed it; the connection is open (ESTABLISHED)\n" },
+        /* ⚠ What happened first, then what is missing and what closes it.
+         * ⚠ Nothing here is the sender's fault: it closed properly, and ⚠ **not
+         * answering is ours** (`CLAUDE.md` §4-1). */
+        { CONNECTION_CLOSE_WAIT,
+          "  10.0.0.1:50568 has closed its side; we read the FIN and have not answered\n"
+          "    it yet (CLOSE-WAIT)\n" },
     };
     for (size_t i = 0; i < sizeof moved / sizeof moved[0]; i++) {
         memset(&outcome, 0, sizeof outcome);
@@ -674,6 +680,12 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
           "    not the sender's\n" },
         /* ⚠ Which of the two it was is not claimed, because ⚠ **this build does
          * not tell them apart** (hidetzu/tcpip-stack#64). */
+        { HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW,
+          "  no answer: that FIN is not the next thing we are waiting for. Either\n"
+          "    we have read it already, or it begins past what we asked for\n" },
+        { HANDSHAKE_REASON_A_FIN_WE_CANNOT_PLACE,
+          "  no answer: nothing here is holding the connection that FIN closes, so\n"
+          "    its sequence number cannot be checked against anything\n" },
         { HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW,
           "  no answer: none of that data is inside the window we promised. Either\n"
           "    we have taken it already, or it begins past what we asked for\n" },
@@ -732,6 +744,21 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
         "  1 octet of data arrived; we took it and had nobody to give\n"
         "    it to. The sender has not been told we have it yet\n") && ok;
     produced_close(&produced);
+
+    /* ⚠ A FIN may ride data too, and ⚠ **then both lines are printed.** */
+    memset(&outcome, 0, sizeof outcome);
+    outcome.decision = HANDSHAKE_MOVED;
+    outcome.state = CONNECTION_CLOSE_WAIT;
+    outcome.id = id;
+    outcome.octets_taken = 1;
+    produced_open(&produced);
+    report_handshake_outcome(produced.out, &outcome);
+    ok = matches("closed, carrying an octet", &produced,
+        "  10.0.0.1:50568 has closed its side; we read the FIN and have not answered\n"
+        "    it yet (CLOSE-WAIT)\n"
+        "  1 octet of data arrived; we took it and had nobody to give\n"
+        "    it to. The sender has not been told we have it yet\n") && ok;
+    produced_close(&produced);
     return ok;
 }
 
@@ -756,6 +783,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "0 connections were given up on after nobody confirmed them\n"
         "0 octets of data were taken and discarded, and 0 segments carried data "
         "none of which was inside the window we promised\n"
+        "the other side closed 0 connections. 0 FINs arrived that were not the next "
+        "thing we were waiting for, and 0 named a connection we hold nothing for\n"
         "0 were refused for want of room and 0 answers never left the device, which "
         "are ours and not the sender's\n");
     produced_close(&produced);
@@ -775,6 +804,9 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.room.refused_for_want_of_room = 1;
     one.octets_taken_and_discarded = 1;
     one.data_outside_the_window = 1;
+    one.the_other_side_closed = 1;
+    one.fin_outside_the_window = 1;
+    one.fin_we_could_not_place = 1;
 
     produced_open(&produced);
     report_handshake_summary(produced.out, &one);
@@ -787,8 +819,55 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "1 connection was given up on after nobody confirmed it\n"
         "1 octet of data was taken and discarded, and 1 segment carried data none "
         "of which was inside the window we promised\n"
+        "the other side closed 1 connection. 1 FIN arrived that was not the next "
+        "thing we were waiting for, and 1 named a connection we hold nothing for\n"
         "1 was refused for want of room and 1 answer never left the device, which "
         "are ours and not the sender's\n") && ok;
+    produced_close(&produced);
+
+    /* ⚠ The half the two blocks above cannot assert: ⚠ **every number is 0 in
+     * one and 1 in the other, and 1 and 1 are symmetric** — so a line printing
+     * one counter where another belongs passes both.
+     *
+     * ⚠ Measured: swapping the last two numbers of the FIN line left this case
+     * green, ⚠ **which is the same defect `each_kind_of_frame_moves_its_own_counter`
+     * had** (hidetzu/tcpip-stack#52). ⚠ Every number here is different, and
+     * ⚠ they also carry the plural wording the block above cannot reach. */
+    struct handshake_counts each;
+    memset(&each, 0, sizeof each);
+    each.opened = 2;
+    each.answered = 3;
+    each.asked_again = 4;
+    each.established = 5;
+    each.acknowledgment_we_are_not_waiting_for = 6;
+    each.no_connection_held = 7;
+    each.not_expected_in_this_state = 8;
+    each.answered_again = 9;
+    each.given_up_on = 10;
+    each.octets_taken_and_discarded = 11;
+    each.data_outside_the_window = 12;
+    each.the_other_side_closed = 13;
+    each.fin_outside_the_window = 14;
+    each.fin_we_could_not_place = 15;
+    each.room.refused_for_want_of_room = 16;
+    each.we_could_not_build_the_reply = 17;
+
+    produced_open(&produced);
+    report_handshake_summary(produced.out, &each);
+    ok = matches("no two numbers alike", &produced,
+        "2 connections were opened and 3 answered. 4 asked again\n"
+        "5 reached open. 6 acknowledged a number we are not waiting for, 7 arrived "
+        "for no connection we hold, 8 arrived where the connection's state did not "
+        "expect them\n"
+        "9 answers went out again because nobody had confirmed them\n"
+        "10 connections were given up on after nobody confirmed them\n"
+        "11 octets of data were taken and discarded, and 12 segments carried data "
+        "none of which was inside the window we promised\n"
+        "the other side closed 13 connections. 14 FINs arrived that were not the "
+        "next thing we were waiting for, and 15 named a connection we hold nothing "
+        "for\n"
+        "16 were refused for want of room and 17 answers never left the device, "
+        "which are ours and not the sender's\n") && ok;
     produced_close(&produced);
     return ok;
 }

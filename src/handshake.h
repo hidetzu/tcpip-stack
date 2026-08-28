@@ -160,6 +160,34 @@ enum handshake_reason {
      * "delete the TCB, enter the CLOSED state and return." */
     HANDSHAKE_REASON_NOBODY_CONFIRMED_IT,
 
+    /* ⚠ A FIN arrived that ⚠ **the window we promised does not cover** — its
+     * sequence number is not the next one we are waiting for.
+     *
+     * ⚠ RFC 793's acceptability test for a segment of length 1 against a window
+     * above zero, quoted: "RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND". ⚠ A FIN
+     * occupies one sequence number — "A control bit (finis) occupying one
+     * sequence number" — so ⚠ **a FIN is a segment of length 1 even carrying no
+     * data.**
+     *
+     * ⚠ **This is the measured case, not a rare one**: `RCV.NXT` advances over
+     * a FIN we read, so ⚠ **every retransmission of it lands here.** ⚠ The Linux
+     * kernel sent five in one `close()` — measured 2026-08-29.
+     *
+     * ⚠ Which of the two it was is not told apart, the same as
+     * `DATA_OUTSIDE_THE_WINDOW`: this build asks one question. */
+    HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW,
+
+    /* ⚠ A FIN arrived and ⚠ **nothing is held for the connection it names.**
+     *
+     * ⚠ RFC 793, verbatim: "Do not process the FIN if the state is CLOSED,
+     * LISTEN or SYN-SENT since the SEG.SEQ cannot be validated; drop the
+     * segment and return." ⚠ **Holding nothing is our LISTEN.**
+     *
+     * ⚠ Counted apart from any other segment arriving for no connection we
+     * hold: ⚠ **the document gives this one its own sentence and its own
+     * reason**, and folding it in would lose why it was dropped. */
+    HANDSHAKE_REASON_A_FIN_WE_CANNOT_PLACE,
+
     /* ⚠ Data arrived on an open connection, ⚠ **we took delivery of it, and we
      * had nobody to give it to** (hidetzu/tcpip-stack#64 Owner Decision 2).
      *
@@ -217,6 +245,18 @@ struct handshake_counts {
     /* ⚠ **Segments** — a segment none of whose octets the window covered. */
     unsigned long data_outside_the_window;
 
+    /* ⚠ **Segments.** ⚠ The other side closed and we read its FIN. ⚠ Counted
+     * apart from `established`, ⚠ **and both can move for one segment**: RFC 793
+     * takes the acknowledgment that opens a connection through to the FIN check
+     * in the same pass. */
+    unsigned long the_other_side_closed;
+
+    /* ⚠ **Segments** — a FIN the window did not cover, and a FIN naming a
+     * connection we hold nothing for. ⚠ Kept apart from each other and from
+     * everything else (hidetzu/tcpip-stack#65). */
+    unsigned long fin_outside_the_window;
+    unsigned long fin_we_could_not_place;
+
     /* ⚠ Counted only once the wire took the whole answer. ⚠ A reply that was
      * built is not a reply that left — the same division `arp_respond` and
      * `echo_respond` use (`CLAUDE.md` §1, in the sending direction). ⚠ The
@@ -254,6 +294,20 @@ struct handshake_outcome {
      * exactly one reason per segment. */
     uint16_t octets_taken;
 
+    /* ⚠ True when this segment's FIN was read and `RCV.NXT` moved over it.
+     * ⚠ Its own field rather than a reason, ⚠ **because a segment can both
+     * open a connection and close it** — RFC 793 goes on to the FIN check after
+     * entering ESTABLISHED, in the same pass — and ⚠ a reason cannot say two
+     * things (hidetzu/tcpip-stack#65). */
+    bool the_fin_was_read;
+
+    /* ⚠ What we would acknowledge for this connection now, ⚠ **as a number.**
+     * ⚠ Meaningful whenever a connection was held or taken. ⚠ It is `RCV.NXT`
+     * after everything this segment moved, so ⚠ **a FIN that was read has
+     * already been counted into it** — RFC 793: "advance RCV.NXT over the FIN".
+     * ⚠ Nothing sends it; hidetzu/tcpip-stack#66 does. */
+    uint32_t we_would_acknowledge;
+
     /* ⚠ How many octets of the caller's reply buffer were written. ⚠ 0 unless a
      * SYN opened a connection, and ⚠ a caller must not send what was not
      * built. */
@@ -273,7 +327,12 @@ struct handshake_outcome {
  * `listening_port` is the port this stack answers for. ⚠ A segment for any other
  * local port is not ours to open.
  *
- * ⚠ `counts` gains exactly one, under the reason decided.
+ * ⚠ `counts` gains exactly one, under the reason decided — ⚠ **with one
+ * exception the document forces**: a segment that both opens a connection and
+ * closes it moves `established` and `the_other_side_closed` together, because
+ * ⚠ **RFC 793 goes on to the FIN check after entering ESTABLISHED, in the same
+ * pass**, and ⚠ a single reason cannot say two things (ADR 0022). ⚠ The octets
+ * taken are their own number for the same cause.
  * ⚠ Nothing is sent here and nothing is printed here. */
 /* `requester_hardware_address` is the arriving frame's ethernet source — ⚠ where
  * an answer would have to go, taken from that frame and ⚠ never from a table

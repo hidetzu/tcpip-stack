@@ -143,12 +143,17 @@ void report_tcp_summary(FILE *out, const struct tcp_counts *counts);
  * name `CLAUDE.md` §4 forbids — ⚠ **it is the document's vocabulary, shown to a
  * reader on purpose.**
  *
- * ⚠ A transition gets a line of its own, not only the ends: ⚠ **there is no
- * clock, so a handshake that stops half way stops there forever**, and printing
- * nothing would leave no trace of where.
+ * ⚠ A transition gets a line of its own, not only the ends, ⚠ **so that where a
+ * connection stopped leaves a trace.** ⚠ Until hidetzu/tcpip-stack#57 the reason
+ * given here was that there was no clock and a half-finished handshake stopped
+ * there for ever; ⚠ **there is a clock now and such a connection is given up
+ * on** (ADR 0018, ADR 0019) — ⚠ the line is still printed, and the reason for it
+ * is the trace, not the absence of a timer.
  *
- * ⚠ The two reasons that are ours say so rather than pointing at the sender
- * (`CLAUDE.md` §4-1). */
+ * ⚠ Every reason that is ours says so rather than pointing at the sender
+ * (`CLAUDE.md` §4-1). ⚠ That includes the one for a `FIN` we have not answered:
+ * ⚠ **the sender closed properly, and not answering is ours**
+ * (hidetzu/tcpip-stack#65). */
 void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome);
 
 /* ⚠ Each reason counted on its own, and ⚠ printed even when every count is

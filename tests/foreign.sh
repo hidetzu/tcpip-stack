@@ -613,6 +613,11 @@ print(syns, fins, others)
     # having opened at all.
     assert_file_contains "$work/out.txt" "1 reached open." \
         "the connection reached ESTABLISHED before it was closed"
+    # ⚠ hidetzu/tcpip-stack#65. ⚠ The octets above say a FIN arrived; ⚠ **this
+    # says we read it** — and ⚠ the retransmissions are counted apart from it,
+    # so one close never looks like several.
+    assert_file_contains "$work/out.txt" "the other side closed 1 connection." \
+        "the FIN the kernel sent moved the connection to CLOSE-WAIT"
 
     printf '    %s SYN, %s FIN and %s other segments arrived\n' "$syns" "$fins" "$others"
 }
