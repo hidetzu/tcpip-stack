@@ -522,10 +522,20 @@ int main(int argc, char **argv)
                              * (`CLAUDE.md` §1). */
                             if (handed >= 0 &&
                                 (size_t)handed == handshake.reply_bytes) {
-                                if (handshake.reply == HANDSHAKE_REPLY_OUR_FIN) {
+                                /* ⚠ Which counter is the State layer's word,
+                                 * not a rule written here a second time
+                                 * (`CLAUDE.md` §3). */
+                                switch (handshake.reply) {
+                                case HANDSHAKE_REPLY_OUR_FIN:
                                     handshake_counts.our_fin_left++;
-                                } else {
+                                    break;
+                                case HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED:
+                                    handshake_counts.data_acknowledged++;
+                                    break;
+                                case HANDSHAKE_REPLY_THE_ANSWER:
+                                case HANDSHAKE_REPLY_NONE:
                                     handshake_counts.answered++;
+                                    break;
                                 }
                             }
                         }

@@ -723,10 +723,10 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
      * set. ⚠ One and two, because ⚠ **the singular is where the wording of a
      * count usually breaks** and a table of one value never shows it. */
     static const struct { uint16_t octets; const char *line; } taken[] = {
-        { 1, "  1 octet of data arrived; we took it and had nobody to give\n"
-             "    it to. The sender has not been told we have it yet\n" },
-        { 2, "  2 octets of data arrived; we took them and had nobody to give\n"
-             "    them to. The sender has not been told we have them yet\n" },
+        { 1, "  1 octet of data arrived; we took it, told the sender so, and\n"
+             "    had nobody to give it to\n" },
+        { 2, "  2 octets of data arrived; we took them, told the sender so, and\n"
+             "    had nobody to give them to\n" },
     };
     for (size_t i = 0; i < sizeof taken / sizeof taken[0]; i++) {
         memset(&outcome, 0, sizeof outcome);
@@ -755,8 +755,8 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
     report_handshake_outcome(produced.out, &outcome);
     ok = matches("established, carrying an octet", &produced,
         "  10.0.0.1:50568 confirmed it; the connection is open (ESTABLISHED)\n"
-        "  1 octet of data arrived; we took it and had nobody to give\n"
-        "    it to. The sender has not been told we have it yet\n") && ok;
+        "  1 octet of data arrived; we took it, told the sender so, and\n"
+        "    had nobody to give it to\n") && ok;
     produced_close(&produced);
 
     /* ⚠ A FIN may ride data too, and ⚠ **then both lines are printed.** */
@@ -770,8 +770,8 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
     ok = matches("closed, carrying an octet", &produced,
         "  10.0.0.1:50568 has closed its side; we read the FIN and have not answered\n"
         "    it yet (CLOSE-WAIT)\n"
-        "  1 octet of data arrived; we took it and had nobody to give\n"
-        "    it to. The sender has not been told we have it yet\n") && ok;
+        "  1 octet of data arrived; we took it, told the sender so, and\n"
+        "    had nobody to give it to\n") && ok;
     produced_close(&produced);
     return ok;
 }
@@ -798,6 +798,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "our close unacknowledged\n"
         "0 answers went out again because nobody had confirmed them\n"
         "0 connections were given up on after nobody confirmed them\n"
+        "0 acknowledgments for data left the device\n"
         "0 octets of data were taken and discarded, and 0 segments carried data "
         "none of which was inside the window we promised\n"
         "the other side closed 0 connections. 0 FINs arrived that were not the next "
@@ -819,6 +820,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.answered_again = 1;
     one.answered = 1;
     one.room.refused_for_want_of_room = 1;
+    one.data_acknowledged = 1;
     one.octets_taken_and_discarded = 1;
     one.data_outside_the_window = 1;
     one.the_other_side_closed = 1;
@@ -841,6 +843,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "our close unacknowledged\n"
         "1 answer went out again because nobody had confirmed it\n"
         "1 connection was given up on after nobody confirmed it\n"
+        "1 acknowledgment for data left the device\n"
         "1 octet of data was taken and discarded, and 1 segment carried data none "
         "of which was inside the window we promised\n"
         "the other side closed 1 connection. 1 FIN arrived that was not the next "
@@ -872,6 +875,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.our_fin_went_out_again = 19;
     each.closed = 20;
     each.never_acknowledged_our_fin = 21;
+    each.data_acknowledged = 22;
     each.octets_taken_and_discarded = 11;
     each.data_outside_the_window = 12;
     each.the_other_side_closed = 13;
@@ -892,6 +896,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "with our close unacknowledged\n"
         "9 answers went out again because nobody had confirmed them\n"
         "10 connections were given up on after nobody confirmed them\n"
+        "22 acknowledgments for data left the device\n"
         "11 octets of data were taken and discarded, and 12 segments carried data "
         "none of which was inside the window we promised\n"
         "the other side closed 13 connections. 14 FINs arrived that were not the "

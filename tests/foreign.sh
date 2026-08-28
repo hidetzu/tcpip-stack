@@ -1062,21 +1062,19 @@ for bits, sequence, acknowledgment in ours[:1]:
         "$wrong" "$right"
 }
 
-# ⚠ hidetzu/tcpip-stack — the wall for a claim that was written from reasoning
-# and not from measurement (`CLAUDE.md` §9).
+# ⚠ hidetzu/tcpip-stack#74 AC 1 and AC 3, and ⚠ **the verdict is the kernel's**:
+# it does not release a buffer until the octets in it have been acknowledged with
+# numbers it accepts, so ⚠ **`Send-Q` reaching 0 is somebody else's judgement on
+# our acknowledgment numbers.**
 #
-# ⚠ `docs/SPEC.md` §2 said the peer "retransmits the same segment, and each
-# arrival hands over the next octet". ⚠ **It does not.** ⚠ A peer that honours
-# the window we advertise sends ONE octet, at the SAME sequence number, over and
-# over — ⚠ **so exactly one octet is ever taken per connection.**
+# ⚠ Measured before this change, same conditions, 2026-08-29: ⚠ **the peer sent
+# one octet at one sequence number seven times and its `Send-Q` stayed at 5 for
+# twelve seconds.**
 #
-# ⚠ Measured 2026-08-29: 7 copies of the same octet in 8 seconds, the peer's
-# `Send-Q` stuck at 5. ⚠ The old sentence was carried over from a background
-# measurement taken with a window of 1024.
-#
-# ⚠ The octets are cut out of our own `--hex` here, which is what ARRIVED —
-# ⚠ **and what arrived is exactly what this case is about.**
-inside_a_window_of_one_gets_one_octet_and_the_same_one_again() {
+# ⚠ The window is still 1 here (hidetzu/tcpip-stack#75 owns the number), so
+# ⚠ **the peer advances one octet at a time** — which is what makes the sequence
+# numbers visible at all.
+inside_the_peers_send_queue_drains_once_we_acknowledge() {
     ours=10.0.0.2
     our_mac=02:00:00:00:00:02
 
@@ -1096,6 +1094,15 @@ inside_a_window_of_one_gets_one_octet_and_the_same_one_again() {
 
     LC_ALL=C python3 -c '
 import socket, subprocess, sys, time
+
+def send_q():
+    out = subprocess.run(["ss", "-tan"], capture_output=True, text=True).stdout
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 5 and parts[4] == "10.0.0.2:80":
+            return parts[2]
+    return "gone"
+
 s = socket.socket()
 s.settimeout(5)
 try:
@@ -1103,12 +1110,16 @@ try:
 except Exception as why:
     print("connect failed:", why); sys.exit(1)
 s.sendall(b"hello")
-time.sleep(4)
-for line in subprocess.run(["ss", "-tan"], capture_output=True, text=True).stdout.splitlines()[1:]:
-    parts = line.split()
-    if len(parts) >= 5 and parts[4] == "10.0.0.2:80":
-        print("send-q", parts[2])
-' >"$work/sent.txt" 2>&1
+
+# ⚠ Watched until it drains, ⚠ **never a fixed sleep long enough to hide a slow
+# one.** ⚠ What is reported is the last value seen, whatever it is.
+last = send_q()
+deadline = time.time() + 4.0
+while time.time() < deadline and last not in ("0", "gone"):
+    time.sleep(0.1)
+    last = send_q()
+print("send-q", last)
+' >"$work/drained.txt" 2>&1
     sent=$?
 
     kill -INT "$reader" 2>/dev/null
@@ -1116,7 +1127,18 @@ for line in subprocess.run(["ss", "-tan"], capture_output=True, text=True).stdou
 
     if [ "$sent" -ne 0 ]; then
         note_failure "connect() did not succeed, so nothing was sent"
-        sed 's/^/      /' "$work/sent.txt" >&2
+        sed 's/^/      /' "$work/drained.txt" >&2
+        return
+    fi
+
+    left=$(awk '$1 == "send-q" { print $2 }' "$work/drained.txt")
+
+    # ⚠ AC 3, and ⚠ **it is the kernel's verdict and not ours.**
+    if [ "$left" != "0" ]; then
+        note_failure "the peer still holds $left octets, so it has not accepted our acknowledgments"
+        sed 's/^/      /' "$work/drained.txt" >&2
+        printf '    what the stack said:\n' >&2
+        grep -v '^  [0-9a-f]' "$work/out.txt" | tail -14 | sed 's/^/      /' >&2
         return
     fi
 
@@ -1124,7 +1146,9 @@ for line in subprocess.run(["ss", "-tan"], capture_output=True, text=True).stdou
     ipv4_type=$(constant src/ipv4.h IPV4_ETHERNET_LENGTH_TYPE)
     tcp_number=$(constant src/tcp.h TCP_PROTOCOL_NUMBER)
 
-    # ⚠ Every data-carrying segment, with its length and its sequence number.
+    # ⚠ The peer advanced: ⚠ **five octets at five different sequence numbers**,
+    # which is what "it moved on" means. ⚠ Before this change all five arrivals
+    # carried the same one.
     LC_ALL=C frames_as_hex "$work/out.txt" | python3 -c '
 import sys
 
@@ -1152,48 +1176,40 @@ for line in sys.stdin:
     data = total - internet - (octets[at + 12] >> 4) * 4
     if data > 0:
         carrying.append((data, int.from_bytes(octets[at + 4:at + 8], "big")))
-print("carrying", len(carrying))
-print("lengths", " ".join(str(d) for d, _ in sorted(set(carrying))) or "none")
-print("distinct-sequence-numbers", len(set(s for _, s in carrying)))
+print("octets-arrived", len(carrying))
+print("distinct-sequence-numbers", len(set(sequence for _, sequence in carrying)))
+print("distinct-lengths", " ".join(str(d) for d in sorted(set(d for d, _ in carrying))))
 ' "$ethernet_header" "$ipv4_type" "$tcp_number" >"$work/counted.txt"
 
-    carrying=$(awk '$1 == "carrying" { print $2 }' "$work/counted.txt")
-    lengths=$(awk '$1 == "lengths" { $1 = ""; print substr($0, 2) }' "$work/counted.txt")
+    arrived=$(awk '$1 == "octets-arrived" { print $2 }' "$work/counted.txt")
     distinct=$(awk '$1 == "distinct-sequence-numbers" { print $2 }' "$work/counted.txt")
-    send_q=$(awk '$1 == "send-q" { print $2 }' "$work/sent.txt")
+    lengths=$(awk '$1 == "distinct-lengths" { $1 = ""; print substr($0, 2) }' "$work/counted.txt")
 
-    # ⚠ It sent more than once, or there is nothing to say about repeats.
-    if [ "${carrying:-0}" -lt 2 ]; then
-        note_failure "only $carrying segments carried data, so nothing was repeated"
-        sed 's/^/      /' "$work/counted.txt" >&2
-        return
-    fi
-    # ⚠ Every one of them carried a single octet, ⚠ **because that is the window
-    # we advertised** — 5 were handed to send().
+    # ⚠ **The window decides how much the peer puts on the wire at a time**, and
+    # ⚠ this is the wall for `CLAUDE.md` §9's row: ⚠ **a sentence about the peer
+    # must be re-measured when the window changes, never carried across.**
+    # ⚠ At a window of 1 every data segment carries exactly 1 octet; ⚠ **at 5 the
+    # peer would send all five in one, and the count below would be 1, not 5.**
     if [ "$lengths" != "1" ]; then
-        note_failure "the peer sent segments of $lengths octets, not 1, so it did not honour our window"
+        note_failure "the peer sent segments of $lengths octets, and the window we advertise is 1"
         sed 's/^/      /' "$work/counted.txt" >&2
         return
     fi
-    # ⚠ And always the same sequence number: ⚠ **it never moved on**, which is
-    # what "one octet per connection, not one per arrival" means.
-    if [ "$distinct" -ne 1 ]; then
-        note_failure "the data arrived at $distinct different sequence numbers, so it did advance"
+    if [ "${distinct:-0}" -ne 5 ]; then
+        note_failure "the five octets arrived at $distinct different sequence numbers, not 5, so the peer did not advance one at a time"
         sed 's/^/      /' "$work/counted.txt" >&2
         return
     fi
-    # ⚠ Our own count agrees: one taken, the rest refused.
-    assert_file_contains "$work/out.txt" "1 octet of data was taken and discarded" \
-        "exactly one octet was ever taken"
-    # ⚠ And the peer still holds all five, which is the cost of not telling it.
-    if [ "${send_q:-0}" -ne 5 ]; then
-        note_failure "the peer's Send-Q is $send_q after sending 5 octets, not 5"
-        sed 's/^/      /' "$work/sent.txt" >&2
-        return
-    fi
+    # ⚠ Our own count agrees, and ⚠ **the two numbers are kept apart**: how many
+    # octets arrived, and how many times we said so.
+    assert_file_contains "$work/out.txt" "5 acknowledgments for data left the device" \
+        "one acknowledgment left for each octet taken"
+    assert_file_contains "$work/out.txt" "5 octets of data were taken and discarded" \
+        "all five octets were taken"
 
-    printf '    %s segments carried data, every one of them 1 octet at the same\n' "$carrying"
-    printf '    sequence number, and the peer still held %s octets unsent\n' "$send_q"
+    printf '    the peer sent %s segments of %s octet at %s sequence numbers, and its\n' \
+        "$arrived" "$lengths" "$distinct"
+    printf '    Send-Q reached %s\n' "$left"
 }
 
 # ⚠ The half that stops the case above passing for a stack that never looked at
@@ -1310,8 +1326,8 @@ case_the_kernel_reaches_time_wait_and_our_block_is_free_again() {
 case_a_fin_whose_sequence_number_we_do_not_expect_is_not_answered() {
     in_namespace a_fin_whose_sequence_number_we_do_not_expect_is_not_answered
 }
-case_a_window_of_one_gets_one_octet_and_the_same_one_again() {
-    in_namespace a_window_of_one_gets_one_octet_and_the_same_one_again
+case_the_peers_send_queue_drains_once_we_acknowledge() {
+    in_namespace the_peers_send_queue_drains_once_we_acknowledge
 }
 case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
     in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
@@ -1323,7 +1339,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered a_window_of_one_gets_one_octet_and_the_same_one_again a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

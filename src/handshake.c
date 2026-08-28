@@ -88,6 +88,13 @@ static size_t build_the_answer(const struct transmission_control_block *block,
     if (block->state == CONNECTION_LAST_ACK) {
         fields.sequence_number = block->snd_nxt - 1u;
         fields.control_bits = TCP_CONTROL_FIN | TCP_CONTROL_ACK;
+    } else if (block->state == CONNECTION_ESTABLISHED) {
+        /* ⚠ RFC 793: "<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>". ⚠ `SND.NXT` is not
+         * moved: an ACK is "A control bit (acknowledge) occupying no sequence
+         * space", so ⚠ **nothing is consumed and there is nothing to
+         * retransmit.** */
+        fields.sequence_number = block->snd_nxt;
+        fields.control_bits = TCP_CONTROL_ACK;
     } else {
         fields.sequence_number = block->iss;
         fields.control_bits = TCP_CONTROL_SYN | TCP_CONTROL_ACK;
@@ -140,10 +147,9 @@ static size_t build_the_answer(const struct transmission_control_block *block,
  * the comparison working, not it failing.
  *
  * ⚠ `RCV.NXT` advances by what was taken, so ⚠ **the same octet is never taken
- * twice** — a retransmission of it is then entirely behind us. ⚠ Nothing tells
- * the sender: sending is not this layer's, and ⚠ **the window is a promise kept
- * in taking and not yet in telling** (`docs/SPEC.md` §2, closed by
- * hidetzu/tcpip-stack#66). */
+ * twice** — a retransmission of it is then entirely behind us. ⚠ **Nothing is
+ * sent from here**; the caller's branch builds the acknowledgment RFC 793 asks
+ * for once this has said how much was taken (hidetzu/tcpip-stack#74). */
 static void take_the_data(struct transmission_control_block *block,
                           const struct tcp_header *header,
                           struct handshake_outcome *outcome,
@@ -261,8 +267,17 @@ static bool build_what_is_due(const struct transmission_control_block *block,
         outcome->reply = HANDSHAKE_REPLY_NONE;
         return false;
     }
-    outcome->reply = block->state == CONNECTION_LAST_ACK ? HANDSHAKE_REPLY_OUR_FIN
-                                                         : HANDSHAKE_REPLY_THE_ANSWER;
+    switch (block->state) {
+    case CONNECTION_LAST_ACK:
+        outcome->reply = HANDSHAKE_REPLY_OUR_FIN;
+        break;
+    case CONNECTION_ESTABLISHED:
+        outcome->reply = HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED;
+        break;
+    default:
+        outcome->reply = HANDSHAKE_REPLY_THE_ANSWER;
+        break;
+    }
     return true;
 }
 
@@ -433,6 +448,20 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                  * ⚠ Counting again here would make one octet look like two. */
                 outcome->decision = HANDSHAKE_STAYED;
                 outcome->reason = HANDSHAKE_REASON_THE_DATA_WAS_TAKEN_AND_DISCARDED;
+                /* ⚠ RFC 793: "it must also acknowledge the receipt of the
+                 * data." ⚠ Built here and not counted here — ⚠ **a segment that
+                 * was built is not a segment that left**, and the caller counts
+                 * what the wire took (`CLAUDE.md` §1).
+                 *
+                 * ⚠ When it will not fit, the octets were still taken and
+                 * `RCV.NXT` still moved: ⚠ **giving them back is not possible**,
+                 * so the failure is reported as ours and the taking stands. */
+                if (!build_what_is_due(held, id, requester_hardware_address,
+                                       our_hardware_address, reply, reply_bytes,
+                                       outcome)) {
+                    stayed(outcome, HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY,
+                           &counts->we_could_not_build_the_reply);
+                }
             } else {
                 stayed(outcome, HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW,
                        &counts->data_outside_the_window);

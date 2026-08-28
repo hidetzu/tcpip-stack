@@ -661,10 +661,229 @@ static bool case_data_on_an_open_connection_is_taken_and_discarded(void)
         fputs("  data on an open connection moved somebody else's counter\n", stderr);
         ok = false;
     }
-    /* ⚠ Nothing is sent for it. Telling the sender is hidetzu/tcpip-stack#66. */
-    if (outcome.reply_bytes != 0) {
-        fprintf(stderr, "  %zu octets were built in answer to data\n",
+    /* ⚠ And it is acknowledged. ⚠ Until hidetzu/tcpip-stack#74 this asserted
+     * that nothing was built — ⚠ **the promise was kept in taking and not in
+     * telling**, and this is the telling. */
+    if (outcome.reply_bytes == 0 ||
+        outcome.reply != HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED) {
+        fprintf(stderr, "  %zu octets were built for data, of kind %d\n",
+                outcome.reply_bytes, (int)outcome.reply);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ RFC 793's seventh step, verbatim: "When the TCP takes responsibility for
+ * delivering the data to the user it must also acknowledge the receipt of the
+ * data ... Send an acknowledgment of the form:
+ * <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>".
+ *
+ * ⚠ Every field of it, read back by our own parser — ⚠ **reaching OK is what
+ * says the checksum agrees.** */
+static bool case_the_acknowledgment_for_data_is_the_one_the_document_describes(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    uint32_t the_octet_sits_at = held->rcv_nxt;
+    uint32_t snd_nxt_before = held->snd_nxt;
+
+    bool ok = true;
+    struct tcp_header data =
+        carrying(a_segment(TCP_CONTROL_ACK, the_octet_sits_at, held->iss + 1u), 1);
+    struct handshake_outcome outcome = receive(&world, &data);
+
+    size_t expected = ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES +
+                      TCP_FIXED_HEADER_BYTES;
+    if (outcome.reply_bytes != expected) {
+        fprintf(stderr, "  the acknowledgment is %zu octets and a bare ACK is %zu\n",
+                outcome.reply_bytes, expected);
+        return false;
+    }
+
+    const unsigned char *datagram = world.reply + ETHERNET_HEADER_BYTES;
+    struct ipv4_header internet;
+    if (ipv4_parse_header(datagram, outcome.reply_bytes - ETHERNET_HEADER_BYTES,
+                          &internet) != IPV4_PARSE_OK) {
+        fputs("  the internet header of the acknowledgment did not read back\n", stderr);
+        return false;
+    }
+    struct connection_id id = the_connection();
+    struct tcp_header ours;
+    enum tcp_parse parsed =
+        tcp_parse_header(datagram + IPV4_FIXED_HEADER_BYTES,
+                         (size_t)internet.total_length - IPV4_FIXED_HEADER_BYTES,
+                         id.local.address, id.remote.address, &ours);
+    if (parsed != TCP_PARSE_OK) {
+        fprintf(stderr, "  the segment we built came back as %d "
+                        "(2 would mean its own checksum disagrees)\n", (int)parsed);
+        return false;
+    }
+
+    /* ⚠ ACK alone: ⚠ **no SYN and no FIN.** ⚠ A build that reused either of the
+     * other two segments unchanged would carry one. */
+    if (ours.control_bits != TCP_CONTROL_ACK) {
+        fprintf(stderr, "  the acknowledgment carries control bits 0x%02x, not ACK\n",
+                ours.control_bits);
+        ok = false;
+    }
+    /* ⚠ It acknowledges past the octet by exactly one, ⚠ **asserted against the
+     * octet's own sequence number** and not against whatever RCV.NXT is. */
+    if (ours.acknowledgment_number != the_octet_sits_at + 1u) {
+        fprintf(stderr, "  it acknowledges %lu, and the octet sat at %lu\n",
+                (unsigned long)ours.acknowledgment_number,
+                (unsigned long)the_octet_sits_at);
+        ok = false;
+    }
+    /* ⚠ And the number reported for it is the same one, so ⚠ **a caller told
+     * what we would acknowledge is told what actually went out.** */
+    if (outcome.we_would_acknowledge != ours.acknowledgment_number) {
+        fprintf(stderr, "  we report acknowledging %lu and the segment carries %lu\n",
+                (unsigned long)outcome.we_would_acknowledge,
+                (unsigned long)ours.acknowledgment_number);
+        ok = false;
+    }
+    /* ⚠ RFC 793's glossary: an ACK is "A control bit (acknowledge) occupying no
+     * sequence space". ⚠ So `SND.NXT` is carried and ⚠ **not moved** — a build
+     * that consumed one would break every later segment's numbering. */
+    if (ours.sequence_number != snd_nxt_before || held->snd_nxt != snd_nxt_before) {
+        fprintf(stderr, "  it sits at %lu and SND.NXT went from %lu to %lu\n",
+                (unsigned long)ours.sequence_number, (unsigned long)snd_nxt_before,
+                (unsigned long)held->snd_nxt);
+        ok = false;
+    }
+    if (ours.window != HANDSHAKE_WINDOW || ours.data_offset != TCP_HEADER_LENGTH_MINIMUM) {
+        fprintf(stderr, "  it carries a window of %u and %u octets of options\n",
+                ours.window, (ours.data_offset - TCP_HEADER_LENGTH_MINIMUM) * 4);
+        ok = false;
+    }
+    if (ours.source_port != OUR_PORT || ours.destination_port != THEIR_PORT) {
+        fputs("  the acknowledgment's ports are not ours to theirs\n", stderr);
+        ok = false;
+    }
+    if (memcmp(world.reply, THEIR_MAC, ETHERNET_ADDRESS_BYTES) != 0 ||
+        memcmp(world.reply + ETHERNET_ADDRESS_BYTES, OUR_MAC, ETHERNET_ADDRESS_BYTES) != 0) {
+        fputs("  its ethernet header is not ours to theirs\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ AC 4. ⚠ **Nothing is acknowledged for data the window did not cover**, so
+ * the change cannot pass for a stack that acknowledges everything that arrives.
+ *
+ * ⚠ RFC 793's first step does say "If an incoming segment is not acceptable, an
+ * acknowledgment should be sent in reply". ⚠ **That is not implemented**, and
+ * `docs/SPEC.md` §2 names it rather than leaving it silent — ⚠ this case pins
+ * what the build actually does. */
+static bool case_nothing_is_acknowledged_for_data_the_window_did_not_cover(void)
+{
+    bool ok = true;
+
+    /* ⚠ Behind us: taken already. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        struct tcp_header first =
+            carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u), 1);
+        (void)receive(&world, &first);
+        struct handshake_outcome again = receive(&world, &first);
+        if (again.reply_bytes != 0 || again.reply != HANDSHAKE_REPLY_NONE) {
+            fprintf(stderr, "  %zu octets were built for an octet taken already\n",
+                    again.reply_bytes);
+            ok = false;
+        }
+    }
+
+    /* ⚠ Past the window: it begins beyond what we asked for. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        struct tcp_header ahead =
+            carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt + 4096u, held->iss + 1u), 1);
+        struct handshake_outcome outcome = receive(&world, &ahead);
+        if (outcome.reply_bytes != 0) {
+            fprintf(stderr, "  %zu octets were built for data past the window\n",
+                    outcome.reply_bytes);
+            ok = false;
+        }
+    }
+
+    /* ⚠ The other half: the same connection, an octet the window DOES cover,
+     * ⚠ **is acknowledged** — so this case is about which data and not about
+     * data at all. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        struct tcp_header good =
+            carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u), 1);
+        struct handshake_outcome outcome = receive(&world, &good);
+        if (outcome.reply != HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED) {
+            fprintf(stderr, "  an octet inside the window was not acknowledged: kind %d\n",
+                    (int)outcome.reply);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* ⚠ Ours, not the sender's: the acknowledgment could not be built into the
+ * buffer we were given.
+ *
+ * ⚠ **The octets stay taken and `RCV.NXT` stays moved.** ⚠ Giving them back is
+ * not possible — ⚠ they were discarded — so ⚠ **pretending they never arrived
+ * would be the lie**, and the failure is reported as ours instead. */
+static bool case_an_acknowledgment_that_would_not_fit_is_counted_as_ours(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    uint32_t was = held->rcv_nxt;
+
+    bool ok = true;
+    unsigned char no_room[ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES];
+    struct connection_id id = the_connection();
+    struct tcp_header data =
+        carrying(a_segment(TCP_CONTROL_ACK, was, held->iss + 1u), 1);
+    struct handshake_outcome outcome;
+    handshake_receive(&data, &id, OUR_PORT, at(0), THEIR_MAC, OUR_MAC, &world.connections,
+                      no_room, sizeof no_room, &world.counts, &outcome);
+
+    if (outcome.reason != HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY ||
+        world.counts.we_could_not_build_the_reply != 1) {
+        fprintf(stderr, "  an acknowledgment that would not fit came back as reason %d\n",
+                (int)outcome.reason);
+        ok = false;
+    }
+    if (outcome.reply_bytes != 0 || outcome.reply != HANDSHAKE_REPLY_NONE) {
+        fprintf(stderr, "  %zu octets were reported for one that would not fit\n",
                 outcome.reply_bytes);
+        ok = false;
+    }
+    /* ⚠ The octet was taken all the same, and it is counted. */
+    if (outcome.octets_taken != 1 || world.counts.octets_taken_and_discarded != 1 ||
+        held->rcv_nxt != was + 1u) {
+        fprintf(stderr, "  the octet was un-taken: %u reported, RCV.NXT %lu from %lu\n",
+                (unsigned)outcome.octets_taken, (unsigned long)held->rcv_nxt,
+                (unsigned long)was);
         ok = false;
     }
     return ok;
@@ -751,10 +970,10 @@ static bool case_a_segment_longer_than_the_window_is_taken_a_window_at_a_time(vo
     /* ⚠ The same segment arriving five times.
      *
      * ⚠ **This is not what a peer that honours our window does** — that one
-     * sends a single octet and repeats it, measured 2026-08-29
-     * (`tests/foreign.sh` `a_window_of_one_gets_one_octet_and_the_same_one_again`).
-     * ⚠ **This comment used to claim it was**, and that claim was reasoned from
-     * a measurement taken with a window of 1024 (`CLAUDE.md` §9).
+     * sends a single octet and waits, measured 2026-08-29 (`tests/foreign.sh`
+     * `the_peers_send_queue_drains_once_we_acknowledge`). ⚠ **This comment used
+     * to claim it was**, and that claim was reasoned from a measurement taken
+     * with a window of 1024 (`CLAUDE.md` §9).
      *
      * ⚠ The case stays, and it is not weaker for it: ⚠ **it tests the contract,
      * not one peer's habits** (`.claude/rules/testing.md`). ⚠ A peer that sends
@@ -1390,7 +1609,9 @@ static bool case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin(void)
         }
     }
 
-    /* Data on an open connection. */
+    /* Data on an open connection. ⚠ Since hidetzu/tcpip-stack#74 this DOES
+     * produce a segment — ⚠ **an acknowledgment, and never our close.** ⚠ The
+     * case's subject is unchanged: nothing closes without a FIN. */
     {
         struct world world;
         a_world(&world);
@@ -1401,8 +1622,10 @@ static bool case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin(void)
         struct tcp_header data =
             carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u), 1);
         struct handshake_outcome outcome = receive(&world, &data);
-        if (outcome.reply_bytes != 0) {
-            fprintf(stderr, "  %zu octets were built for data\n", outcome.reply_bytes);
+        if (outcome.reply == HANDSHAKE_REPLY_OUR_FIN ||
+            held->state != CONNECTION_ESTABLISHED) {
+            fprintf(stderr, "  data drew a reply of kind %d and left state %d\n",
+                    (int)outcome.reply, (int)held->state);
             ok = false;
         }
     }
@@ -2265,6 +2488,12 @@ static const struct test_case cases[] = {
     { "each_reason_moves_only_its_own_count", case_each_reason_moves_only_its_own_count },
     { "data_on_an_open_connection_is_taken_and_discarded",
       case_data_on_an_open_connection_is_taken_and_discarded },
+    { "the_acknowledgment_for_data_is_the_one_the_document_describes",
+      case_the_acknowledgment_for_data_is_the_one_the_document_describes },
+    { "nothing_is_acknowledged_for_data_the_window_did_not_cover",
+      case_nothing_is_acknowledged_for_data_the_window_did_not_cover },
+    { "an_acknowledgment_that_would_not_fit_is_counted_as_ours",
+      case_an_acknowledgment_that_would_not_fit_is_counted_as_ours },
     { "data_outside_the_window_is_refused_and_nothing_moves",
       case_data_outside_the_window_is_refused_and_nothing_moves },
     { "a_segment_longer_than_the_window_is_taken_a_window_at_a_time",
