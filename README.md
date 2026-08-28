@@ -5,8 +5,10 @@ A user-space TCP/IP stack for Linux, built as an experiment in AI-assisted syste
 **What runs today: `tcpip-stack`.** It creates and attaches to a TAP device in the current network
 namespace, and reports the ethernet frames the kernel puts on it — length per frame, and the raw
 bytes on request. ⚠ **Given `--mac` and `--ipv4` it also answers the ARP requests and the ICMP echo
-requests that ask for that address**, and ⚠ **`ping` reports 0% packet loss against it.** Without
-those two options it only reads.
+requests that ask for that address**, and ⚠ **`ping` reports 0% packet loss against it.** ⚠ **Add
+`--tcp-port` and the Linux kernel's own `connect()` succeeds against it: `ss` reports the connection
+established.** ⚠ **Nothing is sent or received after that** — [`docs/SPEC.md`](docs/SPEC.md) §2 says
+what happens instead. Without those options it only reads.
 
 ⚠ **The namespace is not `tcpip-stack`'s doing.** It uses whichever network namespace it is
 started in. The checks put a fresh one there with `unshare -Urn`
@@ -46,17 +48,22 @@ make                 # build/tcpip-stack
 make check           # all three tiers
 ```
 
-Answering a ping with our own code (⚠ **a real run, 2026-08-28, kernel `7.0.2-arch1-1`** — the
-kernel's hardware address is whatever it picked for `tap0` on that run, and the IPv6 frames it
-sends unprompted are left in rather than tidied away):
+Answering a ping and a connection request with our own code (⚠ **a real run, 2026-08-28, kernel
+`7.0.2-arch1-1`** — the kernel's hardware address and its source port are whatever it picked on that
+run, and the IPv6 frames it sends unprompted are left in rather than tidied away):
 
 ```sh
 unshare -Urn sh -c '
-  ./build/tcpip-stack --mac 02:00:00:00:00:02 --ipv4 10.0.0.2 --timeout 1500 &
+  ./build/tcpip-stack --mac 02:00:00:00:00:02 --ipv4 10.0.0.2 --tcp-port 80 --timeout 1500 &
   until ip link show tap0 >/dev/null 2>&1; do sleep 0.05; done
   ip addr add 10.0.0.1/24 dev tap0
   ip link set tap0 up
-  LC_ALL=C ping -c 3 -i 0.3 -W 1 10.0.0.2
+  LC_ALL=C ping -c 2 -i 0.3 -W 1 10.0.0.2
+  python3 -c "
+import socket, subprocess
+s = socket.socket(); s.connect((\"10.0.0.2\", 80))
+print(subprocess.run([\"ss\", \"-tn\"], capture_output=True, text=True).stdout, end=\"\")
+"
   wait
 '
 ```
@@ -64,54 +71,54 @@ unshare -Urn sh -c '
 What `ping` said:
 
 ```text
---- 10.0.0.2 ping statistics ---
-3 packets transmitted, 3 received, 0% packet loss, time 609ms
-rtt min/avg/max/mdev = 0.054/0.065/0.079/0.010 ms
+2 packets transmitted, 2 received, 0% packet loss, time 305ms
+rtt min/avg/max/mdev = 0.046/0.055/0.065/0.009 ms
 ```
 
-What the stack said:
+What `ss` said:
+
+```text
+State Recv-Q Send-Q Local Address:Port  Peer Address:Port
+ESTAB 0      0           10.0.0.1:55896     10.0.0.2:80
+```
+
+What the stack said (⚠ **the ethernet header line of every frame is left out here; a real run prints
+one for each**):
 
 ```text
 listening on tap0
-frame 1  42 bytes
-  ff:ff:ff:ff:ff:ff <- f6:22:9f:90:78:d7, length/type 0x0806
   answered it: 10.0.0.2 is ours, and 10.0.0.1 was told our hardware address
-frame 2  98 bytes
-  02:00:00:00:00:02 <- f6:22:9f:90:78:d7, length/type 0x0800
   answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back
-frame 3  90 bytes
-  33:33:00:00:00:16 <- f6:22:9f:90:78:d7, length/type 0x86dd
-frame 4  86 bytes
-  33:33:ff:90:78:d7 <- f6:22:9f:90:78:d7, length/type 0x86dd
-frame 5  98 bytes
-  02:00:00:00:00:02 <- f6:22:9f:90:78:d7, length/type 0x0800
   answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back
-frame 6  98 bytes
-  02:00:00:00:00:02 <- f6:22:9f:90:78:d7, length/type 0x0800
-  answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back
-frame 7  90 bytes
-  33:33:00:00:00:16 <- f6:22:9f:90:78:d7, length/type 0x86dd
-frame 8  90 bytes
-  33:33:00:00:00:16 <- f6:22:9f:90:78:d7, length/type 0x86dd
-frame 9  70 bytes
-  33:33:00:00:00:02 <- f6:22:9f:90:78:d7, length/type 0x86dd
-frame 10  90 bytes
-  33:33:00:00:00:16 <- f6:22:9f:90:78:d7, length/type 0x86dd
-listened on tap0 for 1500 ms after frame 10 and read no more. That does not say whether anything more was sent.
-read 10 frames, 0 read errors
-0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define
+  10.0.0.1:55896 asked to open a connection; now waiting for it to
+    confirm (SYN-RECEIVED)
+  10.0.0.1:55896 confirmed it; the connection is open (ESTABLISHED)
+  no answer: nothing in this connection's state expects that
+  no answer: nothing in this connection's state expects that
+  no answer: nothing in this connection's state expects that
+  no answer: nothing in this connection's state expects that
+listened on tap0 for 1500 ms after frame 15 and read no more. That does not say whether anything more was sent.
+read 15 frames, 0 read errors
 answered 1 ARP request. 0 were not for us, 0 were malformed, 0 named an address space we cannot place, 0 had an opcode we do not act on
-answered 3 echo requests. 0 were not for us, 0 carried a protocol we do not act on
+answered 2 echo requests. 0 were not for us, 0 carried a protocol we do not act on
 0 internet headers were malformed, 0 were ones we do not read yet, 0 had a checksum that does not agree, 0 were fragments
 0 ICMP messages were malformed, 0 had a type we do not act on, 0 had a checksum that does not agree
 0 replies could not be built, which would be ours and not the sender's
+0 TCP headers were malformed and 0 had a checksum that does not agree
+1 connection was opened and 1 answered. 0 asked again
+1 reached open. 0 acknowledged a number we are not waiting for, 0 arrived for no connection we hold, 4 arrived where the connection's state did not expect them
+0 were refused for want of room and 0 answers never left the device, which are ours and not the sender's
 ```
 
 ⚠ **`0x0806` and `0x0800` are printed as the values they are, never as names.** A name would be a
 lie for a VLAN-tagged frame, and ⚠ **`0x0800` → IPv4 has never been taken from a standard in this
 repository** — it is what the kernel put on a device while doing IPv4
 ([ADR 0003](docs/adr/0003-what-the-length-type-field-means-and-what-the-parse-layer-refuses-to-guess.md)).
-⚠ **Without `--mac` and `--ipv4` nothing is answered**, and the run above says only what it read.
+
+⚠ **`nothing in this connection's state expects that` is the connection being open and nothing more
+being implemented.** ⚠ Observed, 3 runs of 3: the kernel then sends bare acknowledgments repeatedly
+and no `FIN` or `RST` arrives. ⚠ Why is inference, not measurement, and
+[`docs/SPEC.md`](docs/SPEC.md) §2 says which is which.
 
 ⚠ **The last line of the timer is not a failure.** ⚠ Nothing more arrived here, and that does not
 say whether anything more was sent (`CLAUDE.md` §1).
@@ -125,10 +132,28 @@ experiments cannot disturb ordinary networking.
 Development tooling is Node (the hooks under `.claude/` use only Node built-ins —
 there are no npm dependencies). The product itself is C.
 
-## First milestone
+## Milestones
 
-**Our own code answers a ping.** Not TCP — ethernet frames, ARP, IPv4, ICMP echo, through a TAP
-device, inside a namespace, verified against something we did not write.
+### The kernel's own `connect()` succeeds
+
+⚠ **Met, on 2026-08-28.** ⚠ **`connect()` from the Linux kernel completes against this stack and
+`ss -tn` reports the connection established** (`tests/foreign.sh`
+`the_kernel_opens_a_connection_to_us`). The kernel checks the TCP checksum over a pseudo-header and
+the acknowledgment number before it completes one, so ⚠ **that verdict is not ours.**
+
+⚠ **And the same lesson as the ping applies:** a stack that never validated a checksum on the way in
+would complete this handshake too. ⚠ A SYN whose TCP checksum does not agree is not answered and is
+counted, ⚠ **and the same segment with the right checksum, in the same run, is answered.**
+
+⚠ **What is not in it:** anything after the connection is open. ⚠ Nothing is sent and nothing is
+received; three places RFC 793 §3.9 asks for a reset or an ack produce a counted reason and no
+segment. ⚠ **The initial sequence number is fixed, which is a known weakness outside a private
+namespace** — [`docs/SPEC.md`](docs/SPEC.md) §2 says so plainly.
+
+### Our own code answers a ping
+
+**Not TCP** — ethernet frames, ARP, IPv4, ICMP echo, through a TAP device, inside a namespace,
+verified against something we did not write.
 
 ⚠ **Met, on 2026-08-28.** ⚠ **`ping` reports 0% packet loss**, and the verdict is not ours: the
 Linux kernel checks the internet header checksum and the ICMP checksum before it accepts a reply

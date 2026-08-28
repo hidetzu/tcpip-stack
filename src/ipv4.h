@@ -115,6 +115,12 @@ enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes
  * ARP's numbers. */
 #define IPV4_PROTOCOL_ICMP 1u
 
+/* And the one for TCP. ⚠ Same grounds as above and the same standing: ⚠ **not
+ * read in RFC 791**, which names the field without giving values. ⚠ It is
+ * octet 9 of the internet header in tests/fixtures/tcp-syn-74.hex, put there by
+ * the Linux kernel while carrying TCP. ⚠ An observation. */
+#define IPV4_PROTOCOL_TCP 6u
+
 /* The header with no `Options`, in octets. ⚠ Derived from the minimum RFC 791
  * states, never written as 20. */
 #define IPV4_FIXED_HEADER_BYTES (IPV4_HEADER_LENGTH_MINIMUM * IPV4_HEADER_LENGTH_UNIT)

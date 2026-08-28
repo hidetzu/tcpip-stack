@@ -321,6 +321,115 @@ void report_echo_summary(FILE *out, const struct echo_counts *counts)
             counts->we_could_not_build_the_reply == 1 ? "y" : "ies");
 }
 
+void report_tcp_not_read(FILE *out, enum tcp_parse answer)
+{
+    switch (answer) {
+    case TCP_PARSE_MALFORMED:
+        fputs("  no answer: its TCP header does not hold what it says it holds\n", out);
+        return;
+    case TCP_PARSE_CHECKSUM_DISAGREES:
+        fputs("  no answer: its TCP checksum does not agree with the octets that "
+              "arrived\n", out);
+        return;
+    case TCP_PARSE_OK:
+        break;
+    }
+    /* ⚠ Reached only if an answer is added without a sentence for it. */
+    fputs("  no answer, and this build has no wording for why\n", out);
+}
+
+void report_tcp_summary(FILE *out, const struct tcp_counts *counts)
+{
+    fprintf(out, "%lu TCP header%s malformed and %lu had a checksum that does not "
+                 "agree\n",
+            counts->malformed, counts->malformed == 1 ? " was" : "s were",
+            counts->checksum_disagrees);
+}
+
+/* ⚠ A socket as RFC 793 describes it: "an internet address identifying the TCP
+ * with a port identifier". */
+static void write_socket(FILE *out, const struct socket *socket)
+{
+    write_protocol_address(out, socket->address);
+    fprintf(out, ":%u", socket->port);
+}
+
+void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome)
+{
+    if (outcome->decision == HANDSHAKE_MOVED) {
+        switch (outcome->state) {
+        case CONNECTION_SYN_RECEIVED:
+            fputs("  ", out);
+            write_socket(out, &outcome->id.remote);
+            fputs(" asked to open a connection; now waiting for it to\n"
+                  "    confirm (SYN-RECEIVED)\n", out);
+            return;
+        case CONNECTION_ESTABLISHED:
+            fputs("  ", out);
+            write_socket(out, &outcome->id.remote);
+            fputs(" confirmed it; the connection is open (ESTABLISHED)\n", out);
+            return;
+        case CONNECTION_LISTEN:
+            break;
+        }
+        /* ⚠ Reached only if a state is added without a sentence for it. */
+        fputs("  something moved, and this build has no wording for it\n", out);
+        return;
+    }
+
+    switch (outcome->reason) {
+    case HANDSHAKE_REASON_ASKED_AGAIN:
+        fputs("  ", out);
+        write_socket(out, &outcome->id.remote);
+        fputs(" asked again; nothing changed\n", out);
+        return;
+    case HANDSHAKE_REASON_ACKNOWLEDGMENT_WE_ARE_NOT_WAITING_FOR:
+        fprintf(out, "  no answer: it acknowledged %lu, and we are waiting for %lu + 1\n",
+                (unsigned long)outcome->acknowledgment_we_had,
+                (unsigned long)(outcome->acknowledgment_we_expected - 1u));
+        return;
+    case HANDSHAKE_REASON_NOT_EXPECTED_IN_THIS_STATE:
+        fputs("  no answer: nothing in this connection's state expects that\n", out);
+        return;
+    case HANDSHAKE_REASON_NO_CONNECTION_HELD:
+        fputs("  no answer: nothing here is expecting a segment from ", out);
+        write_socket(out, &outcome->id.remote);
+        fputc('\n', out);
+        return;
+    case HANDSHAKE_REASON_NO_ROOM:
+        /* ⚠ Ours, and it says so (hidetzu/tcpip-stack#42 Owner Decision 1). */
+        fputs("  no answer: we are already holding a connection, and this build has\n"
+              "    room for one. That is ours, not the sender's\n", out);
+        return;
+    case HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY:
+        fputs("  no answer: we could not hand the reply to the device. That is ours,\n"
+              "    not the sender's\n", out);
+        return;
+    case HANDSHAKE_REASON_NONE:
+        break;
+    }
+    /* ⚠ Reached only if a reason is added without a sentence for it. */
+    fputs("  no answer, and this build has no wording for why\n", out);
+}
+
+void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
+{
+    fprintf(out, "%lu connection%s opened and %lu answered. %lu asked again\n",
+            counts->opened, counts->opened == 1 ? " was" : "s were",
+            counts->answered, counts->asked_again);
+    fprintf(out, "%lu reached open. %lu acknowledged a number we are not waiting for, "
+                 "%lu arrived for no connection we hold, %lu arrived where the "
+                 "connection's state did not expect them\n",
+            counts->established, counts->acknowledgment_we_are_not_waiting_for,
+            counts->no_connection_held, counts->not_expected_in_this_state);
+    fprintf(out, "%lu %s refused for want of room and %lu answer%s never left the "
+                 "device, which are ours and not the sender's\n",
+            counts->room.refused_for_want_of_room,
+            counts->room.refused_for_want_of_room == 1 ? "was" : "were",
+            counts->we_could_not_build_the_reply,
+            counts->we_could_not_build_the_reply == 1 ? "" : "s");
+}
+
 void report_usage(FILE *out, const char *program_name)
 {
     fprintf(out,
@@ -331,6 +440,7 @@ void report_usage(FILE *out, const char *program_name)
             "  --dev NAME      device to create and attach to (default: tap0)\n"
             "  --mac ADDRESS   the hardware address to answer with, as 02:00:00:00:00:02\n"
             "  --ipv4 ADDRESS  the protocol address to answer for, as 10.0.0.2\n"
+            "  --tcp-port N    a TCP port to answer connections on (needs --mac and --ipv4)\n"
             "  --count N       stop after N frames (default: until interrupted)\n"
             "  --timeout MS    give up waiting after MS milliseconds (default: no limit)\n"
             "  --hex           print the bytes of each frame as well as its length\n"
@@ -338,6 +448,8 @@ void report_usage(FILE *out, const char *program_name)
             "\n"
             "Without --mac and --ipv4 it only reads.\n"
             "ARP and ICMP echo are what it answers so far.\n"
+            "With --tcp-port it also answers a connection request on that port, as far\n"
+            "as the connection being open. Nothing is sent or received after that.\n"
             "The device exists only while this program holds it open.\n",
             program_name);
 }

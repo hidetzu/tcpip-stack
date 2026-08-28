@@ -372,6 +372,200 @@ inside_ping_reports_no_loss_against_our_own_stack() {
     printf '    ping said: %s\n' "$(grep "packet loss" "$work/ping.txt")"
 }
 
+# ⚠ The milestone's proof, and ⚠ the verdict is not ours: `connect()` decides,
+# and `ss` reports.
+#
+# ⚠ Why that is strong: the kernel checks the TCP checksum over a pseudo-header
+# and the acknowledgment number before it completes a connection, so ⚠ ESTAB is
+# somebody else's arithmetic agreeing with ours (`.claude/rules/layers.md`,
+# question 3).
+#
+# ⚠ Why it is not enough on its own: ⚠ a stack that never validated a checksum on
+# the way in would complete this handshake too (`CLAUDE.md` §1). ⚠ What stops
+# that is `a_syn_whose_checksum_does_not_agree_is_not_answered` below, and
+# `tests/static.sh` `handshake` (hidetzu/tcpip-stack#44 AC 2). ⚠ Neither replaces
+# the other.
+#
+# ⚠ This case reads no octet of any frame and asks no parser of ours anything
+# (ADR 0009). ⚠ It will still fail when a parser breaks, because it asserts end
+# to end — ⚠ ADR 0012 already recorded that measurement and why it is correct.
+#
+# ⚠ The socket is held open by a live process while `ss` runs. ⚠ A shell's
+# /dev/tcp closes the moment its subshell exits, and there would be nothing to
+# report.
+inside_the_kernel_opens_a_connection_to_us() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+    port=80
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port "$port" \
+        --timeout 6000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    # ⚠ python holds the socket while ss runs, and ⚠ prints only what it was
+    # told by connect() and by ss — ⚠ nothing of ours is consulted.
+    LC_ALL=C python3 -c '
+import socket, subprocess, sys
+s = socket.socket()
+s.settimeout(5)
+try:
+    s.connect(("10.0.0.2", 80))
+except Exception as why:
+    print("connect failed:", why)
+    sys.exit(1)
+print("connect succeeded")
+print(subprocess.run(["ss", "-tn"], capture_output=True, text=True).stdout, end="")
+' >"$work/connect.txt" 2>&1
+    connect_exit=$?
+
+    # ⚠ The other half, in the same run: a port we do not answer for must not
+    # open. ⚠ Without it this case would pass on a machine where something else
+    # was answering.
+    LC_ALL=C python3 -c '
+import socket, sys
+s = socket.socket()
+s.settimeout(2)
+try:
+    s.connect(("10.0.0.2", 81))
+except Exception:
+    sys.exit(1)
+sys.exit(0)
+' >/dev/null 2>&1
+    other_exit=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$connect_exit" -ne 0 ]; then
+        note_failure "connect() to $ours:$port did not succeed"
+        sed 's/^/      /' "$work/connect.txt" >&2
+        printf '    what the stack said:\n' >&2
+        sed 's/^/      /' "$work/out.txt" >&2
+        return
+    fi
+
+    # ⚠ ss's own word, and ⚠ the peer is asserted rather than just the state: a
+    # connection to something else on the machine would show ESTAB too.
+    if ! grep -qE "^ESTAB .* $ours:$port *\$" "$work/connect.txt" &&
+       ! grep -qE "ESTAB .*$ours:$port" "$work/connect.txt"; then
+        note_failure "ss did not report a connection established to $ours:$port"
+        sed 's/^/      /' "$work/connect.txt" >&2
+        return
+    fi
+
+    if [ "$other_exit" -eq 0 ]; then
+        note_failure "a connection opened on port 81, which nothing here answers for"
+        return
+    fi
+
+    # ⚠ Answering is counted, and ⚠ counted only for what the wire took. ⚠ This
+    # is a number our own stack printed, so it says less than ss's word above —
+    # it is here so "we answered" can never be mistaken for "nothing arrived".
+    assert_file_contains "$work/out.txt" "1 connection was opened and 1 answered" \
+        "answering is counted once the wire took it"
+    assert_file_contains "$work/out.txt" "1 reached open." \
+        "reaching ESTABLISHED is counted"
+
+    printf '    ss said: %s\n' "$(grep ESTAB "$work/connect.txt" | head -1)"
+}
+
+# ⚠ The half that stops the case above passing for a stack that never looked at
+# a checksum (hidetzu/tcpip-stack#44 AC 2, and `CLAUDE.md` §1).
+#
+# ⚠ The segment is built here and handed to the kernel on a raw socket, so ⚠ the
+# kernel routes it out tap0 and our stack reads it exactly as it reads anything
+# else. ⚠ Why not write the frame onto the device directly: ⚠ **two processes
+# cannot hold one TAP device**, which `tests/real.sh`
+# `a_second_attach_to_the_same_device_is_refused` asserts.
+#
+# ⚠ Both halves are sent in one run: the same segment with the right checksum and
+# with a wrong one. ⚠ Without the first, this case would pass for a stack that
+# answered nothing at all.
+inside_a_syn_whose_checksum_does_not_agree_is_not_answered() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 4000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    LC_ALL=C python3 -c '
+import socket, struct
+
+source = socket.inet_aton("10.0.0.1")
+destination = socket.inet_aton("10.0.0.2")
+
+def sum_of(octets):
+    total = 0
+    for i in range(0, len(octets) - 1, 2):
+        total += (octets[i] << 8) | octets[i + 1]
+    if len(octets) % 2:
+        total += octets[-1] << 8
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
+
+def a_syn(port, right):
+    segment = struct.pack("!HHIIBBHHH", port, 80, 1000, 0, 5 << 4, 0x02, 64240, 0, 0)
+    pseudo = source + destination + bytes([0, 6, 0, len(segment)])
+    checksum = sum_of(pseudo + segment)
+    if not right:
+        checksum ^= 0xffff
+    return segment[:16] + struct.pack("!H", checksum) + segment[18:]
+
+raw = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
+raw.sendto(a_syn(41234, True), ("10.0.0.2", 0))
+raw.sendto(a_syn(41235, False), ("10.0.0.2", 0))
+' >"$work/sent.txt" 2>&1
+    sent_exit=$?
+
+    # ⚠ Give the reader time to see both before its timer runs out.
+    sleep 1
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$sent_exit" -ne 0 ]; then
+        note_failure "the two segments could not be handed to the kernel"
+        sed 's/^/      /' "$work/sent.txt" >&2
+        return
+    fi
+
+    # ⚠ The wrong one: not answered, and counted apart.
+    assert_file_contains "$work/out.txt" \
+        "no answer: its TCP checksum does not agree with the octets that arrived" \
+        "a segment whose checksum disagrees says so"
+    assert_file_contains "$work/out.txt" \
+        "0 TCP headers were malformed and 1 had a checksum that does not agree" \
+        "a checksum that disagrees is counted apart"
+
+    # ⚠ The right one: answered. ⚠ Without this the case would pass for a stack
+    # that rejected every segment there is.
+    assert_file_contains "$work/out.txt" "1 connection was opened and 1 answered" \
+        "the same segment with the right checksum is answered"
+
+    printf '    the stack said: %s\n' \
+        "$(grep 'checksum does not agree' "$work/out.txt" | head -1 | sed 's/^ *//')"
+}
+
 in_namespace() {
     if ! unshare -Urn "$0" --inside "$1"; then
         current_case_ok=0
@@ -384,6 +578,12 @@ case_an_arp_request_the_kernel_generated_is_read_intact() {
 case_ping_reports_no_loss_against_our_own_stack() {
     in_namespace ping_reports_no_loss_against_our_own_stack
 }
+case_the_kernel_opens_a_connection_to_us() {
+    in_namespace the_kernel_opens_a_connection_to_us
+}
+case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
+    in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
+}
 case_a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length() {
     in_namespace a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length
 }
@@ -391,7 +591,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

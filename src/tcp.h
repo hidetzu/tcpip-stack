@@ -208,4 +208,39 @@ enum tcp_parse tcp_parse_header(const uint8_t *segment, size_t segment_bytes,
                                 const uint8_t *destination_address,
                                 struct tcp_header *header);
 
+/* Why a segment was not built. ⚠ An enum never reaches a human. */
+enum tcp_build {
+    TCP_BUILD_OK = 0,
+
+    /* ⚠ The caller's buffer cannot hold the whole segment. ⚠ Refused, never
+     * truncated: half a segment carries a checksum computed over octets that
+     * are not there. */
+    TCP_BUILD_BUFFER_TOO_SMALL
+};
+
+/* Build a segment with no options and no data, into a caller's buffer.
+ *
+ * ⚠ `fields` supplies the ports, the two sequence numbers, the `Control Bits`
+ * and the `Window`. ⚠ `Data Offset`, `Reserved`, `Urgent Pointer` and `Checksum`
+ * are this function's, ⚠ **not the caller's to get wrong**: the first is five
+ * because there are no options, the next two are zero, and the last is computed.
+ *
+ * ⚠ No options are sent (hidetzu/tcpip-stack#44 Owner Decision 2). ⚠ The Parse
+ * side walks options without reading one, and ⚠ **sending something we cannot
+ * read would be a claim we cannot back.** ⚠ The Linux kernel's own SYN carries
+ * five; ⚠ what its answer to none of them is was measured after this was
+ * written, not assumed before (ADR 0017).
+ *
+ * `source_address` and `destination_address` are the internet header's, ⚠ in the
+ * order they will be on the wire — ⚠ **ours first**, which is the reverse of
+ * what `tcp_parse_header` was handed for the same exchange.
+ *
+ * ⚠ Nothing is written unless the whole segment fits. On OK, *built_bytes is
+ * how much was written. */
+enum tcp_build tcp_build_segment(const struct tcp_header *fields,
+                                 const uint8_t *source_address,
+                                 const uint8_t *destination_address,
+                                 uint8_t *segment, size_t segment_bytes,
+                                 size_t *built_bytes);
+
 #endif /* TCP_H */

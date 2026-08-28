@@ -22,6 +22,8 @@
 #include <stdint.h>
 
 #include "connection.h"
+#include "ethernet.h"
+#include "ipv4.h"
 #include "tcp.h"
 
 /* The initial send sequence number this build chooses.
@@ -95,7 +97,13 @@ enum handshake_reason {
 
     /* ⚠ Ours, not the sender's: every block is in use
      * (hidetzu/tcpip-stack#42 Owner Decision 1). */
-    HANDSHAKE_REASON_NO_ROOM
+    HANDSHAKE_REASON_NO_ROOM,
+
+    /* ⚠ Ours, not the sender's. ⚠ The connection moved and ⚠ the answer could
+     * not be built into the buffer we were given. ⚠ Counted rather than dropped
+     * in silence (`.claude/rules/c.md`), and ⚠ the sentence a human reads says
+     * whose it is (`CLAUDE.md` §4-1). */
+    HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY
 };
 
 struct handshake_counts {
@@ -105,6 +113,13 @@ struct handshake_counts {
     unsigned long acknowledgment_we_are_not_waiting_for;
     unsigned long not_expected_in_this_state;
     unsigned long no_connection_held;
+    unsigned long we_could_not_build_the_reply;
+
+    /* ⚠ Counted only once the wire took the whole answer. ⚠ A reply that was
+     * built is not a reply that left — the same division `arp_respond` and
+     * `echo_respond` use (`CLAUDE.md` §1, in the sending direction). ⚠ The
+     * caller moves this one, not this file. */
+    unsigned long answered;
 
     /* ⚠ The refusal `src/connection.c` already counts, carried here so a caller
      * has one place to look (hidetzu/tcpip-stack#42). */
@@ -127,6 +142,11 @@ struct handshake_outcome {
      * we wait for. ⚠ Meaningful only for that reason. */
     uint32_t acknowledgment_we_had;
     uint32_t acknowledgment_we_expected;
+
+    /* ⚠ How many octets of the caller's reply buffer were written. ⚠ 0 unless a
+     * SYN opened a connection, and ⚠ a caller must not send what was not
+     * built. */
+    size_t reply_bytes;
 };
 
 /* Take one already-read segment through whatever transition it causes.
@@ -144,8 +164,32 @@ struct handshake_outcome {
  *
  * ⚠ `counts` gains exactly one, under the reason decided.
  * ⚠ Nothing is sent here and nothing is printed here. */
+/* `requester_hardware_address` is the arriving frame's ethernet source — ⚠ where
+ * an answer would have to go, taken from that frame and ⚠ never from a table
+ * this stack does not keep.
+ *
+ * `reply` is the caller's buffer for a whole frame, ⚠ ethernet header included.
+ *
+ * ⚠ What goes in the answer, and none of it is guessed:
+ *
+ *     Control Bits     SYN and ACK — RFC 793: "<SEQ=ISS><ACK=RCV.NXT>
+ *                      <CTL=SYN,ACK>"
+ *     Sequence Number  ISS
+ *     Acknowledgment   RCV.NXT
+ *     Window           ⚠ 0, because this stack accepts no data at all and
+ *                      ⚠ anything else would be a claim it cannot back
+ *                      (hidetzu/tcpip-stack#44 Owner Decision 3)
+ *     Options          ⚠ none (Owner Decision 2)
+ *
+ * ⚠ An answer is built only when a SYN opened a connection. ⚠ The three places
+ * RFC 793 §3.9 asks for a reset or an ack produce a counted reason and nothing
+ * on the wire; `docs/SPEC.md` §2 names them. */
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
-                       uint16_t listening_port, struct connections *connections,
+                       uint16_t listening_port,
+                       const uint8_t *requester_hardware_address,
+                       const uint8_t *our_hardware_address,
+                       struct connections *connections,
+                       uint8_t *reply, size_t reply_bytes,
                        struct handshake_counts *counts,
                        struct handshake_outcome *outcome);
 
