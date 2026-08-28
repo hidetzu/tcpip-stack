@@ -55,9 +55,19 @@ promise nothing ever intended to keep.**
 ⚠ **Taking delivery is half of keeping the promise. Telling the sender is the other half.**
 ⚠ **Sending is not this layer's**, and hidetzu/tcpip-stack#66 owns it.
 
-⚠ **So `RCV.NXT` advances and the sender is never told.** ⚠ **Measured 2026-08-29**: the peer
-retransmits the same segment, and each arrival hands over the next octet — one octet of a five-octet
-segment at a time, five arrivals to consume it, and the sixth is entirely behind us.
+⚠ **So `RCV.NXT` advances and the sender is never told.**
+
+⚠ **Corrected 2026-08-29, the same day.** ⚠ This paragraph first said the peer retransmits and
+"each arrival hands over the next octet — one octet of a five-octet segment at a time, five arrivals
+to consume it". ⚠ **That was reasoned, not measured.** ⚠ It was carried over from the background
+measurement in hidetzu/tcpip-stack#64, ⚠ **which was taken with a window of 1024**, and
+⚠ **a number from another scope is a lie about this one** (`CLAUDE.md` §6, §9).
+
+⚠ **What actually happens, measured with the window at 1**: the peer honours it and sends
+⚠ **one octet, at the same sequence number, over and over** — 7 copies of the same octet in
+8 seconds, with its `Send-Q` stuck at 5. ⚠ **So exactly one octet is ever taken per connection**,
+and every later copy is entirely behind `RCV.NXT` and refused. ⚠ `tests/foreign.sh`
+`a_window_of_one_gets_one_octet_and_the_same_one_again` is the wall.
 
 ⚠ **This was said before the decision was taken, not discovered afterwards**
 (hidetzu/tcpip-stack#64, in the comment recording the two answers). ⚠ **`docs/SPEC.md` §2 carries it

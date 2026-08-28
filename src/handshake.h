@@ -274,9 +274,16 @@ struct handshake_counts {
 
     /* ⚠ **Octets, not segments** — the denominator is stated because the
      * counters around it are all segments (`CLAUDE.md` §6). ⚠ It is what we
-     * took delivery of and discarded, so ⚠ **one 5-octet segment taken one
-     * octet at a time over five arrivals moves this by 5, not by 1 and not by
-     * 25**: `RCV.NXT` advanced each time, so no octet is counted twice. */
+     * took delivery of and discarded, and ⚠ **`RCV.NXT` advanced each time, so
+     * no octet is counted twice.**
+     *
+     * ⚠ **Against a peer that honours the window, this reaches 1 and stops.**
+     * ⚠ Measured 2026-08-29: with the window at 1 the Linux kernel sends one
+     * octet at the same sequence number over and over — 7 copies in 8 seconds —
+     * ⚠ **so every arrival after the first is behind `RCV.NXT` and is refused.**
+     * ⚠ It climbs only for a peer that sends past what we asked for
+     * (`CLAUDE.md` §9: this comment once claimed the opposite, reasoned from a
+     * measurement taken with a window of 1024). */
     unsigned long octets_taken_and_discarded;
 
     /* ⚠ **Segments** — a segment none of whose octets the window covered. */

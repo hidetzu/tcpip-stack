@@ -748,8 +748,18 @@ static bool case_a_segment_longer_than_the_window_is_taken_a_window_at_a_time(vo
     struct tcp_header five =
         carrying(a_segment(TCP_CONTROL_ACK, began_at, held->iss + 1u), 5);
 
-    /* ⚠ The same segment arriving five times, which is what an unacknowledged
-     * sender actually does — measured, `src/handshake.h`. */
+    /* ⚠ The same segment arriving five times.
+     *
+     * ⚠ **This is not what a peer that honours our window does** — that one
+     * sends a single octet and repeats it, measured 2026-08-29
+     * (`tests/foreign.sh` `a_window_of_one_gets_one_octet_and_the_same_one_again`).
+     * ⚠ **This comment used to claim it was**, and that claim was reasoned from
+     * a measurement taken with a window of 1024 (`CLAUDE.md` §9).
+     *
+     * ⚠ The case stays, and it is not weaker for it: ⚠ **it tests the contract,
+     * not one peer's habits** (`.claude/rules/testing.md`). ⚠ A peer that sends
+     * past what we asked for is exactly the hostile input the trimming exists
+     * for. */
     for (unsigned arrival = 1; arrival <= 5; arrival++) {
         struct handshake_outcome outcome = receive(&world, &five);
         if (outcome.octets_taken != HANDSHAKE_WINDOW) {
