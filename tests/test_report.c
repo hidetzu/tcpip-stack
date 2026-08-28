@@ -672,6 +672,11 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
         { HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY,
           "  no answer: we could not hand the reply to the device. That is ours,\n"
           "    not the sender's\n" },
+        /* ⚠ Which of the two it was is not claimed, because ⚠ **this build does
+         * not tell them apart** (hidetzu/tcpip-stack#64). */
+        { HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW,
+          "  no answer: none of that data is inside the window we promised. Either\n"
+          "    we have taken it already, or it begins past what we asked for\n" },
     };
     for (size_t i = 0; i < sizeof stayed / sizeof stayed[0]; i++) {
         memset(&outcome, 0, sizeof outcome);
@@ -687,10 +692,53 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
         ok = matches(what, &produced, stayed[i].line) && ok;
         produced_close(&produced);
     }
+
+    /* ⚠ The one reason whose sentence carries a number, so it needs the field
+     * set. ⚠ One and two, because ⚠ **the singular is where the wording of a
+     * count usually breaks** and a table of one value never shows it. */
+    static const struct { uint16_t octets; const char *line; } taken[] = {
+        { 1, "  1 octet of data arrived; we took it and had nobody to give\n"
+             "    it to. The sender has not been told we have it yet\n" },
+        { 2, "  2 octets of data arrived; we took them and had nobody to give\n"
+             "    them to. The sender has not been told we have them yet\n" },
+    };
+    for (size_t i = 0; i < sizeof taken / sizeof taken[0]; i++) {
+        memset(&outcome, 0, sizeof outcome);
+        outcome.decision = HANDSHAKE_STAYED;
+        outcome.reason = HANDSHAKE_REASON_THE_DATA_WAS_TAKEN_AND_DISCARDED;
+        outcome.id = id;
+        outcome.octets_taken = taken[i].octets;
+        produced_open(&produced);
+        report_handshake_outcome(produced.out, &outcome);
+        char what[48];
+        snprintf(what, sizeof what, "%u octets taken", (unsigned)taken[i].octets);
+        ok = matches(what, &produced, taken[i].line) && ok;
+        produced_close(&produced);
+    }
+
+    /* ⚠ Data can ride the acknowledgment that opens the connection, and then
+     * ⚠ **both lines are printed** — the transition and what became of the
+     * octets. ⚠ A payload nobody mentioned reads exactly like one that never
+     * arrived (`CLAUDE.md` §1). */
+    memset(&outcome, 0, sizeof outcome);
+    outcome.decision = HANDSHAKE_MOVED;
+    outcome.state = CONNECTION_ESTABLISHED;
+    outcome.id = id;
+    outcome.octets_taken = 1;
+    produced_open(&produced);
+    report_handshake_outcome(produced.out, &outcome);
+    ok = matches("established, carrying an octet", &produced,
+        "  10.0.0.1:50568 confirmed it; the connection is open (ESTABLISHED)\n"
+        "  1 octet of data arrived; we took it and had nobody to give\n"
+        "    it to. The sender has not been told we have it yet\n") && ok;
+    produced_close(&produced);
     return ok;
 }
 
-/* ⚠ Seven numbers, each on its own, and ⚠ printed even when every one is zero. */
+/* ⚠ Every number on its own, and ⚠ printed even when every one is zero.
+ *
+ * ⚠ One of them is in octets and the rest are in segments, and ⚠ **the line
+ * says which** (`CLAUDE.md` §6). */
 static bool case_the_handshake_summary_counts_every_reason_apart(void)
 {
     struct produced produced;
@@ -706,6 +754,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "expect them\n"
         "0 answers went out again because nobody had confirmed them\n"
         "0 connections were given up on after nobody confirmed them\n"
+        "0 octets of data were taken and discarded, and 0 segments carried data "
+        "none of which was inside the window we promised\n"
         "0 were refused for want of room and 0 answers never left the device, which "
         "are ours and not the sender's\n");
     produced_close(&produced);
@@ -723,6 +773,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.answered_again = 1;
     one.answered = 1;
     one.room.refused_for_want_of_room = 1;
+    one.octets_taken_and_discarded = 1;
+    one.data_outside_the_window = 1;
 
     produced_open(&produced);
     report_handshake_summary(produced.out, &one);
@@ -733,6 +785,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "expect them\n"
         "1 answer went out again because nobody had confirmed it\n"
         "1 connection was given up on after nobody confirmed it\n"
+        "1 octet of data was taken and discarded, and 1 segment carried data none "
+        "of which was inside the window we promised\n"
         "1 was refused for want of room and 1 answer never left the device, which "
         "are ours and not the sender's\n") && ok;
     produced_close(&produced);

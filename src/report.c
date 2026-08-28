@@ -354,6 +354,21 @@ static void write_socket(FILE *out, const struct socket *socket)
     fprintf(out, ":%u", socket->port);
 }
 
+/* ⚠ What we did with the octets, in one place, because two lines print it.
+ *
+ * ⚠ It says what happened first and what is missing after, with what closes it
+ * (`CLAUDE.md` §4-1). ⚠ Nothing here is the sender's fault: ⚠ **they sent what
+ * our own window invited**, and ⚠ **not having told them is ours.** */
+static void write_the_data_we_took(FILE *out, uint16_t octets_taken)
+{
+    fprintf(out, "  %u octet%s of data arrived; we took %s and had nobody to give\n"
+                 "    %s to. The sender has not been told we have %s yet\n",
+            (unsigned)octets_taken, octets_taken == 1 ? "" : "s",
+            octets_taken == 1 ? "it" : "them",
+            octets_taken == 1 ? "it" : "them",
+            octets_taken == 1 ? "it" : "them");
+}
+
 void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome)
 {
     if (outcome->decision == HANDSHAKE_MOVED) {
@@ -368,6 +383,12 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
             fputs("  ", out);
             write_socket(out, &outcome->id.remote);
             fputs(" confirmed it; the connection is open (ESTABLISHED)\n", out);
+            /* ⚠ The acknowledgment that opened it may have carried data. ⚠ Its
+             * own line rather than nothing: ⚠ **a payload nobody mentioned
+             * reads exactly like one that never arrived** (`CLAUDE.md` §1). */
+            if (outcome->octets_taken != 0) {
+                write_the_data_we_took(out, outcome->octets_taken);
+            }
             return;
         case CONNECTION_LISTEN:
             break;
@@ -387,6 +408,18 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
         fprintf(out, "  no answer: it acknowledged %lu, and we are waiting for %lu + 1\n",
                 (unsigned long)outcome->acknowledgment_we_had,
                 (unsigned long)(outcome->acknowledgment_we_expected - 1u));
+        return;
+    case HANDSHAKE_REASON_THE_DATA_WAS_TAKEN_AND_DISCARDED:
+        write_the_data_we_took(out, outcome->octets_taken);
+        return;
+    case HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW:
+        /* ⚠ Which of the two it was is not claimed, because ⚠ **this build does
+         * not tell them apart** — it asks one question, whether any octet is in
+         * the window (`src/handshake.c`). ⚠ Saying "either, or" is not a guess
+         * dressed as a measurement; ⚠ naming one of them would be
+         * (`CLAUDE.md` §1). */
+        fputs("  no answer: none of that data is inside the window we promised. Either\n"
+              "    we have taken it already, or it begins past what we asked for\n", out);
         return;
     case HANDSHAKE_REASON_NOT_EXPECTED_IN_THIS_STATE:
         fputs("  no answer: nothing in this connection's state expects that\n", out);
@@ -442,6 +475,16 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
     fprintf(out, "%lu %s given up on after nobody confirmed %s\n",
             counts->given_up_on, counts->given_up_on == 1 ? "connection was" : "connections were",
             counts->given_up_on == 1 ? "it" : "them");
+    /* ⚠ The first number here is octets and the second is segments. ⚠ Both say
+     * which, on the line, because ⚠ **a number beside a number of a different
+     * kind is read as the same kind** (`CLAUDE.md` §6). */
+    fprintf(out, "%lu octet%s of data %s taken and discarded, and %lu segment%s "
+                 "carried data none of which was inside the window we promised\n",
+            counts->octets_taken_and_discarded,
+            counts->octets_taken_and_discarded == 1 ? "" : "s",
+            counts->octets_taken_and_discarded == 1 ? "was" : "were",
+            counts->data_outside_the_window,
+            counts->data_outside_the_window == 1 ? "" : "s");
     fprintf(out, "%lu %s refused for want of room and %lu answer%s never left the "
                  "device, which are ours and not the sender's\n",
             counts->room.refused_for_want_of_room,
@@ -521,7 +564,8 @@ void report_usage(FILE *out, const char *program_name)
             "Without --mac and --ipv4 it only reads.\n"
             "ARP and ICMP echo are what it answers so far.\n"
             "With --tcp-port it also answers a connection request on that port, as far\n"
-            "as the connection being open. Nothing is sent or received after that.\n"
+            "as the connection being open. Data that arrives on it is taken and\n"
+            "discarded, and the sender is not told so. Nothing else is sent after that.\n"
             "The device exists only while this program holds it open.\n",
             program_name);
 }

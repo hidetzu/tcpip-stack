@@ -7,8 +7,9 @@ namespace, and reports the ethernet frames the kernel puts on it — length per 
 bytes on request. ⚠ **Given `--mac` and `--ipv4` it also answers the ARP requests and the ICMP echo
 requests that ask for that address**, and ⚠ **`ping` reports 0% packet loss against it.** ⚠ **Add
 `--tcp-port` and the Linux kernel's own `connect()` succeeds against it: `ss` reports the connection
-established.** ⚠ **Nothing is sent or received after that** — [`docs/SPEC.md`](docs/SPEC.md) §2 says
-what happens instead. Without those options it only reads.
+established.** ⚠ **Data that arrives on it is taken and discarded**, an octet at a time, and
+⚠ **the sender is not told so yet** — [`docs/SPEC.md`](docs/SPEC.md) §2 says what is missing and
+what closes it. ⚠ Nothing else is sent. Without those options it only reads.
 
 ⚠ **The namespace is not `tcpip-stack`'s doing.** It uses whichever network namespace it is
 started in. The checks put a fresh one there with `unshare -Urn`
@@ -163,9 +164,13 @@ the acknowledgment number before it completes one, so ⚠ **that verdict is not 
 would complete this handshake too. ⚠ A SYN whose TCP checksum does not agree is not answered and is
 counted, ⚠ **and the same segment with the right checksum, in the same run, is answered.**
 
-⚠ **What is not in it:** anything after the connection is open. ⚠ Nothing is sent and nothing is
-received; three places RFC 793 §3.9 asks for a reset or an ack produce a counted reason and no
-segment. ⚠ **The initial sequence number is fixed, which is a known weakness outside a private
+⚠ **What is in it after that, and what is not.** ⚠ The answer advertises a window of one octet,
+and ⚠ **that window is what makes closing possible at all**: measured 2026-08-29, with a window of 0
+the kernel's own `close()` produces no `FIN` and ⚠ **with it at 1 the `FIN` arrives.** ⚠ An octet the
+window covers is taken and discarded, and ⚠ **nothing tells the sender we have it** — so it
+retransmits. ⚠ **The promise is kept in taking and not yet in telling.** ⚠ Nothing else is sent:
+three places RFC 793 §3.9 asks for a reset or an ack produce a counted reason and no segment, and
+⚠ **the `FIN` itself is counted as arriving where the state did not expect it.** ⚠ **The initial sequence number is fixed, which is a known weakness outside a private
 namespace** — [`docs/SPEC.md`](docs/SPEC.md) §2 says so plainly.
 
 ### Our own code answers a ping

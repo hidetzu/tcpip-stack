@@ -1,7 +1,7 @@
 # 0017 — What goes in the answer, and what the kernel does after it
 
 Date: 2026-08-28
-Status: accepted
+Status: accepted; ⚠ **Owner Decision 3 and the inference below it are superseded by ADR 0021**
 Issue: hidetzu/tcpip-stack#44
 
 ## Context
@@ -50,6 +50,12 @@ else would be a claim it cannot back (`CLAUDE.md` §1).
 
 ⚠ **Measured after building it, not assumed before:** the handshake completes.
 
+⚠ **Superseded by ADR 0021 on 2026-08-29.** ⚠ **0 was the truth on the day this
+was written, and it stayed the truth until something backed a larger number.**
+⚠ The window is 1 now, and ⚠ **what changed first is what backs it**: an octet
+the window covers is taken delivery of and discarded. ⚠ **The rule did not
+change** — the number still says only what this stack will actually do.
+
 ### ⚠ Owner Decision 4 — counted once the wire took it
 
 ⚠ **A reply that was built is not a reply that left**, the same division
@@ -76,6 +82,13 @@ already sent.** ⚠ **No `FIN` and no `RST` arrived** in the window observed.
 by the window of 0, and ⚠ nothing here answers them, so the peer never learns the
 window opened and ⚠ **the connection is never closed.** ⚠ **Not measured, and not
 claimed as measured.**
+
+⚠ **Measured on 2026-08-29, and the inference above was right** (ADR 0021):
+⚠ **opening the window to 1 turns those bare `ACK`s into a `FIN`.** ⚠ The
+observation above stands unchanged; ⚠ **what stops being an inference is why.**
+⚠ **It is recorded here as well as in ADR 0021 because a reader who reaches this
+paragraph must not leave it believing the question is still open**
+(`CLAUDE.md` §5).
 
 ⚠ **Each of them is counted** as arriving where the connection's state did not
 expect it. ⚠ `docs/SPEC.md` §2 records that nothing after `ESTABLISHED` is
