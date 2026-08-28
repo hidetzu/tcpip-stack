@@ -205,12 +205,13 @@ the acknowledgment number before it completes one, so ⚠ **that verdict is not 
 would complete this handshake too. ⚠ A SYN whose TCP checksum does not agree is not answered and is
 counted, ⚠ **and the same segment with the right checksum, in the same run, is answered.**
 
-⚠ **What is in it after that, and what is not.** ⚠ The answer advertises a window of one octet,
-and ⚠ **that window is what makes closing possible at all**: measured 2026-08-29, with a window of 0
-the kernel's own `close()` produces no `FIN` and ⚠ **with it at 1 the `FIN` arrives.** ⚠ An octet the
+⚠ **What is in it after that, and what is not.** ⚠ The answer advertises a window of 1460 octets —
+⚠ **what one frame carries at the MTU the checks use** — and ⚠ **the number has moved twice, each
+time after what backs it moved.** ⚠ With a window of 0 the kernel's own `close()` produces no `FIN`
+at all; ⚠ **at 1 the `FIN` arrives**; ⚠ at 1460 a peer sends a whole segment at once. ⚠ Data the
 window covers is ⚠ **acknowledged and then discarded** — there is nobody to give it to — and
-⚠ **the peer's `Send-Q` reaches 0**, measured 2026-08-29. ⚠ Until hidetzu/tcpip-stack#74 nothing
-told the sender, and it resent the same octet seven times.
+⚠ **the peer's `Send-Q` reaches 0**, measured 2026-08-29. ⚠ Before that it resent the same octet
+seven times and its queue never emptied.
 
 ⚠ **The `FIN` is read**, with `RCV.NXT` advanced over it by exactly one, after any data it rides
 with. ⚠ **`TIME-WAIT` is not ours**: the document puts it on the side that closed first, and this

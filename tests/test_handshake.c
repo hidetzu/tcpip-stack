@@ -952,7 +952,15 @@ static bool case_data_outside_the_window_is_refused_and_nothing_moves(void)
  * window, that data is trimmed."
  *
  * ⚠ This is what stops the window being a number that means nothing:
- * ⚠ **five octets against a promise of one must move RCV.NXT by one.** */
+ * ⚠ **a segment carrying more than we asked for must move RCV.NXT by exactly
+ * what we asked for.**
+ *
+ * ⚠ **A peer that honours our window does not send such a segment** — measured
+ * 2026-08-29, it sends what the window allows and waits (`tests/foreign.sh`
+ * `the_peers_send_queue_drains_once_we_acknowledge`). ⚠ The case stays, and it
+ * is not weaker for it: ⚠ **it tests the contract, not one peer's habits**
+ * (`.claude/rules/testing.md`), and ⚠ **a peer that sends past what we asked
+ * for is exactly the hostile input the trimming exists for.** */
 static bool case_a_segment_longer_than_the_window_is_taken_a_window_at_a_time(void)
 {
     struct world world;
@@ -964,26 +972,19 @@ static bool case_a_segment_longer_than_the_window_is_taken_a_window_at_a_time(vo
     uint32_t began_at = held->rcv_nxt;
 
     bool ok = true;
-    struct tcp_header five =
-        carrying(a_segment(TCP_CONTROL_ACK, began_at, held->iss + 1u), 5);
+    /* ⚠ Two windows' worth and a bit, ⚠ **written from the constant** so this
+     * follows the number rather than pinning a value of its own. */
+    size_t too_much = (size_t)HANDSHAKE_WINDOW * 2u + 7u;
+    struct tcp_header oversized =
+        carrying(a_segment(TCP_CONTROL_ACK, began_at, held->iss + 1u), too_much);
 
-    /* ⚠ The same segment arriving five times.
-     *
-     * ⚠ **This is not what a peer that honours our window does** — that one
-     * sends a single octet and waits, measured 2026-08-29 (`tests/foreign.sh`
-     * `the_peers_send_queue_drains_once_we_acknowledge`). ⚠ **This comment used
-     * to claim it was**, and that claim was reasoned from a measurement taken
-     * with a window of 1024 (`CLAUDE.md` §9).
-     *
-     * ⚠ The case stays, and it is not weaker for it: ⚠ **it tests the contract,
-     * not one peer's habits** (`.claude/rules/testing.md`). ⚠ A peer that sends
-     * past what we asked for is exactly the hostile input the trimming exists
-     * for. */
-    for (unsigned arrival = 1; arrival <= 5; arrival++) {
-        struct handshake_outcome outcome = receive(&world, &five);
+    /* ⚠ The same segment arriving three times: ⚠ **a window's worth each time**
+     * until what is left is smaller than the window. */
+    for (unsigned arrival = 1; arrival <= 2; arrival++) {
+        struct handshake_outcome outcome = receive(&world, &oversized);
         if (outcome.octets_taken != HANDSHAKE_WINDOW) {
-            fprintf(stderr, "  arrival %u of five octets took %u, not %u\n",
-                    arrival, (unsigned)outcome.octets_taken,
+            fprintf(stderr, "  arrival %u of %zu octets took %u, not %u\n",
+                    arrival, too_much, (unsigned)outcome.octets_taken,
                     (unsigned)HANDSHAKE_WINDOW);
             ok = false;
         }
@@ -993,18 +994,26 @@ static bool case_a_segment_longer_than_the_window_is_taken_a_window_at_a_time(vo
             ok = false;
         }
     }
-    /* ⚠ Five octets, taken once each. ⚠ Not 1, and ⚠ not 25. */
-    if (world.counts.octets_taken_and_discarded != 5) {
-        fprintf(stderr, "  %lu octets were counted for five octets sent five times\n",
-                world.counts.octets_taken_and_discarded);
+    /* ⚠ The tail: fewer octets left than the window, ⚠ **so all of them go** —
+     * a build that always took exactly the window would take too many. */
+    struct handshake_outcome tail = receive(&world, &oversized);
+    if (tail.octets_taken != 7 || held->rcv_nxt != began_at + too_much) {
+        fprintf(stderr, "  the tail took %u octets and RCV.NXT moved by %lu of %zu\n",
+                (unsigned)tail.octets_taken, (unsigned long)(held->rcv_nxt - began_at),
+                too_much);
         ok = false;
     }
-    /* ⚠ A sixth arrival is entirely behind us now. */
-    struct handshake_outcome sixth = receive(&world, &five);
-    if (sixth.reason != HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW ||
-        world.counts.octets_taken_and_discarded != 5) {
-        fprintf(stderr, "  a sixth arrival took more: reason %d, %lu counted\n",
-                (int)sixth.reason, world.counts.octets_taken_and_discarded);
+    if (world.counts.octets_taken_and_discarded != too_much) {
+        fprintf(stderr, "  %lu octets were counted for %zu sent three times\n",
+                world.counts.octets_taken_and_discarded, too_much);
+        ok = false;
+    }
+    /* ⚠ A fourth arrival is entirely behind us now. */
+    struct handshake_outcome again = receive(&world, &oversized);
+    if (again.reason != HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW ||
+        world.counts.octets_taken_and_discarded != too_much) {
+        fprintf(stderr, "  a fourth arrival took more: reason %d, %lu counted\n",
+                (int)again.reason, world.counts.octets_taken_and_discarded);
         ok = false;
     }
     return ok;
@@ -1180,7 +1189,10 @@ static bool case_a_fin_sits_after_the_data_it_rides_with(void)
 
     /* ⚠ The other half: a FIN riding MORE octets than the window covers is not
      * read, because ⚠ **it sits past what we asked for** — and reading it would
-     * acknowledge data we never took. */
+     * acknowledge data we never took.
+     *
+     * ⚠ Written from the constant, ⚠ **so this follows the window rather than
+     * pinning a length of its own.** */
     struct world second;
     a_world(&second);
     struct transmission_control_block *other = NULL;
@@ -1188,19 +1200,21 @@ static bool case_a_fin_sits_after_the_data_it_rides_with(void)
         return false;
     }
     uint32_t from = other->rcv_nxt;
+    size_t past_it = (size_t)HANDSHAKE_WINDOW + 2u;
     struct tcp_header fin_with_more =
-        carrying(a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, from, other->iss + 1u), 3);
+        carrying(a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, from, other->iss + 1u),
+                 past_it);
     struct handshake_outcome refused = receive(&second, &fin_with_more);
     if (refused.reason != HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW ||
         refused.the_fin_was_read || other->state != CONNECTION_ESTABLISHED) {
-        fprintf(stderr, "  a FIN riding three octets came back as reason %d, state %d\n",
-                (int)refused.reason, (int)other->state);
+        fprintf(stderr, "  a FIN riding %zu octets came back as reason %d, state %d\n",
+                past_it, (int)refused.reason, (int)other->state);
         ok = false;
     }
-    /* ⚠ The one octet the window did cover was still taken. */
-    if (other->rcv_nxt != from + 1u) {
-        fprintf(stderr, "  RCV.NXT moved by %lu when only one octet fit\n",
-                (unsigned long)(other->rcv_nxt - from));
+    /* ⚠ The octets the window did cover were still taken. */
+    if (other->rcv_nxt != from + HANDSHAKE_WINDOW) {
+        fprintf(stderr, "  RCV.NXT moved by %lu when %u octets fit\n",
+                (unsigned long)(other->rcv_nxt - from), (unsigned)HANDSHAKE_WINDOW);
         ok = false;
     }
     return ok;
@@ -1411,9 +1425,8 @@ static bool case_a_fin_is_read_where_the_sequence_space_wraps(void)
         ok = false;
     }
 
-    /* ⚠ The other half, and it is what a plain comparison gets wrong: ⚠ **the
-     * FIN we already read, at 0xffffffff, is behind us across the wrap** and
-     * must not be read again. */
+    /* ⚠ The other half: ⚠ **the FIN we already read, at 0xffffffff, is behind us
+     * across the wrap** and must not be read again. */
     struct tcp_header behind = a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK,
                                          0xffffffffu, held->iss + 1u);
     struct handshake_outcome refused = receive(&world, &behind);
@@ -1424,17 +1437,18 @@ static bool case_a_fin_is_read_where_the_sequence_space_wraps(void)
         ok = false;
     }
 
-    /* ⚠ The half that a plain comparison actually gets wrong, and ⚠ **neither
-     * half above does.**
+    /* ⚠ `RCV.NXT` sitting at 0xffffffff, with the FIN exactly on it.
      *
-     * ⚠ With `RCV.NXT` at 0xffffffff the far edge of the window is 0 — ⚠ **it
-     * has wrapped past the near edge.** ⚠ A FIN sitting exactly at `RCV.NXT` is
-     * inside the window and must be read; ⚠ **written as `far <= where`, the
-     * far edge being 0 refuses it.**
+     * ⚠ This half was written for a window comparison that ⚠ **no longer
+     * exists**: until hidetzu/tcpip-stack#75 the FIN was accepted anywhere
+     * inside the window, and ⚠ **with `RCV.NXT` at 0xffffffff the window's far
+     * edge wraps to 0**, which a plain `far <= where` got wrong.
      *
-     * ⚠ Measured: this is the only case here that separates the two.
-     * ⚠ Rewriting both comparisons as `>` and `<=` left the rest of this file
-     * passing. */
+     * ⚠ **The test is equality now** — a FIN is read only where everything
+     * before it was taken — and ⚠ **equality has no wrap to get wrong.**
+     * ⚠ The case stays because ⚠ **it is still the only one that puts `RCV.NXT`
+     * at the last number in the space**, and a build that added arithmetic back
+     * would show here first. */
     struct world at_the_edge;
     a_world(&at_the_edge);
     struct transmission_control_block *edge = NULL;
@@ -1582,6 +1596,134 @@ static bool case_our_close_is_the_segment_the_document_describes(void)
         memcmp(world.reply + ETHERNET_ADDRESS_BYTES, OUR_MAC, ETHERNET_ADDRESS_BYTES) != 0) {
         fputs("  our close's ethernet header is not ours to theirs\n", stderr);
         ok = false;
+    }
+    return ok;
+}
+
+/* Reads the window out of whatever segment we last built. */
+static bool the_window_of_what_we_built(const struct world *world, size_t reply_bytes,
+                                        uint16_t *window)
+{
+    const unsigned char *datagram = world->reply + ETHERNET_HEADER_BYTES;
+    struct ipv4_header internet;
+    if (ipv4_parse_header(datagram, reply_bytes - ETHERNET_HEADER_BYTES,
+                          &internet) != IPV4_PARSE_OK) {
+        return false;
+    }
+    struct connection_id id = the_connection();
+    struct tcp_header ours;
+    if (tcp_parse_header(datagram + IPV4_FIXED_HEADER_BYTES,
+                         (size_t)internet.total_length - IPV4_FIXED_HEADER_BYTES,
+                         id.local.address, id.remote.address, &ours) != TCP_PARSE_OK) {
+        return false;
+    }
+    *window = ours.window;
+    return true;
+}
+
+/* ⚠ hidetzu/tcpip-stack#75 AC 1: ⚠ **the same number in every segment we
+ * build**, read out of each of the three rather than checked one at a time.
+ *
+ * ⚠ The three cases that assert each segment's fields already compare its window
+ * with the constant. ⚠ **That would still pass if a second constant appeared**
+ * and one shape used it — ⚠ this compares the segments with each other. */
+static bool case_every_segment_we_build_carries_the_same_window(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+
+    bool ok = true;
+    uint16_t in_the_answer = 0, in_the_acknowledgment = 0, in_our_close = 0;
+
+    struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+    struct handshake_outcome opened = receive(&world, &syn);
+    struct connection_id id = the_connection();
+    held = connections_find(&world.connections, &id);
+    if (held == NULL || opened.reply_bytes == 0 ||
+        !the_window_of_what_we_built(&world, opened.reply_bytes, &in_the_answer)) {
+        fputs("  the answer was not built or did not read back\n", stderr);
+        return false;
+    }
+
+    struct tcp_header confirm =
+        a_segment(TCP_CONTROL_ACK, THEIR_ISN + 1u, held->iss + 1u);
+    if (receive(&world, &confirm).state != CONNECTION_ESTABLISHED) {
+        fputs("  the connection did not reach ESTABLISHED\n", stderr);
+        return false;
+    }
+
+    struct tcp_header data =
+        carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u), 1);
+    struct handshake_outcome took = receive(&world, &data);
+    if (took.reply_bytes == 0 ||
+        !the_window_of_what_we_built(&world, took.reply_bytes, &in_the_acknowledgment)) {
+        fputs("  the acknowledgment was not built or did not read back\n", stderr);
+        return false;
+    }
+
+    struct tcp_header fin =
+        a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u);
+    struct handshake_outcome closed = receive(&world, &fin);
+    if (closed.reply_bytes == 0 ||
+        !the_window_of_what_we_built(&world, closed.reply_bytes, &in_our_close)) {
+        fputs("  our close was not built or did not read back\n", stderr);
+        return false;
+    }
+
+    if (in_the_answer != in_the_acknowledgment || in_the_answer != in_our_close) {
+        fprintf(stderr, "  the answer says %u, the acknowledgment %u and our close %u\n",
+                in_the_answer, in_the_acknowledgment, in_our_close);
+        ok = false;
+    }
+    /* ⚠ And the other half: ⚠ **it is the number we chose**, not merely the
+     * same wrong number three times. */
+    if (in_the_answer != HANDSHAKE_WINDOW) {
+        fprintf(stderr, "  all three say %u and the window is %u\n", in_the_answer,
+                (unsigned)HANDSHAKE_WINDOW);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ hidetzu/tcpip-stack#75 AC 2, the side the trimming case does not cover:
+ * ⚠ **a segment carrying the window exactly, or less, is taken whole.**
+ *
+ * ⚠ Without this, a build that always took one octet would pass every check
+ * that only feeds oversized segments. */
+static bool case_a_segment_the_window_covers_is_taken_whole(void)
+{
+    bool ok = true;
+    static const size_t sizes[] = { 1, 2, 100, (size_t)HANDSHAKE_WINDOW - 1u,
+                                    (size_t)HANDSHAKE_WINDOW };
+
+    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        uint32_t was = held->rcv_nxt;
+        struct tcp_header data =
+            carrying(a_segment(TCP_CONTROL_ACK, was, held->iss + 1u), sizes[i]);
+        struct handshake_outcome outcome = receive(&world, &data);
+
+        if (outcome.octets_taken != sizes[i] ||
+            world.counts.octets_taken_and_discarded != sizes[i] ||
+            held->rcv_nxt != was + (uint32_t)sizes[i]) {
+            fprintf(stderr, "  %zu octets arrived, %u were taken and RCV.NXT moved %lu\n",
+                    sizes[i], (unsigned)outcome.octets_taken,
+                    (unsigned long)(held->rcv_nxt - was));
+            ok = false;
+        }
+        /* ⚠ And one acknowledgment for the segment, ⚠ **not one per octet** —
+         * the two numbers are in different units. */
+        if (outcome.reply != HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED) {
+            fprintf(stderr, "  %zu octets drew a reply of kind %d\n", sizes[i],
+                    (int)outcome.reply);
+            ok = false;
+        }
     }
     return ok;
 }
@@ -2518,6 +2660,10 @@ static const struct test_case cases[] = {
       case_a_fin_is_read_where_the_sequence_space_wraps },
     { "our_close_is_the_segment_the_document_describes",
       case_our_close_is_the_segment_the_document_describes },
+    { "every_segment_we_build_carries_the_same_window",
+      case_every_segment_we_build_carries_the_same_window },
+    { "a_segment_the_window_covers_is_taken_whole",
+      case_a_segment_the_window_covers_is_taken_whole },
     { "nothing_is_sent_for_a_connection_that_has_not_seen_a_fin",
       case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin },
     { "what_goes_out_again_for_a_closing_connection_is_our_close",

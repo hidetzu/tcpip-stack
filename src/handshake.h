@@ -86,23 +86,48 @@
  * one indicated in the acknowledgment field which the sender of this segment is
  * willing to accept."
  *
- * ⚠ 1, and 1 is a measurement rather than a taste. Same conditions as
- * `docs/SPEC.md` §3, 2026-08-29 — a `connect()`, a wait, a `close()`, watched on
- * the wire:
+ * ⚠ **1460 is what one frame can carry at the MTU the checks use**: 1500 less
+ * a twenty-octet internet header and a twenty-octet TCP header. ⚠ **The claim
+ * the number makes is "a whole segment's worth"** (hidetzu/tcpip-stack#75 Owner
+ * Decision 1).
  *
- *     window 0   SYN ACK ACK ACK ACK ACK            ⚠ no FIN, ever
- *     window 1   SYN ACK ACK|FIN ACK|FIN ...        ⚠ the FIN arrives
- *     window 2   SYN ACK ACK|FIN ACK|FIN ...        the same
+ * ⚠ **The MTU is not ours.** ⚠ It is whatever the device was brought up with,
+ * and `src/tap.h` records that the checks use the default of 1500. ⚠ **If that
+ * changed, this number would be a claim about a frame size that no longer
+ * exists** — ⚠ nothing here reads the device's MTU, and `docs/SPEC.md` §2 names
+ * that rather than leaving it silent.
  *
- * ⚠ **A window of 0 makes closing impossible**, and ⚠ **1 is the smallest that
- * lets a FIN through** (hidetzu/tcpip-stack#64 Owner Decision 1).
+ * ⚠ **What backs it is not a buffer**: this stack takes delivery and discards
+ * (hidetzu/tcpip-stack#64 Owner Decision 2), so ⚠ **there is no size at which
+ * taking becomes impossible** — ⚠ which is exactly why the number had to be
+ * chosen for what it claims rather than for what fits.
+ *
+ * ⚠ **Measured before it was chosen**, 3000 octets handed to `sendall`, same
+ * conditions as `docs/SPEC.md` §3, 2026-08-29:
+ *
+ *     window   segments   octets each   Send-Q reached 0
+ *     1        2400       1             ⚠ no, not in 3 seconds
+ *     5        480        5             ⚠ no, not in 1.5 seconds
+ *     64       47         56 .. 64      yes
+ *     1460     6          388 .. 536    yes
+ *     65535    6          320 .. 536    yes
+ *
+ * ⚠ **1460 and 65535 behave the same**: past a point ⚠ **the segment size is
+ * the peer's MSS and congestion window deciding, not our window** — so a larger
+ * promise would buy nothing and would say something we cannot tie to anything.
+ *
+ * ⚠ **It never shrinks, and that is provable rather than convenient.** RFC 793:
+ * "The total of RCV.NXT and RCV.WND should not be reduced." ⚠ Every octet is
+ * discarded as it is taken, so ⚠ **the window is always this many from
+ * `RCV.NXT`**, and `RCV.NXT` only advances. ⚠ hidetzu/tcpip-stack#75's second
+ * Human Decision did not arise for that reason.
  *
  * ⚠ Until hidetzu/tcpip-stack#64 this was 0, and 0 was equally the truth then:
- * ⚠ **nothing accepted a single octet, so promising one would have been a claim
- * this stack could not back** (hidetzu/tcpip-stack#44 Owner Decision 3). ⚠ The
- * number moved because ⚠ **what backs it moved** — `take_the_data` below —
- * ⚠ not because a check was easier that way. */
-#define HANDSHAKE_WINDOW 1u
+ * ⚠ **nothing accepted a single octet.** ⚠ It became 1 because that is the
+ * smallest that lets a `FIN` through, ⚠ **measured** — with a window of 0 a
+ * `close()` produces no `FIN` at all. ⚠ **The number has moved twice and each
+ * time what backs it moved first.** */
+#define HANDSHAKE_WINDOW 1460u
 
 enum handshake_decision {
     /* ⚠ The connection moved to a state it was not in. `outcome->state` says

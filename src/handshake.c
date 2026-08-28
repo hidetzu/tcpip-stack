@@ -199,10 +199,24 @@ static void take_the_data(struct transmission_control_block *block,
  * `take_the_data`, never before — ⚠ **off by one here is the error that still
  * looks like it works.**
  *
- * ⚠ The acceptability test is the document's, for a segment of length 1 against
- * a window above zero: "RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND". ⚠ Written as
- * unsigned subtraction so it holds where the space wraps, for the reason
- * `at_or_before` gives.
+ * ⚠ **The FIN is read only when it sits exactly at `RCV.NXT`** — that is, when
+ * everything before it has been taken. ⚠ RFC 793 says to "advance RCV.NXT over
+ * the FIN", and ⚠ **you can only advance over it from where it is.**
+ *
+ * ⚠ **This is stricter than the window test the data uses, and it has to be.**
+ * ⚠ A FIN riding more octets than the window covers sits past the octets we
+ * trimmed away; ⚠ **reading it would advance `RCV.NXT` over data we never
+ * took**, and the acknowledgment that went out would claim octets we discarded
+ * without looking at.
+ *
+ * ⚠ Until hidetzu/tcpip-stack#75 this was written as the document's window test
+ * — "RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND" — which ⚠ **is the same thing when
+ * the window is 1** and ⚠ **is wrong for any larger window.** ⚠ Raising the
+ * window to 1460 is what exposed it, and `a_fin_sits_after_the_data_it_rides_with`
+ * is what caught it.
+ *
+ * ⚠ Equality needs no wrap-safe comparison: ⚠ **two sequence numbers are equal
+ * or they are not**, wherever the space happens to be.
  *
  * Returns false when the segment carries no FIN or carries one outside the
  * window; ⚠ **`outcome->the_fin_was_read` says which of those it was not.** */
@@ -218,9 +232,7 @@ static bool read_the_fin(struct transmission_control_block *block,
     /* ⚠ The FIN's own sequence number is the one after the data it rides with,
      * and `rcv_nxt` has already moved over whatever data was taken. */
     uint32_t where_the_fin_sits = header->sequence_number + (uint32_t)header->data_bytes;
-    uint32_t past_the_window = block->rcv_nxt + HANDSHAKE_WINDOW;
-    if (!at_or_before(block->rcv_nxt, where_the_fin_sits) ||
-        at_or_before(past_the_window, where_the_fin_sits)) {
+    if (where_the_fin_sits != block->rcv_nxt) {
         return false;
     }
 
