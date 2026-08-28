@@ -54,12 +54,17 @@ enum connection_take connections_take(struct connections *connections,
         /* ⚠ Cleared before it is filled, so nothing a previous connection left
          * can be read as this one's.
          *
-         * ⚠ Measured 2026-08-28 and said plainly: ⚠ **removing this line breaks
-         * no check today.** ⚠ The block holds `in_use` and an id, and the id is
-         * overwritten on the next line, so ⚠ there is nothing left that could
-         * survive. ⚠ It is here for the state and the sequence numbers
-         * hidetzu/tcpip-stack#43 adds, and ⚠ **that is when it becomes provable**
-         * — ⚠ not a claim that it is asserted now (`CLAUDE.md` §1). */
+         * ⚠ Provable since hidetzu/tcpip-stack#43 gave a block a state and four
+         * sequence numbers to leak. ⚠ **As a pair with the one in
+         * `connections_release`**: removing either alone changes nothing,
+         * because the other still clears the block; ⚠ **removing both fails
+         * `a_block_taken_again_holds_none_of_the_last_connections_numbers`**,
+         * which then reads the last connection's `iss` and `irs`.
+         *
+         * ⚠ When #42 wrote this line there was nothing that could survive, and
+         * ⚠ the comment here said so rather than claiming it was asserted
+         * (`CLAUDE.md` §1). ⚠ It stopped being true with #43 and changed with
+         * it. */
         memset(block, 0, sizeof *block);
         block->in_use = true;
         block->id = *id;
@@ -86,9 +91,8 @@ void connections_release(struct connections *connections,
      * do; both means a block is never readable between the two, whichever end a
      * future reader looks at.
      *
-     * ⚠ Same measurement, same honesty: ⚠ **removing this breaks no check
-     * today.** ⚠ `connections_find` looks at `in_use` first, so a stale id here
-     * is unreachable. ⚠ It becomes provable when hidetzu/tcpip-stack#43 gives a
-     * block something worth leaking. */
+     * ⚠ Provable since hidetzu/tcpip-stack#43, ⚠ **as a pair with the one in
+     * `connections_take`** — see the note there. ⚠ Removing this one alone still
+     * changes nothing, and that is what "either alone would do" means. */
     memset(block, 0, sizeof *block);
 }
