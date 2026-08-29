@@ -2296,6 +2296,112 @@ print("how-much", HOW_MUCH)
 #
 # ⚠ **So the fallback SYN must not be what opens it.** ⚠ The segment that opened
 # the connection is read off the wire and its control bits are asserted.
+# ⚠ hidetzu/tcpip-stack#139, Owner Decision A. ⚠ **This stack declines ECN, and
+# until now nothing said so.**
+#
+# ⚠ RFC 9293's ENTIRE content about ECN is three things — §3.1 defines `CWR` and
+# `ECE` as bit positions "see [6]", §3.8.2's `SHLD-8` says "A TCP endpoint SHOULD
+# implement ECN as described in RFC 3168", and one glossary line. ⚠ **[6] is
+# RFC 3168 every time, and ADR 0024 names it as OUT of the baseline.**
+#
+# ⚠ **Declining is what a non-ECN endpoint is supposed to do**: answer an
+# ECN-setup SYN with a SYN,ACK carrying neither bit, ⚠ **so both ends know the
+# connection is not an ECN connection.**
+#
+# ⚠ **And nothing asserted it.** ⚠ A build that started setting `ECE` would be
+# claiming a mechanism it does not have ⚠ **and every check would have stayed
+# green.**
+#
+# ⚠ Read off an AF_PACKET socket, ⚠ **not out of our own report** (ADR 0009).
+inside_our_answer_declines_ecn_and_nothing_pretends_otherwise() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 3000 >"$work/out.txt" 2>&1 &
+    reader=$!
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+    # ⚠ The kernel offers ECN only when it is asked to.
+    sysctl -qw net.ipv4.tcp_ecn=1
+
+    cwr=$(constant src/tcp.h TCP_CONTROL_CWR)
+    ece=$(constant src/tcp.h TCP_CONTROL_ECE)
+
+    LC_ALL=C python3 -c '
+import socket, struct, subprocess, sys, threading, time
+CWR, ECE = (int(a.rstrip("uU"), 0) for a in sys.argv[1:3])
+seen = {}
+def wire():
+    w = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+    w.bind(("tap0", 0))
+    w.settimeout(3.0)
+    try:
+        while "ours" not in seen or "theirs" not in seen:
+            f = w.recv(2048)
+            if len(f) < 54 or f[12:14] != b"\x08\x00" or f[14 + 9] != 6:
+                continue
+            at = 14 + (f[14] & 0x0f) * 4
+            control = f[at + 13]
+            port = int.from_bytes(f[at:at + 2], "big")
+            if port == 80 and control & 0x12 == 0x12:
+                seen["ours"] = control
+            elif port != 80 and control & 0x12 == 0x02:
+                seen["theirs"] = control
+    except socket.timeout:
+        pass
+listener = threading.Thread(target=wire, daemon=True)
+listener.start()
+time.sleep(0.2)
+subprocess.Popen(["timeout", "2", "bash", "-c",
+                  "exec 3<>/dev/tcp/10.0.0.2/80 || true"])
+listener.join(4.0)
+print("theirs", seen.get("theirs", -1))
+print("ours", seen.get("ours", -1))
+print("cwr", CWR, "ece", ECE)
+' "$cwr" "$ece" >"$work/ecn.txt" 2>&1 || true
+
+    kill -INT "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+
+    theirs=$(awk '$1 == "theirs" { print $2 }' "$work/ecn.txt")
+    mine=$(awk '$1 == "ours" { print $2 }' "$work/ecn.txt")
+    cwr=${cwr%u}; ece=${ece%u}
+
+    # ⚠ 1. ⚠ **The kernel really did offer ECN**, or the rest asserts nothing:
+    # ⚠ a SYN with neither bit would let any answer pass.
+    if [ -z "$theirs" ] || [ "$theirs" -lt 0 ] 2>/dev/null; then
+        note_failure "no SYN was captured, so nothing was judged"
+        sed 's/^/      /' "$work/ecn.txt" >&2
+        return
+    fi
+    if [ $(( theirs & (cwr | ece) )) -eq 0 ]; then
+        note_failure "the kernel's SYN carried neither ECN bit ($theirs), so declining them proves nothing"
+        return
+    fi
+
+    # ⚠ 2. ⚠ **Our answer carries NEITHER.** ⚠ That is the whole assertion.
+    if [ -z "$mine" ] || [ "$mine" -lt 0 ] 2>/dev/null; then
+        note_failure "no SYN,ACK of ours was captured"
+        sed 's/^/      /' "$work/ecn.txt" >&2
+        return
+    fi
+    if [ $(( mine & cwr )) -ne 0 ]; then
+        note_failure "our SYN,ACK set CWR, and this stack implements no ECN to back it"
+    fi
+    if [ $(( mine & ece )) -ne 0 ]; then
+        note_failure "our SYN,ACK set ECE, and this stack implements no ECN to back it"
+    fi
+
+    printf '    the kernel offered ECN (control bits %s) and our answer carried\n' "$theirs"
+    printf '    neither bit (%s), which is how a non-ECN endpoint declines\n' "$mine"
+}
+
 inside_a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it() {
     ours=10.0.0.2
     our_mac=02:00:00:00:00:02
@@ -2972,6 +3078,10 @@ case_an_acknowledgment_never_covers_an_octet_we_did_not_take() {
 case_a_peer_whose_acknowledgment_was_lost_recovers() {
     in_namespace a_peer_whose_acknowledgment_was_lost_recovers
 }
+case_our_answer_declines_ecn_and_nothing_pretends_otherwise() {
+    in_namespace our_answer_declines_ecn_and_nothing_pretends_otherwise
+}
+
 case_a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it() {
     in_namespace a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it
 }
@@ -2998,7 +3108,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel data_larger_than_the_mss_arrives_in_segments_it_bounds a_lost_segment_or_a_lost_ack_still_gets_the_data_through the_window_reopens_one_segment_at_a_time_after_a_loss an_icmp_error_the_kernel_sent_reaches_the_connection a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel data_larger_than_the_mss_arrives_in_segments_it_bounds a_lost_segment_or_a_lost_ack_still_gets_the_data_through the_window_reopens_one_segment_at_a_time_after_a_loss an_icmp_error_the_kernel_sent_reaches_the_connection a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it our_answer_declines_ecn_and_nothing_pretends_otherwise the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

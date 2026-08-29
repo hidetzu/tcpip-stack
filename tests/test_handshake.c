@@ -489,6 +489,19 @@ static bool case_the_answer_is_the_one_the_document_describes(void)
         ok = false;
     }
 
+    /* ⚠ hidetzu/tcpip-stack#139, Owner Decision A. ⚠ **Neither ECN bit, and it
+     * is asserted rather than implied by the equality below.**
+     *
+     * ⚠ RFC 9293 defines `CWR` and `ECE` as bit positions and ⚠ **defers every
+     * behaviour to RFC 3168, which ADR 0024 names as OUT of the baseline.**
+     * ⚠ **Declining is what a non-ECN endpoint is supposed to do**, and
+     * ⚠ **setting either would claim a mechanism this stack does not have**
+     * (`docs/SPEC.md` §2). */
+    if ((answer.control_bits & (TCP_CONTROL_CWR | TCP_CONTROL_ECE)) != 0) {
+        fprintf(stderr, "  the answer set an ECN bit (0x%02x), and this stack "
+                        "implements no ECN to back it\n", answer.control_bits);
+        ok = false;
+    }
     if (answer.control_bits != (TCP_CONTROL_SYN | TCP_CONTROL_ACK)) {
         fprintf(stderr, "  the answer's control bits are 0x%02x, not SYN|ACK\n",
                 answer.control_bits);

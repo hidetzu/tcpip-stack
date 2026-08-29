@@ -60,7 +60,7 @@ one question is answered.**
 | ⚠ **The urgent mechanism** | `MUST-30`, `MUST-31`, `MUST-32`, `MUST-33`, `MUST-62` | ⚠ **The section hidetzu/tcpip-stack#97 named in advance as the one that would be got wrong.** ⚠ **The bit and the pointer are read and nothing is supported** — ⚠ calling any of it *does not arise* would make a mandated feature's absence look inapplicable |
 | ⚠ **ICMP errors reaching a connection** | — | ⚠ **Done** at hidetzu/tcpip-stack#138. ⚠ `MUST-54` and `SHLD-26` are met, ⚠ **and `MUST-55` and `MUST-56` stopped being accidents** — they were met because nothing acted on any ICMP error at all |
 | ⚠ **An interface for an application** | `MUST-43`, `MUST-47`, `MUST-48` | ⚠ **There is no user of this stack** (ADR 0022). ⚠ **Two of the three effects exist in another shape** (`--ipv4`, `--ttl`), ⚠ **and an effect in a different shape is not the requirement met** |
-| ⚠ **ECN** | `SHLD-8` | ⚠ **One `SHOULD`, alone.** ⚠ Accepting a `SYN` that carries the bits is not implementing the mechanism |
+| ⚠ **ECN** | `SHLD-8` | ⚠ **Refused with a reason at hidetzu/tcpip-stack#139**, not left unmet. ⚠ **RFC 3168 is out of the baseline** and ⚠ **RFC 9293 defers all ECN behaviour to it** |
 
 ⚠ **The first three of these are not the same kind of work as the option machinery or the
 retransmission schedule.** ⚠ **They are downstream of one absence — there is nothing above this
@@ -342,7 +342,7 @@ section above and is not repeated per row.**
 
 | ID | Requirement, quoted | Verdict |
 |---|---|---|
-| `SHLD-8` | "A TCP endpoint SHOULD implement ECN as described in RFC 3168" | ⚠ **not met** — ⚠ **nothing here negotiates ECN or sets `ECE` or `CWR` on anything it builds.** ⚠ **What was done instead is narrower and it was measured** (hidetzu/tcpip-stack#86): the `ECE`/`CWR` bits are given names and a `SYN` carrying them ⚠ **is no longer thrown away.** ⚠ **Measured 2026-08-29 before that change: the ECN-capable first `SYN` was refused, and the connection only opened because the Linux kernel retried without the bits** — ⚠ **so this stack looked as if it worked, on somebody else's fallback.** ⚠ `tests/interop.sh` `a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it` holds that. ⚠ **Accepting a bit is not implementing the mechanism** |
+| `SHLD-8` | "A TCP endpoint SHOULD implement ECN as described in RFC 3168" | ⚠ **refused, with a reason** (Owner Decision, hidetzu/tcpip-stack#139) — ⚠ **not ignored**, which is a different thing and the shape `SHLD-1` already has. ⚠ **The sentence points at RFC 3168 and nowhere else**, and ⚠ **ADR 0024's scope table names RFC 3168 as out of the baseline.** ⚠ **RFC 9293's own ECN content is two bit positions and a glossary line** — ⚠ **it defines where the bits go and defers every behaviour to a document the baseline does not reach.** ⚠ **What this stack does is the correct thing for a non-participant, and it is asserted now**: an ECN-setup `SYN` opens the connection and ⚠ **our answer carries neither `CWR` nor `ECE`**, so both ends know it is not an ECN connection. ⚠ **Measured on the wire**: the kernel offered control bits 194 and our answer carried 18. ⚠ `tests/interop.sh` `our_answer_declines_ecn_and_nothing_pretends_otherwise`, `tests/static.sh` `handshake` |
 
 ## Alternative Congestion Control (hidetzu/tcpip-stack#97)
 
