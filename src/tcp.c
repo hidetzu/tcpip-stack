@@ -146,9 +146,10 @@ enum tcp_parse tcp_parse_header(const uint8_t *segment, size_t segment_bytes,
     /* ⚠ Reserved is six bits and they do not all live in one octet: four of them
      * are the low half of this one and two are the top of the next, above the
      * six Control Bits. */
-    header->reserved = (uint8_t)(((offset_and_reserved & 0x0fu) << 2) |
-                                 (segment[CONTROL_BITS_OFFSET] >> 6));
-    header->control_bits = (uint8_t)(segment[CONTROL_BITS_OFFSET] & 0x3fu);
+    /* ⚠ Four bits of `Reserved` and eight Control Bits, ⚠ **not six and six.**
+     * ⚠ RFC 9293 §3.1 assigns the top two to `CWR` and `ECE` (`src/tcp.h`). */
+    header->reserved = (uint8_t)(offset_and_reserved & 0x0fu);
+    header->control_bits = segment[CONTROL_BITS_OFFSET];
 
     header->window = read_16(segment + WINDOW_OFFSET);
     header->checksum = read_16(segment + CHECKSUM_OFFSET);
@@ -195,14 +196,22 @@ enum tcp_parse tcp_parse_header(const uint8_t *segment, size_t segment_bytes,
         return TCP_PARSE_MALFORMED;
     }
 
-    /* ⚠ RFC 793: "Reserved: 6 bits - Reserved for future use.  Must be zero."
-     * ⚠ Set means the sender broke what the document states. ⚠ The document does
-     * not tell a receiver to reject such a segment — that conclusion is ours,
-     * and it is the third time this repository has drawn it from the same shape
-     * of sentence (ADR 0010, ADR 0011, ADR 0013). */
-    if (header->reserved != 0) {
-        return TCP_PARSE_MALFORMED;
-    }
+    /* ⚠ **Nothing is decided from `Reserved`, and that is the document's rule
+     * and not ours.**
+     *
+     * ⚠ RFC 9293 §3.1, verbatim: "Must be zero in generated segments and must
+     * be ignored in received segments if the corresponding future features are
+     * not implemented by the sending or receiving host."
+     *
+     * ⚠ Until hidetzu/tcpip-stack#86 a set bit made the segment malformed, from
+     * RFC 793's "Must be zero" — ⚠ **a conclusion recorded as ours** (ADR 0013),
+     * because RFC 793 does not tell a receiver what to do. ⚠ **RFC 9293 does**,
+     * and ADR 0024 made it the baseline.
+     *
+     * ⚠ **Measured 2026-08-29**: with the refusal in place and
+     * `net.ipv4.tcp_ecn=1`, the Linux kernel's first SYN carries `CWR|ECE|SYN`
+     * and was thrown away; ⚠ **the connection opened only because Linux fell
+     * back to a plain SYN.** */
 
     if (!options_walk(segment + TCP_FIXED_HEADER_BYTES,
                       header_bytes - TCP_FIXED_HEADER_BYTES)) {

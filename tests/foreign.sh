@@ -1615,6 +1615,144 @@ print("how-much", HOW_MUCH)
     printf '    seconds once it stopped\n'
 }
 
+# ⚠ hidetzu/tcpip-stack#86 AC 3, and ⚠ **it is the check that was missing when
+# the defect went in**: nothing here had ever turned ECN on.
+#
+# ⚠ RFC 9293 §3.1: `Reserved` is four bits and "must be ignored in received
+# segments". ⚠ The two above it are `CWR` and `ECE`, and ⚠ **nothing here
+# implements ECN** — they are read and acted on by nothing (ADR 0024 clause 3).
+#
+# ⚠ Measured 2026-08-29 before the fix: the kernel's first SYN carries
+# `CWR|ECE|SYN` and was thrown away as malformed; ⚠ **the connection opened only
+# because Linux fell back to a plain SYN.** ⚠ It replied, and not for the right
+# reason.
+#
+# ⚠ **So the fallback SYN must not be what opens it.** ⚠ The segment that opened
+# the connection is read off the wire and its control bits are asserted.
+inside_a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 5000 --hex >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    # ⚠ The whole point of the case. ⚠ Without this the kernel sends a plain SYN
+    # and nothing here is exercised.
+    if ! sysctl -qw net.ipv4.tcp_ecn=1; then
+        note_failure "the check environment could not be built here: net.ipv4.tcp_ecn could not be set"
+        kill -INT "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    LC_ALL=C python3 -c '
+import socket, sys, time
+s = socket.socket()
+s.settimeout(4)
+try:
+    s.connect(("10.0.0.2", 80))
+except Exception as why:
+    print("connect-failed", why); sys.exit(1)
+print("connect", "ok")
+s.sendall(b"hello")
+time.sleep(0.6)
+s.close()
+time.sleep(0.4)
+' >"$work/ecn.txt" 2>&1
+    ran=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$ran" -ne 0 ]; then
+        note_failure "connect() with ECN turned on did not succeed"
+        sed 's/^/      /' "$work/ecn.txt" >&2
+        printf '    what the stack said:\n' >&2
+        grep -v '^  [0-9a-f]' "$work/out.txt" | tail -12 | sed 's/^/      /' >&2
+        return
+    fi
+
+    ethernet_header=$(constant src/ethernet.h ETHERNET_HEADER_BYTES)
+    ipv4_type=$(constant src/ipv4.h IPV4_ETHERNET_LENGTH_TYPE)
+    tcp_number=$(constant src/tcp.h TCP_PROTOCOL_NUMBER)
+    syn_bit=$(constant src/tcp.h TCP_CONTROL_SYN)
+    cwr_bit=$(constant src/tcp.h TCP_CONTROL_CWR)
+    ece_bit=$(constant src/tcp.h TCP_CONTROL_ECE)
+
+    LC_ALL=C frames_as_hex "$work/out.txt" | python3 -c '
+import sys
+
+def number(text):
+    return int(text.rstrip("uU"), 0)
+
+ethernet_header, ipv4_type, tcp_number, syn_bit, cwr_bit, ece_bit = (
+    number(a) for a in sys.argv[1:7])
+
+syns = []
+for line in sys.stdin:
+    parts = line.split()
+    if len(parts) != 2:
+        continue
+    octets = bytes.fromhex(parts[1])
+    if len(octets) < ethernet_header + 20:
+        continue
+    if int.from_bytes(octets[ethernet_header - 2:ethernet_header], "big") != ipv4_type:
+        continue
+    if octets[ethernet_header + 9] != tcp_number:
+        continue
+    at = ethernet_header + (octets[ethernet_header] & 0x0f) * 4
+    if len(octets) < at + 20:
+        continue
+    bits = octets[at + 13]
+    if bits & syn_bit:
+        syns.append(bits)
+print("syns", len(syns))
+print("first-syn-bits", "0x%02x" % syns[0] if syns else "none")
+print("first-syn-carries-ecn",
+      1 if syns and (syns[0] & (cwr_bit | ece_bit)) == (cwr_bit | ece_bit) else 0)
+' "$ethernet_header" "$ipv4_type" "$tcp_number" "$syn_bit" "$cwr_bit" "$ece_bit" \
+        >"$work/counted.txt"
+
+    syns=$(awk '$1 == "syns" { print $2 }' "$work/counted.txt")
+    bits=$(awk '$1 == "first-syn-bits" { print $2 }' "$work/counted.txt")
+    carries=$(awk '$1 == "first-syn-carries-ecn" { print $2 }' "$work/counted.txt")
+
+    # ⚠ The kernel really did offer ECN — or the rest of this case is about
+    # nothing.
+    if [ "${carries:-0}" -ne 1 ]; then
+        note_failure "the kernel's first SYN was $bits and carried no ECN bits, so this case exercised nothing"
+        sed 's/^/      /' "$work/counted.txt" >&2
+        return
+    fi
+    # ⚠ AC 3. ⚠ **One SYN**: a second would mean the first was thrown away and
+    # Linux fell back. ⚠ Measured before the fix: two.
+    if [ "${syns:-0}" -ne 1 ]; then
+        note_failure "the kernel sent $syns SYNs, so the one carrying the ECN bits was not the one that opened it"
+        sed 's/^/      /' "$work/counted.txt" >&2
+        return
+    fi
+    # ⚠ And nothing was thrown away.
+    assert_file_contains "$work/out.txt" "0 TCP headers were malformed" \
+        "a SYN carrying the ECN bits is not malformed"
+    assert_file_contains "$work/out.txt" "1 connection was opened and 1 answered" \
+        "it opened a connection"
+    assert_file_contains "$work/out.txt" "5 octets of data were taken and discarded" \
+        "the connection carried data afterwards"
+
+    printf '    the kernel offered ECN with a single SYN of %s and it opened the\n' "$bits"
+    printf '    connection; nothing fell back\n'
+}
+
 # ⚠ The half that stops the case above passing for a stack that never looked at
 # a checksum (hidetzu/tcpip-stack#44 AC 2, and `CLAUDE.md` §1).
 #
@@ -1741,6 +1879,9 @@ case_an_acknowledgment_never_covers_an_octet_we_did_not_take() {
 case_a_peer_whose_acknowledgment_was_lost_recovers() {
     in_namespace a_peer_whose_acknowledgment_was_lost_recovers
 }
+case_a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it() {
+    in_namespace a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it
+}
 case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
     in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
 }
@@ -1751,7 +1892,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)
