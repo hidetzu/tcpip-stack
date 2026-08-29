@@ -107,6 +107,27 @@ they are different things and the difference is stated, not implied.
 | Reassembling IPv4 fragments | yes | ⚠ A fragment comes back as its own answer and ⚠ **nothing is reassembled**. ⚠ Kept apart from a version we do not support so the two are never one number (ADR 0010). ⚠ What RFC 791 says about reassembly was not read |
 | Reading IPv4 `Options` | yes | ⚠ A header longer than five 32-bit words is declined as unsupported rather than skipped over. ⚠ Generalise once something needs them, never before (ADR 0010) |
 
+## ⚠ 2-1. Which document binds
+
+⚠ **RFC 9293 (STD 7) is the normative baseline for TCP** (ADR 0024, hidetzu/tcpip-stack#70).
+⚠ **RFC 793 is informative** — historical explanation and design intent. ⚠ What RFC 9293 leaves to
+other RFCs is added ⚠ **one function at a time, when that function is implemented.**
+
+⚠ **Every RFC 793 quotation already in this file stays**, and is what RFC 793 says. ⚠ **What changed
+is which document a new claim is held to, and which settles a disagreement.**
+
+⚠ **It is not free.** ⚠ RFC 793 uses no RFC 2119 keywords in capitals — measured, 0 — and RFC 9293
+uses 203 `MUST` and 38 `SHOULD`. ⚠ **Several rows in §1 rest on the shape "the document states X and
+does not tell a receiver what to do", with the conclusion recorded as ours.** ⚠ Those have to be
+re-read against the new baseline one at a time, and ⚠ **until each is, this file says RFC 793
+because that is what was read.**
+
+⚠ **The first one already measured to be wrong**: this build reads six bits as `Reserved` and
+refuses a segment with any set. ⚠ RFC 9293 §3.1 says four, with the other two assigned to `CWR` and
+`ECE`, and that a receiver ⚠ **"must be ignored in received segments"**. ⚠ **Measured 2026-08-29
+with `net.ipv4.tcp_ecn=1`: the kernel's first SYN carries `CWR|ECE|SYN` and we throw it away as
+malformed**; the connection opens only because Linux falls back to a plain SYN.
+
 ## 3. Measured numbers
 
 ⚠ **Every number here carries the denominator of its claim, the date, and the conditions**
