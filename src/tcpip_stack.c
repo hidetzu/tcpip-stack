@@ -75,6 +75,18 @@ struct options {
     int timeout_ms;
     bool print_bytes;
 
+    /* ⚠ The `Time to Live` every datagram we build is sent with.
+     *
+     * ⚠ RFC 9293 `MUST-49`: "The TTL value used to send TCP segments MUST be
+     * configurable." ⚠ It was `IPV4_TIME_TO_LIVE_WE_SEND` written into the
+     * builder and reachable from nothing (hidetzu/tcpip-stack#103).
+     *
+     * ⚠ **One value covers TCP and the ICMP echo reply alike** (Owner Decision).
+     * ⚠ **That claims slightly more than the requirement asks**, which names TCP
+     * segments, and ⚠ `docs/SPEC.md` says so rather than leaving it to be
+     * noticed. */
+    uint8_t time_to_live;
+
     /* ⚠ The identity is given, never derived. The TAP device's own hardware
      * address is the kernel's end of the wire and is a different value on every
      * run (hidetzu/tcpip-stack#19 Owner Decision 1).
@@ -153,6 +165,7 @@ int main(int argc, char **argv)
         .device_name = DEFAULT_DEVICE_NAME,
         .count = COUNT_UNLIMITED,
         .timeout_ms = TIMEOUT_NONE,
+        .time_to_live = IPV4_TIME_TO_LIVE_WE_SEND,
         .print_bytes = false,
     };
 
@@ -163,6 +176,7 @@ int main(int argc, char **argv)
         { "mac", required_argument, NULL, 'm' },
         { "ipv4", required_argument, NULL, '4' },
         { "tcp-port", required_argument, NULL, 'p' },
+        { "ttl", required_argument, NULL, 'l' },
         { "hex", no_argument, NULL, 'x' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
@@ -172,7 +186,7 @@ int main(int argc, char **argv)
     bool given_hardware_address = false;
     bool given_protocol_address = false;
 
-    while ((option = getopt_long(argc, argv, "d:c:t:m:4:p:xh", long_options, NULL)) != -1) {
+    while ((option = getopt_long(argc, argv, "d:c:t:m:4:p:l:xh", long_options, NULL)) != -1) {
         long value = 0;
         switch (option) {
         case 'm':
@@ -212,6 +226,17 @@ int main(int argc, char **argv)
                 return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
             }
             options.timeout_ms = (int)value;
+            break;
+        case 'l':
+            /* ⚠ One to 255. ⚠ Zero would be a datagram the first router
+             * discards, and ⚠ **an option is from outside** — it is checked
+             * against what the field holds, not trusted
+             * (`.claude/rules/c.md`). */
+            if (!parse_bounded_long(optarg, 1, 255, &value)) {
+                report_option_problem(stderr, OPTION_TIME_TO_LIVE, argv[0]);
+                return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
+            }
+            options.time_to_live = (uint8_t)value;
             break;
         case 'x':
             options.print_bytes = true;
@@ -339,7 +364,7 @@ int main(int argc, char **argv)
             struct handshake_outcome handshake;
             uint8_t again[TAP_FRAME_BUFFER_BYTES];
             enum handshake_due due =
-                handshake_what_is_due(&connections, moment_now(),
+                handshake_what_is_due(&connections, moment_now(), options.time_to_live,
                                       options.hardware_address, again, sizeof again,
                                       &handshake_counts, &handshake);
             if (due != HANDSHAKE_NOTHING_DUE || handshake.reason != HANDSHAKE_REASON_NONE) {
@@ -508,7 +533,8 @@ int main(int argc, char **argv)
 
                         uint8_t reply[TAP_FRAME_BUFFER_BYTES];
                         struct handshake_outcome handshake;
-                        handshake_receive(&tcp, &id, options.tcp_port, moment_now(), header.source,
+                        handshake_receive(&tcp, &id, options.tcp_port, moment_now(),
+                                          options.time_to_live, header.source,
                                           options.hardware_address, &connections, reply,
                                           sizeof reply, &handshake_counts, &handshake);
                         report_handshake_outcome(stdout, &handshake);
@@ -555,6 +581,7 @@ int main(int argc, char **argv)
                 uint8_t reply[TAP_FRAME_BUFFER_BYTES];
                 echo_respond(frame + ETHERNET_HEADER_BYTES,
                              (size_t)bytes - ETHERNET_HEADER_BYTES,
+                             options.time_to_live,
                              header.source, options.hardware_address,
                              options.protocol_address, reply, sizeof reply, &echo,
                              &echo_counts);

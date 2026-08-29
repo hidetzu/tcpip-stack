@@ -1753,6 +1753,124 @@ print("first-syn-carries-ecn",
     printf '    connection; nothing fell back\n'
 }
 
+# ⚠ hidetzu/tcpip-stack#103. ⚠ **`--ttl` reaches the wire**, and ⚠ **at a value
+# that is not the default** — otherwise the check could not tell a setting from
+# the constant it replaced.
+#
+# ⚠ RFC 9293 `MUST-49`: "The TTL value used to send TCP segments MUST be
+# configurable."
+#
+# ⚠ **One value covers TCP and the ICMP echo reply alike** (Owner Decision,
+# 2026-08-29). ⚠ **That claims slightly more than the requirement asks**, which
+# names TCP segments, and ⚠ this case asserts both so the claim is not wider
+# than what is checked.
+inside_the_time_to_live_we_were_given_reaches_the_wire() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+    asked_for=42
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --ttl "$asked_for" --timeout 4000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    icmp=$(constant src/ipv4.h IPV4_PROTOCOL_ICMP)
+    tcp=$(constant src/tcp.h TCP_PROTOCOL_NUMBER)
+
+    LC_ALL=C python3 -c '
+import socket, subprocess, sys, threading, time
+
+icmp, tcp = (int(a.rstrip("uU"), 0) for a in sys.argv[1:3])
+OURS = bytes.fromhex(sys.argv[3].replace(":", ""))
+
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.settimeout(0.3)
+
+seen = []
+stop = threading.Event()
+
+def watch():
+    while not stop.is_set():
+        try:
+            frame = wire.recv(2048)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if len(frame) < 34 or frame[12:14] != b"\x08\x00":
+            continue
+        if frame[6:12] != OURS:
+            continue
+        seen.append((frame[14 + 9], frame[14 + 8]))
+
+watcher = threading.Thread(target=watch)
+watcher.start()
+
+subprocess.run(["ping", "-c", "1", "-W", "1", "10.0.0.2"],
+               capture_output=True)
+s = socket.socket()
+s.settimeout(3)
+try:
+    s.connect(("10.0.0.2", 80))
+except Exception as why:
+    stop.set(); watcher.join()
+    print("connect-failed", why); sys.exit(1)
+s.close()
+time.sleep(0.8)
+stop.set(); watcher.join()
+
+for protocol, name in ((tcp, "tcp"), (icmp, "icmp")):
+    values = sorted({ttl for p, ttl in seen if p == protocol})
+    print(name, " ".join(str(v) for v in values) or "none")
+' "$icmp" "$tcp" "$our_mac" >"$work/ttl.txt" 2>&1
+    watched=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$watched" -ne 0 ]; then
+        note_failure "the connection could not be opened, so nothing was sent"
+        sed 's/^/      /' "$work/ttl.txt" >&2
+        return
+    fi
+
+    over_tcp=$(awk '$1 == "tcp" { $1 = ""; print substr($0, 2) }' "$work/ttl.txt")
+    over_icmp=$(awk '$1 == "icmp" { $1 = ""; print substr($0, 2) }' "$work/ttl.txt")
+
+    # ⚠ `MUST-49` is about TCP segments, and ⚠ **one value, not a mixture**.
+    if [ "$over_tcp" != "$asked_for" ]; then
+        note_failure "we asked for a time to live of $asked_for and the TCP segments carried $over_tcp"
+        sed 's/^/      /' "$work/ttl.txt" >&2
+        return
+    fi
+    # ⚠ The reply we send for a ping shares it, which is the Owner Decision.
+    if [ "$over_icmp" != "$asked_for" ]; then
+        note_failure "the ICMP reply carried $over_icmp and we asked for $asked_for"
+        sed 's/^/      /' "$work/ttl.txt" >&2
+        return
+    fi
+    # ⚠ The other half: ⚠ **it is a setting and not a new constant.** ⚠ 42 is not
+    # the default, so a build ignoring the option would show 64 here.
+    default=$(constant src/ipv4.h IPV4_TIME_TO_LIVE_WE_SEND)
+    if [ "$asked_for" = "${default%u}" ]; then
+        note_failure "this case asks for the default, so it cannot tell a setting from a constant"
+        return
+    fi
+
+    printf '    asked for %s and both the TCP segments and the ICMP reply carried it;\n' "$asked_for"
+    printf '    the default is %s\n' "${default%u}"
+}
+
 # ⚠ The half that stops the case above passing for a stack that never looked at
 # a checksum (hidetzu/tcpip-stack#44 AC 2, and `CLAUDE.md` §1).
 #
@@ -1882,6 +2000,9 @@ case_a_peer_whose_acknowledgment_was_lost_recovers() {
 case_a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it() {
     in_namespace a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it
 }
+case_the_time_to_live_we_were_given_reaches_the_wire() {
+    in_namespace the_time_to_live_we_were_given_reaches_the_wire
+}
 case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
     in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
 }
@@ -1892,7 +2013,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

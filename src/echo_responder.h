@@ -109,7 +109,12 @@ struct echo_outcome {
  * the sending direction) — the same division `arp_respond` uses.
  *
  * ⚠ Nothing is sent here and nothing is printed here. */
+/* ⚠ `time_to_live` is what the reply is sent with. ⚠ **The caller's since
+ * hidetzu/tcpip-stack#103**: one `--ttl` covers this and TCP alike, and
+ * ⚠ **that claims slightly more than RFC 9293 `MUST-49` asks**, which is about
+ * TCP segments. ⚠ Said in `docs/SPEC.md` rather than left to be noticed. */
 void echo_respond(const uint8_t *datagram, size_t datagram_bytes,
+                  uint8_t time_to_live,
                   const uint8_t *requester_hardware_address,
                   const uint8_t *our_hardware_address,
                   const uint8_t *our_protocol_address,

@@ -594,6 +594,9 @@ void report_option_problem(FILE *out, enum option_problem problem,
     case OPTION_TCP_PORT:
         fputs("--tcp-port takes a whole number from 1 to 65535.\n", out);
         return;
+    case OPTION_TIME_TO_LIVE:
+        fputs("--ttl takes a whole number from 1 to 255.\n", out);
+        return;
     case OPTION_COUNT:
         fputs("--count takes a whole number of frames, 0 or more.\n", out);
         return;
@@ -640,6 +643,7 @@ void report_usage(FILE *out, const char *program_name)
             "  --mac ADDRESS   the hardware address to answer with, as 02:00:00:00:00:02\n"
             "  --ipv4 ADDRESS  the protocol address to answer for, as 10.0.0.2\n"
             "  --tcp-port N    a TCP port to answer connections on (needs --mac and --ipv4)\n"
+            "  --ttl N         the Time to Live to send with (1 to 255, default 64)\n"
             "  --count N       stop after N frames (default: until interrupted)\n"
             "  --timeout MS    give up waiting after MS milliseconds (default: no limit)\n"
             "  --hex           print the bytes of each frame as well as its length\n"

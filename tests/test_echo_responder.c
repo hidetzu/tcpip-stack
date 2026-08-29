@@ -93,7 +93,7 @@ static bool answered(const char *what, const struct datagram *d,
     unsigned char reply[512];
     memset(reply, 0xaa, sizeof reply);
     struct echo_outcome outcome;
-    echo_respond(d->octets, d->bytes, THEIR_MAC, OUR_MAC, OUR_IPV4, reply, sizeof reply,
+    echo_respond(d->octets, d->bytes, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, OUR_IPV4, reply, sizeof reply,
                  &outcome, &counts);
 
     bool ok = true;
@@ -159,7 +159,7 @@ static bool case_the_kernels_echo_request_is_answered(void)
     unsigned char reply[512];
     memset(reply, 0xaa, sizeof reply);
     struct echo_outcome outcome;
-    echo_respond(request.octets, request.bytes, THEIR_MAC, OUR_MAC, OUR_IPV4, reply,
+    echo_respond(request.octets, request.bytes, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, OUR_IPV4, reply,
                  sizeof reply, &outcome, &counts);
 
     if (outcome.decision != ECHO_ANSWER) {
@@ -392,7 +392,7 @@ static bool case_a_reply_we_could_not_build_is_counted_as_ours(void)
         unsigned char reply[512];
         memset(reply, 0xaa, sizeof reply);
         struct echo_outcome outcome;
-        echo_respond(request.octets, request.bytes, THEIR_MAC, OUR_MAC, OUR_IPV4, reply,
+        echo_respond(request.octets, request.bytes, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, OUR_IPV4, reply,
                      room, &outcome, &counts);
 
         if (outcome.decision != ECHO_NO_ANSWER ||
@@ -412,7 +412,7 @@ static bool case_a_reply_we_could_not_build_is_counted_as_ours(void)
     memset(&counts, 0, sizeof counts);
     unsigned char reply[512];
     struct echo_outcome outcome;
-    echo_respond(request.octets, request.bytes, THEIR_MAC, OUR_MAC, OUR_IPV4, reply,
+    echo_respond(request.octets, request.bytes, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, OUR_IPV4, reply,
                  needed, &outcome, &counts);
     if (outcome.decision != ECHO_ANSWER || outcome.reply_bytes != needed) {
         fprintf(stderr, "  exactly %zu octets of room was declined, reason %d\n", needed,
@@ -436,7 +436,7 @@ static bool case_padding_after_the_datagram_is_not_part_of_the_message(void)
     memset(&counts, 0, sizeof counts);
     unsigned char without[512];
     struct echo_outcome outcome;
-    echo_respond(plain.octets, plain.bytes, THEIR_MAC, OUR_MAC, OUR_IPV4, without,
+    echo_respond(plain.octets, plain.bytes, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, OUR_IPV4, without,
                  sizeof without, &outcome, &counts);
     if (outcome.decision != ECHO_ANSWER) {
         fputs("  the unpadded request was declined\n", stderr);
@@ -452,7 +452,7 @@ static bool case_padding_after_the_datagram_is_not_part_of_the_message(void)
 
     unsigned char with[512];
     struct echo_outcome padded_outcome;
-    echo_respond(padded.octets, padded.bytes, THEIR_MAC, OUR_MAC, OUR_IPV4, with,
+    echo_respond(padded.octets, padded.bytes, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, OUR_IPV4, with,
                  sizeof with, &padded_outcome, &counts);
     if (padded_outcome.decision != ECHO_ANSWER) {
         fprintf(stderr, "  the padded request was declined, reason %d\n",
@@ -479,7 +479,7 @@ static bool case_the_reply_may_be_built_over_the_request(void)
     memset(&counts, 0, sizeof counts);
     unsigned char apart[512];
     struct echo_outcome outcome;
-    echo_respond(request.octets, request.bytes, THEIR_MAC, OUR_MAC, OUR_IPV4, apart,
+    echo_respond(request.octets, request.bytes, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, OUR_IPV4, apart,
                  sizeof apart, &outcome, &counts);
     if (outcome.decision != ECHO_ANSWER) {
         fputs("  the request was declined when built apart\n", stderr);
@@ -493,7 +493,7 @@ static bool case_the_reply_may_be_built_over_the_request(void)
     memcpy(frame + ETHERNET_HEADER_BYTES, request.octets, request.bytes);
 
     struct echo_outcome in_place;
-    echo_respond(frame + ETHERNET_HEADER_BYTES, request.bytes, THEIR_MAC, OUR_MAC,
+    echo_respond(frame + ETHERNET_HEADER_BYTES, request.bytes, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC,
                  OUR_IPV4, frame, sizeof frame, &in_place, &counts);
     if (in_place.decision != ECHO_ANSWER) {
         fprintf(stderr, "  the request was declined when built over itself, reason %d\n",

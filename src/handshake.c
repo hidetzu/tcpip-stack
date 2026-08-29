@@ -63,7 +63,7 @@ static void moved(struct handshake_outcome *outcome, enum connection_state state
  * ⚠ Built from the inside out, so each layer's payload is already in place.
  * Returns 0 when it would not fit. */
 static size_t build_the_answer(const struct transmission_control_block *block,
-                               enum handshake_reply what,
+                               enum handshake_reply what, uint8_t time_to_live,
                                const struct connection_id *id,
                                const uint8_t *requester_hardware_address,
                                const uint8_t *our_hardware_address,
@@ -125,7 +125,7 @@ static size_t build_the_answer(const struct transmission_control_block *block,
     }
 
     size_t datagram_bytes = 0;
-    if (ipv4_build_datagram(id->local.address, id->remote.address, IPV4_PROTOCOL_TCP,
+    if (ipv4_build_datagram(id->local.address, id->remote.address, IPV4_PROTOCOL_TCP, time_to_live,
                             segment, segment_bytes, reply + ETHERNET_HEADER_BYTES,
                             reply_bytes - ETHERNET_HEADER_BYTES,
                             &datagram_bytes) != IPV4_BUILD_OK) {
@@ -322,14 +322,14 @@ static enum where_it_sat read_the_fin(struct transmission_control_block *block,
  * reason and its counter). ⚠ On failure the buffer is reported as empty, and
  * ⚠ a caller must not send what was not built. */
 static bool build_what_is_due(const struct transmission_control_block *block,
-                              enum handshake_reply what,
+                              enum handshake_reply what, uint8_t time_to_live,
                               const struct connection_id *id,
                               const uint8_t *requester_hardware_address,
                               const uint8_t *our_hardware_address,
                               uint8_t *reply, size_t reply_bytes,
                               struct handshake_outcome *outcome)
 {
-    outcome->reply_bytes = build_the_answer(block, what, id, requester_hardware_address,
+    outcome->reply_bytes = build_the_answer(block, what, time_to_live, id, requester_hardware_address,
                                             our_hardware_address, reply, reply_bytes);
     if (outcome->reply_bytes == 0) {
         outcome->reply = HANDSHAKE_REPLY_NONE;
@@ -372,13 +372,13 @@ static bool build_what_is_due(const struct transmission_control_block *block,
  * ⚠ Nothing is counted for the send here — ⚠ **a segment that was built is not
  * a segment that left**, and the caller counts what the wire took. */
 static void say_where_we_are(const struct transmission_control_block *block,
-                             const struct connection_id *id,
+                             uint8_t time_to_live, const struct connection_id *id,
                              const uint8_t *requester_hardware_address,
                              const uint8_t *our_hardware_address,
                              uint8_t *reply, size_t reply_bytes,
                              struct handshake_outcome *outcome)
 {
-    (void)build_what_is_due(block, HANDSHAKE_REPLY_WHERE_WE_ARE, id,
+    (void)build_what_is_due(block, HANDSHAKE_REPLY_WHERE_WE_ARE, time_to_live, id,
                             requester_hardware_address, our_hardware_address,
                             reply, reply_bytes, outcome);
 }
@@ -395,6 +395,7 @@ static enum handshake_reply what_is_owed(const struct transmission_control_block
 
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
                        uint16_t listening_port, struct moment now,
+                       uint8_t time_to_live,
                        const uint8_t *requester_hardware_address,
                        const uint8_t *our_hardware_address,
                        struct connections *connections,
@@ -461,7 +462,7 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                 read_the_fin(held, header, now, outcome, counts);
                 moved(outcome, held->state, &counts->established);
                 if (held->state == CONNECTION_LAST_ACK &&
-                    !build_what_is_due(held, HANDSHAKE_REPLY_OUR_FIN, id,
+                    !build_what_is_due(held, HANDSHAKE_REPLY_OUR_FIN, time_to_live, id,
                                        requester_hardware_address, our_hardware_address,
                                        reply, reply_bytes, outcome)) {
                     held->state = CONNECTION_CLOSE_WAIT;
@@ -512,7 +513,7 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                 outcome->decision = HANDSHAKE_MOVED;
                 outcome->reason = HANDSHAKE_REASON_NONE;
                 outcome->state = held->state;
-                if (!build_what_is_due(held, HANDSHAKE_REPLY_OUR_FIN, id,
+                if (!build_what_is_due(held, HANDSHAKE_REPLY_OUR_FIN, time_to_live, id,
                                        requester_hardware_address, our_hardware_address,
                                        reply, reply_bytes, outcome)) {
                     /* ⚠ Ours, not the sender's. ⚠ The connection is left in
@@ -537,7 +538,7 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                 stayed(outcome, HANDSHAKE_REASON_A_FIN_THAT_BEGINS_TOO_FAR_AHEAD,
                        &counts->fin_that_begins_too_far_ahead);
             }
-            say_where_we_are(held, id, requester_hardware_address, our_hardware_address,
+            say_where_we_are(held, time_to_live, id, requester_hardware_address, our_hardware_address,
                              reply, reply_bytes, outcome);
             return;
         }
@@ -578,7 +579,7 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                  * ⚠ When it will not fit, the octets were still taken and
                  * `RCV.NXT` still moved: ⚠ **giving them back is not possible**,
                  * so the failure is reported as ours and the taking stands. */
-                if (!build_what_is_due(held, HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED,
+                if (!build_what_is_due(held, HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED, time_to_live,
                                        id, requester_hardware_address,
                                        our_hardware_address, reply, reply_bytes,
                                        outcome)) {
@@ -593,7 +594,7 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                     stayed(outcome, HANDSHAKE_REASON_DATA_THAT_BEGINS_TOO_FAR_AHEAD,
                            &counts->data_that_begins_too_far_ahead);
                 }
-                say_where_we_are(held, id, requester_hardware_address,
+                say_where_we_are(held, time_to_live, id, requester_hardware_address,
                                  our_hardware_address, reply, reply_bytes, outcome);
             }
             return;
@@ -664,7 +665,7 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     taken->answer_due = moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
     taken->give_up_at = moment_after(now, HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS);
 
-    if (!build_what_is_due(taken, HANDSHAKE_REPLY_THE_ANSWER, id,
+    if (!build_what_is_due(taken, HANDSHAKE_REPLY_THE_ANSWER, time_to_live, id,
                            requester_hardware_address, our_hardware_address,
                            reply, reply_bytes, outcome)) {
         /* ⚠ The connection was opened and we cannot answer it. ⚠ Ours, not the
@@ -705,7 +706,7 @@ static struct transmission_control_block *the_one_waiting(struct connections *co
 }
 
 enum handshake_due handshake_what_is_due(struct connections *connections,
-                                         struct moment now,
+                                         struct moment now, uint8_t time_to_live,
                                          const uint8_t *our_hardware_address,
                                          uint8_t *reply, size_t reply_bytes,
                                          struct handshake_counts *counts,
@@ -758,7 +759,7 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
 
         /* ⚠ Addressed from what the connection remembers: ⚠ **there is no
          * arriving frame to read it from** (hidetzu/tcpip-stack#59). */
-        if (!build_what_is_due(waiting, what_is_owed(waiting), &waiting->id,
+        if (!build_what_is_due(waiting, what_is_owed(waiting), time_to_live, &waiting->id,
                                waiting->requester_hardware_address,
                                our_hardware_address, reply, reply_bytes, outcome)) {
             /* ⚠ Ours, not the sender's. ⚠ The attempt is spent either way — the

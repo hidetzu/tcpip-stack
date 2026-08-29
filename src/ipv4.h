@@ -149,6 +149,8 @@ enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes
  * is nothing for a receiver to match pieces by. ⚠ The kernel puts a different
  * value in every reply — ⚠ that was measured too, and ⚠ no grounds for copying
  * the behaviour were read, so it is not copied. */
+/* ⚠ **The default, not the value.** ⚠ Since hidetzu/tcpip-stack#103 a caller
+ * says what to send, and this is what `--ttl` starts at. */
 #define IPV4_TIME_TO_LIVE_WE_SEND 64u
 #define IPV4_IDENTIFICATION_WE_SEND 0u
 
@@ -177,9 +179,19 @@ enum ipv4_build {
  * "A checksum on the header only", RFC 791.
  *
  * ⚠ `payload` may overlap the buffer being written; the copy allows it. */
+/* ⚠ `time_to_live` is the caller's, and ⚠ **it is a parameter rather than the
+ * constant it used to be** (hidetzu/tcpip-stack#103).
+ *
+ * ⚠ RFC 9293 `MUST-49`: "The TTL value used to send TCP segments MUST be
+ * configurable." ⚠ **It was written here once and nothing could change it**;
+ * `docs/SPEC.md` §1 recorded the value and not that it was fixed.
+ *
+ * ⚠ `IPV4_TIME_TO_LIVE_WE_SEND` is still what a caller passes when nothing said
+ * otherwise, and ⚠ **it is still an observation about the Linux kernel** rather
+ * than a reading of RFC 791. */
 enum ipv4_build ipv4_build_datagram(const uint8_t *source_address,
                                     const uint8_t *destination_address,
-                                    uint8_t protocol,
+                                    uint8_t protocol, uint8_t time_to_live,
                                     const uint8_t *payload, size_t payload_bytes,
                                     uint8_t *datagram, size_t datagram_bytes,
                                     size_t *built_bytes);

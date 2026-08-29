@@ -541,6 +541,7 @@ struct handshake_outcome {
  * on the wire; `docs/SPEC.md` §2 names them. */
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
                        uint16_t listening_port, struct moment now,
+                       uint8_t time_to_live,
                        const uint8_t *requester_hardware_address,
                        const uint8_t *our_hardware_address,
                        struct connections *connections,
@@ -587,7 +588,7 @@ enum handshake_due {
  * `our_hardware_address` is ours; ⚠ **the requester's is remembered in the
  * connection**, because a retransmission has no arriving frame to read it from. */
 enum handshake_due handshake_what_is_due(struct connections *connections,
-                                         struct moment now,
+                                         struct moment now, uint8_t time_to_live,
                                          const uint8_t *our_hardware_address,
                                          uint8_t *reply, size_t reply_bytes,
                                          struct handshake_counts *counts,
