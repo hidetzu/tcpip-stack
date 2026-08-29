@@ -161,6 +161,19 @@ struct transmission_control_block {
      * limitation is recorded** (`docs/SPEC.md` §2), ⚠ **not discovered later.** */
     uint32_t still_to_send;
 
+    /* When the earliest unacknowledged octet should go out again, and whether
+     * anything is waiting for it at all.
+     *
+     * ⚠ RFC 6298 §5.1: "Every time a packet containing data is sent (including
+     * a retransmission), if the timer is not running, start it running."
+     * ⚠ §5.2: "When all outstanding data has been acknowledged, turn off the
+     * retransmission timer." ⚠ **Those two are what `waiting_for_an_ack` is.**
+     *
+     * ⚠ **The interval is NOT an RTO** (hidetzu/tcpip-stack#129 Owner Decision):
+     * ⚠ see `HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS`. */
+    bool waiting_for_an_ack;
+    struct moment send_again_at;
+
     /* RFC 793's own receive-sequence names, same rules:
      *
      *   "Set RCV.NXT to SEG.SEQ+1, IRS is set to SEG.SEQ"

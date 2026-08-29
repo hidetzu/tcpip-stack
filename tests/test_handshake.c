@@ -2048,6 +2048,120 @@ static bool case_the_window_is_what_one_frame_carries(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#129. ⚠ RFC 6298 §5.2: **"When all outstanding data has
+ * been acknowledged, turn off the retransmission timer."** ⚠ §5.4: **"Retransmit
+ * the earliest segment that has not been acknowledged."**
+ *
+ * ⚠ **Added because a mutation walked past every check**: not advancing
+ * `SND.UNA` on an acknowledgment covering data left every tier green
+ * (2026-08-29). ⚠ **The stack would have retransmitted for ever and the kernel
+ * would still have had the data** — ⚠ so the interop checks could not see it. */
+static bool case_an_acknowledgment_for_data_stops_the_resending(void)
+{
+    bool ok = true;
+    uint8_t reply[2048];
+    struct handshake_outcome sent;
+
+    /* ⚠ Acknowledged: ⚠ **nothing is due, ever again.** */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        held->still_to_send = 10u;
+        held->snd_wnd = 65535u;
+        if (!handshake_send_what_is_next(&world.connections, 1500u, at(0),
+                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                         reply, sizeof reply, &world.counts, &sent)) {
+            fputs("  nothing was sent to be acknowledged\n", stderr);
+            return false;
+        }
+        struct connection_id id = the_connection();
+        struct tcp_header ack = a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->snd_nxt);
+        struct handshake_outcome outcome;
+        handshake_receive(&ack, &id, OUR_PORT, THE_WINDOW, THE_MSS, 0,
+                          at(1), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC,
+                          &world.connections, world.reply, sizeof world.reply,
+                          &world.counts, &outcome);
+
+        if (held->snd_una != held->snd_nxt) {
+            fprintf(stderr, "  SND.UNA is %u and SND.NXT is %u after an "
+                            "acknowledgment covering everything\n",
+                    (unsigned)held->snd_una, (unsigned)held->snd_nxt);
+            ok = false;
+        }
+        /* ⚠ Long past the deadline, and ⚠ **still nothing is due.** */
+        if (handshake_send_what_is_next(&world.connections, 1500u,
+                                        at(HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS * 10),
+                                        IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                        reply, sizeof reply, &world.counts, &sent)) {
+            fputs("  something was sent again after everything was acknowledged\n", stderr);
+            ok = false;
+        }
+        if (world.counts.data_octets_we_sent_again != 0) {
+            fputs("  octets went out again after everything was acknowledged\n", stderr);
+            ok = false;
+        }
+        /* ⚠ And nothing is waiting, so the caller has no deadline to wake for. */
+        struct moment due;
+        if (handshake_next_moment(&world.connections, &due)) {
+            fputs("  a moment is still due after everything was acknowledged\n", stderr);
+            ok = false;
+        }
+    }
+
+    /* ⚠ The other half (`verify` §5): ⚠ **not acknowledged, and it DOES go out
+     * again** — otherwise the case above would pass for a build that never
+     * retransmits at all. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        held->still_to_send = 10u;
+        held->snd_wnd = 65535u;
+        if (!handshake_send_what_is_next(&world.connections, 1500u, at(0),
+                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                         reply, sizeof reply, &world.counts, &sent)) {
+            return false;
+        }
+        /* ⚠ One millisecond before the deadline: ⚠ **still nothing.** */
+        if (handshake_send_what_is_next(&world.connections, 1500u,
+                                        at(HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS - 1u),
+                                        IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                        reply, sizeof reply, &world.counts, &sent)) {
+            fputs("  it went out again before the deadline\n", stderr);
+            ok = false;
+        }
+        /* ⚠ At the deadline: ⚠ **it goes.** */
+        if (!handshake_send_what_is_next(&world.connections, 1500u,
+                                         at(HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS),
+                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                         reply, sizeof reply, &world.counts, &sent)) {
+            fputs("  nothing went out again at the deadline\n", stderr);
+            ok = false;
+        }
+        if (world.counts.data_octets_we_sent_again != 10u ||
+            world.counts.data_segments_we_sent_again != 1u) {
+            fprintf(stderr, "  %lu octets in %lu segments went out again, not 10 in 1\n",
+                    world.counts.data_octets_we_sent_again,
+                    world.counts.data_segments_we_sent_again);
+            ok = false;
+        }
+        /* ⚠ And they are the SAME octets: `SND.NXT` came back to where it was. */
+        if (held->snd_nxt != held->snd_una + 10u) {
+            fprintf(stderr, "  SND.NXT is %u and SND.UNA + 10 is %u\n",
+                    (unsigned)held->snd_nxt, (unsigned)(held->snd_una + 10u));
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 /* ⚠ hidetzu/tcpip-stack#126. ⚠ **Nothing goes past `SND.UNA + SND.WND`** —
  * ⚠ octets past it are octets the peer told us it cannot hold.
  *
@@ -2071,7 +2185,7 @@ static bool case_nothing_is_sent_past_the_window_they_advertised(void)
     struct handshake_outcome sent;
     unsigned int segments = 0;
     uint32_t octets = 0;
-    while (handshake_send_what_is_next(&world.connections, 1500u,
+    while (handshake_send_what_is_next(&world.connections, 1500u, at(0),
                                        IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                                        reply, sizeof reply, &world.counts, &sent)) {
         segments++;
@@ -2111,7 +2225,7 @@ static bool case_nothing_is_sent_past_the_window_they_advertised(void)
         second->still_to_send = 3000u;
         second->snd_wnd = 65535u;
         struct handshake_outcome first;
-        if (!handshake_send_what_is_next(&open_wide.connections, 1500u,
+        if (!handshake_send_what_is_next(&open_wide.connections, 1500u, at(0),
                                          IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                                          reply, sizeof reply, &open_wide.counts,
                                          &first)) {
@@ -3910,6 +4024,8 @@ static const struct test_case cases[] = {
       case_our_close_is_the_segment_the_document_describes },
     { "every_segment_we_build_carries_the_same_window",
       case_every_segment_we_build_carries_the_same_window },
+    { "an_acknowledgment_for_data_stops_the_resending",
+      case_an_acknowledgment_for_data_stops_the_resending },
     { "nothing_is_sent_past_the_window_they_advertised",
       case_nothing_is_sent_past_the_window_they_advertised },
     { "the_effective_send_mss_is_the_smaller_of_the_two",

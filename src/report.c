@@ -669,6 +669,14 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
             counts->from_an_impossible_source == 1 ? " was" : "s were");
     /* ⚠ Two numbers, ⚠ **because one alone cannot show segmentation**: 3000
      * octets in one segment and 3000 in three are the same octet count. */
+    /* ⚠ Sent again, counted apart: ⚠ **octets sent twice are not octets
+     * delivered twice.** */
+    fprintf(out, "%lu octet%s of ours went out again in %lu segment%s because "
+                 "nobody had acknowledged them\n",
+            counts->data_octets_we_sent_again,
+            counts->data_octets_we_sent_again == 1 ? "" : "s",
+            counts->data_segments_we_sent_again,
+            counts->data_segments_we_sent_again == 1 ? "" : "s");
     fprintf(out, "%lu octet%s of ours left in %lu segment%s, and %lu time%s there "
                  "was no room in the window they advertised\n",
             counts->data_octets_we_sent,

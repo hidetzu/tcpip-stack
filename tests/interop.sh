@@ -1114,6 +1114,165 @@ for bits, sequence, acknowledgment in ours[:1]:
 #
 # ⚠ The other end is the Linux kernel's own `read()`, ⚠ **which is not something
 # we wrote**, and the segments are counted off an AF_PACKET socket (ADR 0009).
+# ⚠ hidetzu/tcpip-stack#129, and ⚠ **the owner's goal for it**, verbatim:
+#
+#   送信した data segment またはその ACK を1つ失っても、tcpip-stack が再送によって
+#   Linux kernel へのデータ配送を完了できるようにしたい
+#
+# ⚠ **Both halves, in one case, because they are the same cure for different
+# causes** — ⚠ and ⚠ **the case says which one it dropped**, so a build that
+# only recovered from one would not pass for both.
+#
+# ⚠ `nft` drops exactly one segment on its way INTO the kernel. ⚠ Dropping the
+# data segment and dropping its acknowledgment are the same recipe aimed at
+# different traffic, ⚠ **and from this stack's side they are indistinguishable
+# — which is the point.**
+inside_a_lost_segment_or_a_lost_ack_still_gets_the_data_through() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+    total=3000
+
+    for lose in data ack; do
+        ip tuntap add dev tap0 mode tap
+        ip link set tap0 mtu 1400
+        "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+            --send "$total" --timeout 9000 >"$work/out-$lose.txt" 2>&1 &
+        reader=$!
+        if ! wait_for_interface tap0; then
+            note_failure "tap0 never appeared while the stack was attached"
+            kill "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+            return
+        fi
+        sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+        ip addr add 10.0.0.1/24 dev tap0
+        ip link set tap0 up
+
+        if ! nft add table ip guard 2>"$work/nft-$lose.txt"; then
+            note_failure "the check environment could not be built here: nft was refused"
+            sed 's/^/      /' "$work/nft-$lose.txt" >&2
+            kill -INT "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+            return
+        fi
+        nft add chain ip guard input "{ type filter hook input priority 0; }"
+        nft add chain ip guard output "{ type filter hook output priority 0; }"
+        # ⚠ The data rule is safe to add now — nothing of ours carries data until
+        # the connection is open. ⚠ **The ACK rule is NOT**: `tcp flags == ack`
+        # and 40 octets is also the handshake's own third ACK, ⚠ **and dropping
+        # that would stop the connection before there was anything to lose.**
+        # ⚠ It is added from inside, after `connect()` returns.
+        if [ "$lose" = data ]; then
+            nft add rule ip guard input tcp sport 80 ip length 1400 counter drop
+        fi
+
+        LC_ALL=C python3 -c '
+import socket, subprocess, sys, threading, time
+TOTAL, WHICH = int(sys.argv[1]), sys.argv[2]
+
+got = {}
+def reader():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(8.0)
+    try:
+        s.connect(("10.0.0.2", 80))
+        chain = "input" if WHICH == "data" else "output"
+        if WHICH == "ack":
+            # ⚠ Added only now: before connect() returned, this rule would have
+            # matched the third ACK of the handshake itself.
+            # ⚠ No apostrophe in this block: the whole python is one
+            # single-quoted shell word, and one would close it.
+            subprocess.run(["nft", "add", "rule", "ip", "guard", "output",
+                            "tcp", "dport", "80", "tcp", "flags", "==", "ack",
+                            "counter", "drop"])
+        seen = b""
+        # ⚠ Take the rule away so the recovery can land.
+        threading.Timer(1.4, lambda: subprocess.run(
+            ["nft", "flush", "chain", "ip", "guard", chain])).start()
+        while len(seen) < TOTAL:
+            more = s.recv(65536)
+            if not more: break
+            seen += more
+        got["octets"] = seen
+        # ⚠ Held open past the deadline ON PURPOSE, and only for the ACK half.
+        # ⚠ MEASURED 2026-08-29: with the kernel ACKs dropped, ALL 3000 OCTETS
+        # ARE ALREADY THERE — ⚠ losing an acknowledgment costs US the knowing,
+        # not THEM the data. ⚠ So delivery completes with no retransmission at
+        # all, ⚠ and closing here would end the run before the deadline and
+        # prove nothing about recovery.
+        # ⚠ Holding on shows the other half: ⚠ we send it again because nobody
+        # told us, ⚠ AND THE KERNEL STILL ENDS WITH EXACTLY 3000 — it discards
+        # the duplicate. ⚠ That is what makes resending safe.
+        if WHICH == "ack":
+            time.sleep(1.0)
+    except Exception as e:
+        got["error"] = repr(e)
+    finally:
+        try: s.close()
+        except Exception: pass
+
+listener = threading.Thread(target=reader, daemon=True)
+listener.start()
+listener.join(9.0)
+octets = got.get("octets", b"")
+print("read", len(octets))
+print("correct", "yes" if octets and
+      octets == bytes((i % 251) for i in range(len(octets))) else "no")
+if "error" in got: print("error", got["error"])
+' "$total" "$lose" >"$work/lost-$lose.txt" 2>&1 || true
+
+        nft list chain ip guard input >"$work/counter-$lose.txt" 2>/dev/null || true
+        nft list chain ip guard output >>"$work/counter-$lose.txt" 2>/dev/null || true
+        kill -INT "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+        nft delete table ip guard 2>/dev/null
+        ip link del tap0 2>/dev/null
+
+        read_back=$(awk '$1 == "read" { print $2 }' "$work/lost-$lose.txt")
+        correct=$(awk '$1 == "correct" { print $2 }' "$work/lost-$lose.txt")
+
+        # ⚠ 1. ⚠ **THE GOAL**: every octet still arrives.
+        if [ "$read_back" != "$total" ]; then
+            note_failure "losing one $lose left the kernel with '$read_back' of $total octets"
+            sed 's/^/      /' "$work/lost-$lose.txt" >&2
+            sed -n 's/^/      /p' "$work/out-$lose.txt" | tail -4 >&2
+            continue
+        fi
+        # ⚠ 2. ⚠ **The RIGHT octets** — a stack that resent the wrong ones would
+        # pass the count alone.
+        if [ "$correct" != yes ]; then
+            note_failure "losing one $lose delivered $total octets that were not the ones asked for"
+        fi
+        # ⚠ 3. ⚠ **The two halves are NOT the same assertion, and measuring
+        # said so** (2026-08-29):
+        #
+        #   losing a data segment  ⚠ the kernel has a HOLE. ⚠ Nothing past it can
+        #                          be delivered, and ⚠ ONLY A RETRANSMISSION
+        #                          completes it. ⚠ So: something MUST have been
+        #                          sent again
+        #   losing an acknowledgment  ⚠ THE KERNEL ALREADY HAS THE DATA. ⚠ What
+        #                          was lost is OUR KNOWING, not THEIR receiving —
+        #                          ⚠ and acknowledgments are CUMULATIVE, so a
+        #                          later one covers the loss and even our knowing
+        #                          is restored. ⚠ So: delivery completes AND
+        #                          NOTHING NEEDS RESENDING
+        #
+        # ⚠ **Asserting a retransmission for the ACK half would be asserting a
+        # defect.** ⚠ Contriving a window where it were needed would be testing
+        # the contrivance.
+        if [ "$lose" = data ]; then
+            if grep -q "^0 octets of ours went out again" "$work/out-$lose.txt"; then
+                note_failure "losing one data segment, nothing was sent again — so nothing was dropped and nothing was proved"
+            fi
+        else
+            # ⚠ The other half for the ACK case: ⚠ **the drop must have
+            # happened**, or this half asserts nothing at all.
+            if ! grep -q "packets [1-9]" "$work/counter-$lose.txt" 2>/dev/null; then
+                note_failure "losing one ack: nft matched nothing, so nothing was dropped and nothing was proved"
+            fi
+        fi
+    done
+
+    printf '    tried losing one data segment and one acknowledgment, %s octets each\n' "$total"
+}
+
 inside_data_larger_than_the_mss_arrives_in_segments_it_bounds() {
     ours=10.0.0.2
     our_mac=02:00:00:00:00:02
@@ -2592,6 +2751,10 @@ case_the_kernel_reaches_time_wait_and_our_block_is_free_again() {
 case_a_fin_whose_sequence_number_we_do_not_expect_is_not_answered() {
     in_namespace a_fin_whose_sequence_number_we_do_not_expect_is_not_answered
 }
+case_a_lost_segment_or_a_lost_ack_still_gets_the_data_through() {
+    in_namespace a_lost_segment_or_a_lost_ack_still_gets_the_data_through
+}
+
 case_data_larger_than_the_mss_arrives_in_segments_it_bounds() {
     in_namespace data_larger_than_the_mss_arrives_in_segments_it_bounds
 }
@@ -2642,7 +2805,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel data_larger_than_the_mss_arrives_in_segments_it_bounds a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel data_larger_than_the_mss_arrives_in_segments_it_bounds a_lost_segment_or_a_lost_ack_still_gets_the_data_through a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

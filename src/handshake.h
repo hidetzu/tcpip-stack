@@ -95,6 +95,30 @@ uint32_t handshake_initial_send_sequence(struct moment now);
 #define HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS 1000u
 #define HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS 3000u
 
+/* How long to wait for an acknowledgment before sending the earliest
+ * unacknowledged octet again.
+ *
+ * ⚠ **THIS IS NOT AN RTO, AND IT IS NOT RFC 6298 CONFORMANT.** ⚠ Owner Decision,
+ * hidetzu/tcpip-stack#129, verbatim: 「固定1秒は #130 までの temporary interval
+ * としてのみ許可し、RFC 6298 準拠や RTO とは呼ばないでください」
+ *
+ * ⚠ **It is a fixed interval and it never changes.** ⚠ RFC 6298 has a 1 second
+ * twice and ⚠ **neither is a fixed interval**: §2.1 makes it the value used
+ * *until* a round trip has been measured, and §2.4 makes it a *floor*.
+ * ⚠ **This number is neither of those things** — ⚠ it is what was here already,
+ * borrowed so that hidetzu/tcpip-stack#129 can be about remembering and
+ * resending rather than about arithmetic.
+ *
+ * ⚠ **`MUST-18` is not met and this does not move it.** ⚠ hidetzu/tcpip-stack#130
+ * replaces this constant with a computed RTO, and ⚠ **this comment goes with
+ * it.**
+ *
+ * ⚠ **Its own name, not `ANSWER_AGAIN`'s**: ⚠ the two happen to be equal today
+ * and ⚠ **they are answers to different questions** — one is about a handshake
+ * nobody confirmed, the other about data nobody acknowledged. ⚠ Sharing the
+ * constant would make #130 move both (`CLAUDE.md` §3). */
+#define HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS 1000u
+
 /* The overhead one frame gives up before a single octet of data: an internet
  * header and a TCP header, both without options.
  *
@@ -657,6 +681,13 @@ struct handshake_counts {
      * like having nothing to send (`.claude/rules/c.md`). */
     unsigned long their_window_had_no_room;
 
+    /* ⚠ Segments and octets sent AGAIN, counted apart from first transmissions.
+     * ⚠ **Octets sent twice are not octets delivered twice**, and a summary that
+     * merged them would say this stack moved more data than it did
+     * (`CLAUDE.md` §6). */
+    unsigned long data_segments_we_sent_again;
+    unsigned long data_octets_we_sent_again;
+
     /* ⚠ **Connections** the other side reset. ⚠ Apart from every other ending:
      * one was closed properly, one timed out, ⚠ **this one was cut.** */
     unsigned long reset_by_the_other_side;
@@ -862,12 +893,21 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
  * ⚠ **At most the effective send MSS of data per segment** — RFC 9293
  * `MUST-16` — ⚠ **and never past `SND.UNA + SND.WND`.**
  *
+ * ⚠ **`now` is handed in and never read** (ADR 0018). ⚠ It decides whether the
+ * earliest unacknowledged octet is due again — ⚠ **RFC 6298 §5.4: "Retransmit
+ * the earliest segment that has not been acknowledged."**
+ *
+ * ⚠ **Winding `SND.NXT` back to `SND.UNA` reproduces exactly what was sent**,
+ * because the octets are a pattern and not a buffer (ADR 0030). ⚠ **That is a
+ * simplification this stack has and a real one does not**, and
+ * `docs/SPEC.md` §2 says so.
+ *
  * ⚠ **`mtu`, not a precomputed size.** ⚠ The effective send MSS is the smaller
  * of what the PEER told us and what one of OUR frames carries, and ⚠ **the first
  * half is per connection** — so it is computed here, per block, rather than
  * handed in as one number for all of them. */
 bool handshake_send_what_is_next(struct connections *connections,
-                                 unsigned int mtu,
+                                 unsigned int mtu, struct moment now,
                                  uint8_t time_to_live,
                                  const uint8_t *our_hardware_address,
                                  uint8_t *reply, size_t reply_bytes,
