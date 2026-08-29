@@ -131,6 +131,15 @@
  * ⚠ Four octets is exactly one 32-bit word, ⚠ **so a header carrying only this
  * option needs no padding and no End of Option List** — `Data Offset` goes from
  * 5 to 6 and nothing else moves (hidetzu/tcpip-stack#123). */
+/* The most data one segment this stack builds may carry.
+ *
+ * ⚠ **A ceiling on the buffer, not a protocol number.** ⚠ RFC 9293 `MUST-16`
+ * decides how much actually goes in one; this only says how much room the code
+ * set aside. ⚠ 1460 is what an MTU of 1500 leaves, and ⚠ **a device with a
+ * larger MTU is bounded by this rather than by its own frame** — ⚠ said plainly
+ * because it is a limit of ours (`docs/SPEC.md` §2). */
+#define TCP_SEGMENT_DATA_MOST 1460u
+
 #define TCP_OPTION_MAXIMUM_SEGMENT_SIZE 2u
 #define TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES 4u
 
@@ -323,11 +332,17 @@ enum tcp_build {
  * order they will be on the wire — ⚠ **ours first**, which is the reverse of
  * what `tcp_parse_header` was handed for the same exchange.
  *
+ * `data` is the payload, or NULL when `data_bytes` is 0. ⚠ **It is copied, not
+ * kept** — the caller's buffer is its own (`.claude/rules/c.md`). ⚠ **The
+ * checksum covers it**, which is why it is written here and not appended by a
+ * caller afterwards.
+ *
  * ⚠ Nothing is written unless the whole segment fits. On OK, *built_bytes is
  * how much was written. */
 enum tcp_build tcp_build_segment(const struct tcp_header *fields,
                                  const uint8_t *source_address,
                                  const uint8_t *destination_address,
+                                 const uint8_t *data, size_t data_bytes,
                                  uint8_t *segment, size_t segment_bytes,
                                  size_t *built_bytes);
 

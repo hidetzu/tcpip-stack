@@ -71,6 +71,18 @@ static bool install_stop_handler(int signal_number)
 
 struct options {
     const char *device_name;
+    /* ⚠ How many octets of ours to send once a connection reaches ESTABLISHED.
+     *
+     * ⚠ **`--send`, hidetzu/tcpip-stack#126 Owner Decision.** ⚠ Something has to
+     * hand this stack data before RFC 9293 `MUST-16` can mean anything, and
+     * ⚠ **there is no application** (ADR 0022). ⚠ **The size is the harness's
+     * choice on purpose**: "5 bytes を送れることではなく、MSS より大きいデータを
+     * 渡したとき、effective send MSS を超えない複数 segment として相手へ届くこと"
+     * — ⚠ **a check that could only ever hand it five octets would assert
+     * nothing about segmentation.**
+     *
+     * ⚠ **0 by default, which is exactly what this stack did before.** */
+    uint32_t octets_to_send;
     long count;   /* COUNT_UNLIMITED, or how many frames to read */
     int timeout_ms;
     bool print_bytes;
@@ -177,6 +189,7 @@ int main(int argc, char **argv)
         { "ipv4", required_argument, NULL, '4' },
         { "tcp-port", required_argument, NULL, 'p' },
         { "ttl", required_argument, NULL, 'l' },
+        { "send", required_argument, NULL, 's' },
         { "hex", no_argument, NULL, 'x' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
@@ -186,7 +199,7 @@ int main(int argc, char **argv)
     bool given_hardware_address = false;
     bool given_protocol_address = false;
 
-    while ((option = getopt_long(argc, argv, "d:c:t:m:4:p:l:xh", long_options, NULL)) != -1) {
+    while ((option = getopt_long(argc, argv, "d:c:t:m:4:p:l:s:xh", long_options, NULL)) != -1) {
         long value = 0;
         switch (option) {
         case 'm':
@@ -237,6 +250,18 @@ int main(int argc, char **argv)
                 return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
             }
             options.time_to_live = (uint8_t)value;
+            break;
+        case 's':
+            /* ⚠ How many octets of ours to send once a connection is open.
+             * ⚠ **Bounded by what a 32-bit sequence space can hold without
+             * wrapping past what we can reason about** — 1 MiB is far below it
+             * and is what a check needs. ⚠ 0 is the default and means send
+             * nothing, ⚠ **which is exactly what this stack did before**. */
+            if (!parse_bounded_long(optarg, 0, 1048576, &value)) {
+                report_option_problem(stderr, OPTION_SEND, argv[0]);
+                return EXIT_ASKED_FOR_SOMETHING_WE_CANNOT_DO;
+            }
+            options.octets_to_send = (uint32_t)value;
             break;
         case 'x':
             options.print_bytes = true;
@@ -385,6 +410,41 @@ int main(int argc, char **argv)
     while (options.count == COUNT_UNLIMITED || (long)frames_read < options.count) {
         if (stop_requested) {
             break;
+        }
+
+        /* ⚠ Drained before the wait, ⚠ **so data of ours goes out as soon as
+         * there is room for it** rather than on the next thing to arrive.
+         *
+         * ⚠ **The loop is here and not in the State layer**: draining means
+         * writing to the device, and ⚠ **the State layer does not touch an fd**
+         * (`.claude/rules/layers.md`).
+         *
+         * ⚠ **It stops on the first refusal**, which is either nothing left or
+         * the peer's window being full — ⚠ **and the second is counted**, so a
+         * send that did not happen is not invisible. */
+        {
+            uint8_t sending[TAP_FRAME_BUFFER_BYTES];
+            struct handshake_outcome sent;
+            while (handshake_send_what_is_next(&connections,
+                                               frame_bytes_the_device_carries,
+                                               options.time_to_live,
+                                               options.hardware_address,
+                                               sending, sizeof sending,
+                                               &handshake_counts, &sent)) {
+                ssize_t handed = tap_write_frame(device, sending, sent.reply_bytes,
+                                                 &failure);
+                if (handed < 0 || (size_t)handed != sent.reply_bytes) {
+                    /* ⚠ **A segment that was not handed over is not a segment
+                     * sent**, and the counters moved when it was built.
+                     * ⚠ Corrected here rather than left claiming more than left
+                     * the device (`.claude/rules/c.md`). */
+                    handshake_counts.data_segments_we_sent--;
+                    handshake_counts.data_octets_we_sent -= sent.octets_taken;
+                    handshake_counts.we_could_not_build_the_reply++;
+                    break;
+                }
+                report_handshake_outcome(stdout, &sent);
+            }
         }
 
         /* ⚠ The nearer of the two deadlines, ⚠ **so a timer of ours ends the wait
@@ -582,7 +642,8 @@ int main(int argc, char **argv)
                         uint8_t reply[TAP_FRAME_BUFFER_BYTES];
                         struct handshake_outcome handshake;
                         handshake_receive(&tcp, &id, options.tcp_port, window_we_promise,
-                                          mss_we_advertise, moment_now(),
+                                          mss_we_advertise, options.octets_to_send,
+                                          moment_now(),
                                           options.time_to_live, header.source,
                                           options.hardware_address, &connections, reply,
                                           sizeof reply, &handshake_counts, &handshake);
@@ -609,6 +670,11 @@ int main(int argc, char **argv)
                                     break;
                                 case HANDSHAKE_REPLY_WHERE_WE_ARE:
                                     handshake_counts.told_them_where_we_are++;
+                                    break;
+                                case HANDSHAKE_REPLY_THE_DATA_WE_WERE_ASKED_FOR:
+                                    /* ⚠ Counted where it is built, ⚠ **because
+                                     * it is not a reply to anything that
+                                     * arrived** and never comes back here. */
                                     break;
                                 case HANDSHAKE_REPLY_THE_ANSWER:
                                 case HANDSHAKE_REPLY_NONE:
