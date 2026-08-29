@@ -120,6 +120,12 @@ static bool case_a_syn_opens_a_connection_and_sets_every_number(void)
 {
     struct world world;
     a_world(&world);
+    /* ⚠ Opened at a moment that is not zero, ⚠ **because since
+     * hidetzu/tcpip-stack#98 the initial send sequence number IS the clock**,
+     * and at moment 0 it would be 0 — ⚠ **which the half below rejects, on
+     * purpose.** ⚠ A real clock is nanoseconds since boot and is never 0;
+     * ⚠ **this case says so rather than leaving the 0 to look like a rule.** */
+    world.now = at(1234567u);
     struct transmission_control_block *held = NULL;
     if (!open_one(&world, THEIR_ISN, &held)) {
         return false;
@@ -136,9 +142,13 @@ static bool case_a_syn_opens_a_connection_and_sets_every_number(void)
     } while (0)
     SAME(irs, THEIR_ISN);
     SAME(rcv_nxt, THEIR_ISN + 1u);
-    SAME(iss, HANDSHAKE_INITIAL_SEND_SEQUENCE);
-    SAME(snd_una, HANDSHAKE_INITIAL_SEND_SEQUENCE);
-    SAME(snd_nxt, HANDSHAKE_INITIAL_SEND_SEQUENCE + 1u);
+    /* ⚠ The number is what the clock said when the connection was taken —
+     * asserted against the function and not against a literal, so ⚠ **it
+     * follows the rate if that changes** (hidetzu/tcpip-stack#98,
+     * `.claude/rules/testing.md`). */
+    SAME(iss, handshake_initial_send_sequence(world.now));
+    SAME(snd_una, handshake_initial_send_sequence(world.now));
+    SAME(snd_nxt, handshake_initial_send_sequence(world.now) + 1u);
 #undef SAME
     if (held->state != CONNECTION_SYN_RECEIVED) {
         fputs("  the state is not SYN-RECEIVED\n", stderr);
@@ -178,7 +188,7 @@ static bool case_only_an_acknowledgment_in_the_window_establishes(void)
             return false;
         }
         struct tcp_header ack = a_segment(TCP_CONTROL_ACK, THEIR_ISN + 1u,
-                                          HANDSHAKE_INITIAL_SEND_SEQUENCE + inside[i]);
+                                          handshake_initial_send_sequence(at(0)) + inside[i]);
         struct handshake_outcome outcome = receive(&world, &ack);
         if (outcome.decision != HANDSHAKE_MOVED ||
             outcome.state != CONNECTION_ESTABLISHED) {
@@ -202,7 +212,7 @@ static bool case_only_an_acknowledgment_in_the_window_establishes(void)
         if (!open_one(&world, THEIR_ISN, &held)) {
             return false;
         }
-        uint32_t wrong = HANDSHAKE_INITIAL_SEND_SEQUENCE + outside[i];
+        uint32_t wrong = handshake_initial_send_sequence(at(0)) + outside[i];
         struct tcp_header ack = a_segment(TCP_CONTROL_ACK, THEIR_ISN + 1u, wrong);
         struct handshake_outcome outcome = receive(&world, &ack);
         if (outcome.decision != HANDSHAKE_STAYED ||
@@ -224,7 +234,7 @@ static bool case_only_an_acknowledgment_in_the_window_establishes(void)
         }
         /* ⚠ The numbers the sentence a human reads will need. */
         if (outcome.acknowledgment_we_had != wrong ||
-            outcome.acknowledgment_we_expected != HANDSHAKE_INITIAL_SEND_SEQUENCE + 1u) {
+            outcome.acknowledgment_we_expected != handshake_initial_send_sequence(at(0)) + 1u) {
             fputs("  the outcome does not carry the two numbers to report\n", stderr);
             ok = false;
         }
@@ -2324,6 +2334,111 @@ static bool case_an_urgent_segment_is_counted_and_said(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#98. ⚠ RFC 9293 `MUST-8`: "A TCP implementation MUST use
+ * the above type of 'clock' for clock-driven selection of initial sequence
+ * numbers", the clock being "a 32-bit counter that typically increments at least
+ * once every roughly 4 microseconds".
+ *
+ * ⚠ **With no clock and no waiting**, which is what ADR 0018 bought: the moment
+ * is handed in. */
+static bool case_the_initial_sequence_number_follows_the_clock(void)
+{
+    bool ok = true;
+
+    /* ⚠ It moves at the rate the document names. ⚠ Asserted against the step
+     * rather than against 4000, so ⚠ **the case follows the constant.** */
+    uint64_t step = HANDSHAKE_INITIAL_SEQUENCE_STEP_NANOSECONDS;
+    if (handshake_initial_send_sequence(at(0)) !=
+            handshake_initial_send_sequence(at(0)) ||
+        handshake_initial_send_sequence(at(0)) + 1u !=
+            handshake_initial_send_sequence(at(0)) + 1u) {
+        fputs("  the same moment gave two different numbers\n", stderr);
+        ok = false;
+    }
+    {
+        struct moment early = { 1000000u };
+        struct moment later = { 1000000u + step };
+        if (handshake_initial_send_sequence(later) !=
+            handshake_initial_send_sequence(early) + 1u) {
+            fprintf(stderr, "  one step of %lu ns moved the number by %lu, not 1\n",
+                    (unsigned long)step,
+                    (unsigned long)(handshake_initial_send_sequence(later) -
+                                    handshake_initial_send_sequence(early)));
+            ok = false;
+        }
+        /* ⚠ And a moment shorter than a step does NOT move it — ⚠ **or the
+         * "at least once every roughly 4 microseconds" would be a coincidence
+         * of the arithmetic.** */
+        struct moment barely = { 1000000u + step - 1u };
+        if (handshake_initial_send_sequence(barely) !=
+            handshake_initial_send_sequence(early)) {
+            fputs("  a moment shorter than one step moved the number\n", stderr);
+            ok = false;
+        }
+    }
+
+    /* ⚠ **Two connections taken at different moments get different numbers**,
+     * ⚠ with the denominator: one second apart, and one second is 250000 steps
+     * of 4 microseconds. */
+    {
+        struct world world;
+        a_world(&world);
+        /* ⚠ `at()` takes milliseconds; ⚠ **this needs nanoseconds**, because a
+         * step is 4 microseconds. */
+        struct moment first_moment = { 5000u };
+        struct moment a_second_later = { 5000u + 1000u * 1000u * 1000u };
+        world.now = first_moment;
+        struct transmission_control_block *first = NULL;
+        if (!open_one(&world, THEIR_ISN, &first)) {
+            return false;
+        }
+        uint32_t taken_early = first->iss;
+        struct tcp_header reset = a_segment(TCP_CONTROL_RST, first->rcv_nxt, 0);
+        (void)receive(&world, &reset);
+
+        world.now = a_second_later;
+        struct transmission_control_block *second = NULL;
+        if (!open_one(&world, THEIR_ISN, &second)) {
+            return false;
+        }
+        uint32_t apart = second->iss - taken_early;
+        if (apart != (uint32_t)(1000u * 1000u * 1000u / step)) {
+            fprintf(stderr, "  a second apart moved the number by %lu, and a second "
+                            "is %lu steps\n",
+                    (unsigned long)apart, (unsigned long)(1000000000u / step));
+            ok = false;
+        }
+    }
+
+    /* ⚠ ADR 0016's rule, and ⚠ **the one this change was most likely to
+     * break**: a retransmitted `SYN` is answered with the same number, ⚠ **even
+     * though the clock has moved.** */
+    {
+        struct world world;
+        a_world(&world);
+        struct moment when = { 7000u };
+        world.now = when;
+        struct transmission_control_block *held = NULL;
+        if (!open_one(&world, THEIR_ISN, &held)) {
+            return false;
+        }
+        uint32_t chosen = held->iss;
+
+        /* ⚠ A minute later, so ⚠ **the clock has moved fifteen million steps.** */
+        struct moment a_minute_later = { 7000u + 60ull * 1000u * 1000u * 1000u };
+        world.now = a_minute_later;
+        struct tcp_header again = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        struct handshake_outcome outcome = receive(&world, &again);
+        if (outcome.reason != HANDSHAKE_REASON_ASKED_AGAIN || held->iss != chosen) {
+            fprintf(stderr, "  a minute later the number was re-chosen: 0x%08lx from "
+                            "0x%08lx\n", (unsigned long)held->iss,
+                    (unsigned long)chosen);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 /* ⚠ AC 5. ⚠ **Nothing is sent for a connection that has not seen a FIN**, so
  * this change cannot pass for a stack that sends on everything. */
 static bool case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin(void)
@@ -2984,7 +3099,7 @@ static bool case_a_confirmed_connection_is_due_nothing(void)
         return false;
     }
     struct tcp_header ack =
-        a_segment(TCP_CONTROL_ACK, THEIR_ISN + 1u, HANDSHAKE_INITIAL_SEND_SEQUENCE + 1u);
+        a_segment(TCP_CONTROL_ACK, THEIR_ISN + 1u, handshake_initial_send_sequence(at(0)) + 1u);
     struct handshake_outcome outcome = receive(&world, &ack);
     if (outcome.state != CONNECTION_ESTABLISHED) {
         fputs("  the connection did not reach ESTABLISHED\n", stderr);
@@ -3270,6 +3385,8 @@ static const struct test_case cases[] = {
       case_a_duplicate_and_a_segment_ahead_are_told_apart_at_the_wrap },
     { "the_time_to_live_we_send_with_is_the_callers",
       case_the_time_to_live_we_send_with_is_the_callers },
+    { "the_initial_sequence_number_follows_the_clock",
+      case_the_initial_sequence_number_follows_the_clock },
     { "a_reset_ends_the_connection", case_a_reset_ends_the_connection },
     { "a_reset_outside_the_window_changes_nothing",
       case_a_reset_outside_the_window_changes_nothing },
