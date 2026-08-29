@@ -227,6 +227,24 @@ enum handshake_reason {
      * nothing is sent here. */
     HANDSHAKE_REASON_NO_CONNECTION_HELD,
 
+    /* ⚠ The segment is addressed to a broadcast or a multicast address, and
+     * ⚠ **nothing is done with it — no state, no reply.**
+     *
+     * ⚠ RFC 9293 `MUST-57`: "A TCP implementation MUST silently discard an
+     * incoming SYN segment that is addressed to a broadcast or multicast
+     * address ... This prevents connection state and replies from being
+     * erroneously created."
+     *
+     * ⚠ **Counted apart from every other reason.** ⚠ "Silently" forbids a reply
+     * on the wire, ⚠ **not a line telling the human who is watching** — and
+     * ⚠ a drop nobody counted is indistinguishable from a segment that never
+     * arrived (`.claude/rules/c.md`).
+     *
+     * ⚠ **It applies to every segment and not only a `SYN`.** ⚠ The document
+     * names the `SYN` because that is what creates state; ⚠ **refusing the rest
+     * as well is ours, and is the narrower behaviour** (hidetzu/tcpip-stack#99). */
+    HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE,
+
     /* ⚠ Ours, not the sender's: every block is in use
      * (hidetzu/tcpip-stack#42 Owner Decision 1). */
     HANDSHAKE_REASON_NO_ROOM,
@@ -413,6 +431,9 @@ struct handshake_counts {
      * released, so ⚠ **the next SYN can open one** (ADR 0015: there is room for
      * one). */
     unsigned long closed;
+
+    /* ⚠ **Segments** addressed to a broadcast or a multicast address. */
+    unsigned long addressed_to_everyone;
 
     /* ⚠ **Connections.** ⚠ Nobody acknowledged our FIN and we stopped waiting.
      * ⚠ Apart from `given_up_on`, which is a handshake that never finished. */

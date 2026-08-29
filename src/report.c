@@ -477,6 +477,13 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
         write_socket(out, &outcome->id.remote);
         fputc('\n', out);
         return;
+    case HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE:
+        /* ⚠ Nothing here is the sender's fault in the usual sense, and the
+         * sentence does not scold: ⚠ **it says what the address was and what we
+         * did.** */
+        fputs("  no answer: that was addressed to a broadcast or multicast address,\n"
+              "    and a connection is never made to one\n", out);
+        return;
     case HANDSHAKE_REASON_NO_ROOM:
         /* ⚠ Ours, and it says so (hidetzu/tcpip-stack#42 Owner Decision 1). */
         fputs("  no answer: we are already holding a connection, and this build has\n"
@@ -569,6 +576,10 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
             counts->fin_we_have_read_already == 1 ? "" : "s",
             counts->fin_that_begins_too_far_ahead,
             counts->fin_we_could_not_place);
+    fprintf(out, "%lu segment%s addressed to a broadcast or multicast address, which "
+                 "a connection is never made to\n",
+            counts->addressed_to_everyone,
+            counts->addressed_to_everyone == 1 ? " was" : "s were");
     fprintf(out, "%lu %s refused for want of room and %lu answer%s never left the "
                  "device, which are ours and not the sender's\n",
             counts->room.refused_for_want_of_room,

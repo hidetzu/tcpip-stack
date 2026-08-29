@@ -28,6 +28,19 @@ static uint16_t read_16(const uint8_t *at)
     return (uint16_t)(((uint16_t)at[0] << 8) | at[1]);
 }
 
+bool ipv4_address_is_broadcast_or_multicast(const uint8_t *address)
+{
+    /* ⚠ The limited broadcast, all thirty-two bits set. */
+    if (address[0] == 255u && address[1] == 255u &&
+        address[2] == 255u && address[3] == 255u) {
+        return true;
+    }
+    /* ⚠ RFC 791 §3.2 on class D: "the first four bits being 1110". ⚠ Read as a
+     * mask rather than a range, so ⚠ **the boundary is the document's and not
+     * arithmetic of ours.** */
+    return (address[0] & 0xf0u) == 0xe0u;
+}
+
 enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes,
                                   struct ipv4_header *header)
 {
