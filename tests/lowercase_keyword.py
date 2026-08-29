@@ -32,6 +32,12 @@ A_CAPITALISED_KEYWORD = r"\b(MUST|SHOULD|MAY)\b"
 # real cases: the furthest was 240 characters.
 NEAR = 300
 
+# ⚠ In a Markdown table one row is one line, and ⚠ **300 characters straddles
+# two of them.** ⚠ Measured: `docs/SPEC.md` had two unrelated rows, one quoting
+# a lowercase keyword and the next saying "asks for" about something else, and
+# ⚠ **this check called it a hit.** ⚠ So for Markdown the window stops at the
+# line, ⚠ which is where a row's meaning stops.
+
 
 def files_to_read(root):
     for where in ("src", "tests", "docs"):
@@ -59,8 +65,14 @@ def main():
             if re.search(A_CAPITALISED_KEYWORD, quoted):
                 continue
             quotations += 1
-            near = text[max(0, match.start() - NEAR):match.start()] \
-                + text[match.end():match.end() + NEAR]
+            before_from = max(0, match.start() - NEAR)
+            after_to = match.end() + NEAR
+            if path.endswith(".md"):
+                line_began = text.rfind("\n", 0, match.start()) + 1
+                line_ended = text.find("\n", match.end())
+                before_from = max(before_from, line_began)
+                after_to = after_to if line_ended < 0 else min(after_to, line_ended)
+            near = text[before_from:match.start()] + text[match.end():after_to]
             claim = re.search(CLAIMS_A_REQUIREMENT, near)
             # ⚠ Saying "lowercase" nearby is the whole point: the writer looked.
             if claim and not re.search(r"lowercase", near, re.I):
