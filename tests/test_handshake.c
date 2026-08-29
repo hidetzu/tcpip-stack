@@ -1793,11 +1793,21 @@ static bool the_window_of_what_we_built(const struct world *world, size_t reply_
 }
 
 /* ⚠ hidetzu/tcpip-stack#75 AC 1: ⚠ **the same number in every segment we
- * build**, read out of each of the three rather than checked one at a time.
+ * build**, read out of each rather than checked one at a time.
  *
- * ⚠ The three cases that assert each segment's fields already compare its window
- * with the constant. ⚠ **That would still pass if a second constant appeared**
- * and one shape used it — ⚠ this compares the segments with each other. */
+ * ⚠ The cases that assert each segment's fields already compare its window with
+ * the constant. ⚠ **That would still pass if a second constant appeared** and
+ * one shape used it — ⚠ this compares the segments with each other.
+ *
+ * ⚠ **It read three of the four shapes until hidetzu/tcpip-stack#102**, and
+ * ⚠ **the fourth was added at #80 without this case following.** ⚠ That is the
+ * mistake `CLAUDE.md` §9's first row names: ⚠ **run the case and read whether it
+ * covers every clause**, rather than trusting its name.
+ *
+ * ⚠ **It is the grounds for `MUST-39` now** (`docs/conformance.md`): the
+ * receiver's SWS avoidance algorithm governs window updates, and ⚠ **a window
+ * that is the same in every segment we build sends none.** ⚠ **So this case has
+ * to cover every segment we build, or that argument is about three of four.** */
 static bool case_every_segment_we_build_carries_the_same_window(void)
 {
     struct world world;
@@ -1833,6 +1843,19 @@ static bool case_every_segment_we_build_carries_the_same_window(void)
         return false;
     }
 
+    /* ⚠ The fourth shape, and ⚠ **the one this case did not read until
+     * hidetzu/tcpip-stack#102**: an acknowledgment for a segment we refuse. */
+    uint16_t in_where_we_are = 0;
+    struct tcp_header duplicate =
+        carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt - 1u, held->iss + 1u), 1);
+    struct handshake_outcome refused = receive(&world, &duplicate);
+    if (refused.reply != HANDSHAKE_REPLY_WHERE_WE_ARE ||
+        !the_window_of_what_we_built(&world, refused.reply_bytes, &in_where_we_are)) {
+        fprintf(stderr, "  the acknowledgment for a refused segment was of kind %d\n",
+                (int)refused.reply);
+        return false;
+    }
+
     struct tcp_header fin =
         a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u);
     struct handshake_outcome closed = receive(&world, &fin);
@@ -1842,15 +1865,17 @@ static bool case_every_segment_we_build_carries_the_same_window(void)
         return false;
     }
 
-    if (in_the_answer != in_the_acknowledgment || in_the_answer != in_our_close) {
-        fprintf(stderr, "  the answer says %u, the acknowledgment %u and our close %u\n",
-                in_the_answer, in_the_acknowledgment, in_our_close);
+    if (in_the_answer != in_the_acknowledgment || in_the_answer != in_our_close ||
+        in_the_answer != in_where_we_are) {
+        fprintf(stderr, "  the answer says %u, the acknowledgment %u, where-we-are %u "
+                        "and our close %u\n",
+                in_the_answer, in_the_acknowledgment, in_where_we_are, in_our_close);
         ok = false;
     }
     /* ⚠ And the other half: ⚠ **it is the number we chose**, not merely the
      * same wrong number three times. */
     if (in_the_answer != HANDSHAKE_WINDOW) {
-        fprintf(stderr, "  all three say %u and the window is %u\n", in_the_answer,
+        fprintf(stderr, "  all four say %u and the window is %u\n", in_the_answer,
                 (unsigned)HANDSHAKE_WINDOW);
         ok = false;
     }
