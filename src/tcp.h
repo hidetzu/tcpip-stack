@@ -65,14 +65,14 @@
 
 /* The header before any Options, in units of the above.
  *
- * ⚠ Grounds, and they are NOT the document: ⚠ **RFC 793 states no minimum for
- * Data Offset.** RFC 791 does for `IHL` — "Note that the minimum value for a
- * correct header is 5" — and ⚠ there is no sentence like it here.
+ * ⚠ **Grounds: RFC 9293 §3.1**, the baseline since ADR 0024: "Options: [TCP
+ * Option]; size(Options) == (DOffset-5)*32; ⚠ **present only when DOffset > 5**".
  *
- * ⚠ This is counted off the diagram: the fields above Options occupy five
- * 32-bit words. ⚠ A Data Offset below it is a header saying it is shorter than
- * its own fixed fields, which is a contradiction — ⚠ our reading, recorded as
- * ours (ADR 0013). */
+ * ⚠ **It used to be ours**, and it said so: RFC 793 states no minimum for Data
+ * Offset where RFC 791 does for `IHL`, and ⚠ **the contradiction of a header
+ * claiming to be shorter than its own fixed fields was our reading** (ADR 0013).
+ * ⚠ **RFC 9293 states it, so the claim is the document's** — ⚠ and nothing about
+ * the code changed when that was found (hidetzu/tcpip-stack#87). */
 #define TCP_HEADER_LENGTH_MINIMUM 5
 
 /* ⚠ Data Offset is four bits wide, so it cannot exceed this. */

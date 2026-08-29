@@ -78,6 +78,14 @@ than a line that simply stops appearing (`CLAUDE.md` §1: an uncounted thing is 
 given back.** ⚠ Their FIN was read and `RCV.NXT` moved over it, so ⚠ **forgetting the connection
 would make the next copy of that FIN look like a new one.** ⚠ Counted as ours, not the sender's.
 
+## ⚠ Re-read against RFC 9293 on 2026-08-29
+
+⚠ hidetzu/tcpip-stack#87. ⚠ **Still ours, and the sentence that leaves it ours is
+the one already quoted here**: RFC 9293 §3.10.4 says `CLOSE-WAIT` "send a FIN
+segment, enter LAST-ACK state" ⚠ **and says nothing about how many segments the
+acknowledgment and the FIN occupy.** ⚠ One segment rather than two is a decision,
+⚠ **evidenced by what the Linux kernel does and not required by the document.**
+
 ## Consequences
 
 ⚠ **Measured after building it, 2026-08-29, same conditions:**

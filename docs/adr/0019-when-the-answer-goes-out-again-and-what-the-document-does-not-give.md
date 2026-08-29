@@ -65,6 +65,24 @@ costs by an order of magnitude** (`docs/SPEC.md` §3 owns that number).
 ⚠ **Chosen for what a check can afford, and recorded as exactly that** —
 ⚠ **not dressed up as a reading.**
 
+### ⚠ Re-read against RFC 9293 on 2026-08-29
+
+⚠ ADR 0024 made RFC 9293 the baseline, and hidetzu/tcpip-stack#87 re-read this.
+
+⚠ **1000 ms loses the grounds it had.** ⚠ RFC 9293 contains no `LBOUND` and no
+"e.g., 1 second" — measured, 0 occurrences of either. ⚠ §3.8.1 says only that
+"the retransmission timeout (RTO) must be dynamically determined" and ⚠ **defers
+the algorithm to RFC 6298**, which ⚠ **ADR 0024 clause 3 does not pull in**
+because nothing here measures a round trip.
+
+⚠ **So both numbers are ours now**, and neither is dressed up as a reading.
+⚠ **Nothing changes in the code**: the values are what they were, and ⚠ **what
+changed is that this ADR may no longer point at a sentence for the first of
+them.**
+
+⚠ **`docs/SPEC.md` §2 already names the whole gap** — the timeout is not derived
+from a round trip — ⚠ and that row is unaffected.
+
 ⚠ So the answer goes out again after a second and after two, and ⚠ **the
 connection is given up on at three.**
 

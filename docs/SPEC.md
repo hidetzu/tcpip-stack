@@ -117,15 +117,38 @@ other RFCs is added ⚠ **one function at a time, when that function is implemen
 is which document a new claim is held to, and which settles a disagreement.**
 
 ⚠ **It is not free.** ⚠ RFC 793 uses no RFC 2119 keywords in capitals — measured, 0 — and RFC 9293
-uses 203 `MUST` and 38 `SHOULD`. ⚠ **Several rows in §1 rest on the shape "the document states X and
-does not tell a receiver what to do", with the conclusion recorded as ours.** ⚠ Those have to be
-re-read against the new baseline one at a time, and ⚠ **until each is, this file says RFC 793
-because that is what was read.**
+uses 203 `MUST` and 38 `SHOULD`. ⚠ **Several claims here rest on the shape "the document states X and
+does not tell a receiver what to do", with the conclusion recorded as ours.**
 
-⚠ **The first one is done** (hidetzu/tcpip-stack#86): ⚠ `Reserved` is four bits, a set one is
-ignored, and `CWR` and `ECE` are read and acted on by nothing. ⚠ **`tcp_counts.malformed` means less
-than it did** — it had four causes and has three — ⚠ and that is said here rather than left for the
-number to change meaning quietly.
+⚠ **They were re-read one at a time on 2026-08-29** (hidetzu/tcpip-stack#87), ⚠ **with the sentence
+of RFC 9293 each was judged against, quoted where the claim is recorded.**
+
+| Claim, and where it is recorded | ⚠ Verdict |
+|---|---|
+| A non-zero `Reserved` is malformed (ADR 0013) | ⚠ **Contradicted** — "must be ignored in received segments" (§3.1). Done: hidetzu/tcpip-stack#86 |
+| A `Data Offset` below 5 is malformed (ADR 0013, `src/tcp.h`) | ⚠ **The document's now** — "present only when DOffset > 5" (§3.1). ⚠ No code changed |
+| A retransmitted `SYN` is not the in-window `SYN` error (ADR 0016) | ⚠ **Still ours** — Table 6 gives the test, ⚠ **placing the step is ours.** ⚠ But **a contradiction beside it**: §3.10.7.4 asks for an acknowledgment we do not send — hidetzu/tcpip-stack#89 |
+| `SND.UNA =< SEG.ACK =< SND.NXT` accepts both ends (ADR 0016) | ⚠ **The document's, and always was** — reading its sentence, not extending it |
+| The checksum is decided before any field's content (ADR 0014) | ⚠ **Still ours** — §3.1 requires the check (MUST-3) and ⚠ **says nothing about when** |
+| 1000 ms between answers (ADR 0019) | ⚠ **Now ours too** — ⚠ RFC 9293 has no `LBOUND` and no "e.g., 1 second", measured. ⚠ It defers to RFC 6298, which clause 3 does not pull in |
+| 3000 ms before giving up (ADR 0019) | ⚠ **Still ours**, and never claimed otherwise |
+| A `FIN`'s arrival is the `CLOSE` (ADR 0022) | ⚠ **Still ours** — §3.10.4 and §3.6 keep the local user, ⚠ **and there is still none here** |
+| One segment carrying `FIN,ACK` (ADR 0023) | ⚠ **Still ours** — §3.10.4 says "send a FIN segment, enter LAST-ACK state" and ⚠ **nothing about how many segments** |
+| `Protocol` 6 is an observation, not the document's (`src/tcp.h`) | ⚠ **Still ours** — §3.1 says only "PTCL: the protocol number from the IP header" |
+| `CLOSE-WAIT` → `LAST-ACK` (ADR 0022) | ⚠ **The document's** — §3.10.4, settled at hidetzu/tcpip-stack#66 before this pass |
+
+⚠ **ADR 0010 and ADR 0011 are out of scope for that pass and say so**: they draw the same shape for
+IPv4 and ICMP and are held to RFC 791 and RFC 792, ⚠ **which ADR 0024 did not move.**
+
+⚠ **Two changed behaviour, and only one of them is done.** ⚠ hidetzu/tcpip-stack#86 made `Reserved`
+four bits — ⚠ **`tcp_counts.malformed` means less than it did**, four causes to three, and that is
+said rather than left for the number to change meaning quietly. ⚠ hidetzu/tcpip-stack#89 is the
+other.
+
+⚠ **One more was found and is deliberately not an issue yet**: RFC 9293 §3.10.7.4 says an acceptable
+`SYN` in `SYN-RECEIVED` on a passive `OPEN` should "return this connection to the LISTEN state", and
+⚠ **this build does not.** ⚠ **It has not been measured**, and hidetzu/tcpip-stack#89 names it so it
+is not lost.
 
 ## 3. Measured numbers
 

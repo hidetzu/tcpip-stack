@@ -113,6 +113,13 @@ counterpart here**, so this is not a reading: it is that a header claiming to be
 shorter than its own fixed fields is contradicting itself. ⚠ **The same shape as
 hidetzu/tcpip-stack#35 Owner Decision 4** for a `Total Length` below its header.
 
+⚠ **This stopped being ours on 2026-08-29** (ADR 0024, hidetzu/tcpip-stack#87).
+⚠ RFC 9293 §3.1 states the minimum RFC 793 did not: "Options: [TCP Option];
+size(Options) == (DOffset-5)*32; ⚠ **present only when DOffset > 5**".
+⚠ **The claim is the document's now, and not one line of code changes** — ⚠ but
+⚠ **a claim that is the document's must not keep saying it is ours**, because
+the next person weighing it would weigh it as our opinion.
+
 ⚠ **A `Reserved` that is not zero is malformed.** ⚠ Grounds are the document's
 "Must be zero"; ⚠ **the conclusion drawn from it is ours.** ⚠ **This is the third
 time this repository has drawn it from the same shape of sentence** — ADR 0010

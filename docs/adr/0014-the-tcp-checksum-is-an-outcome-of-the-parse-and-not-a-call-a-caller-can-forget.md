@@ -63,6 +63,12 @@ checksum nobody judged cannot exist.**
 before any field's content, so ⚠ a segment changed in flight is never reported as
 the sender's mistake.
 
+⚠ **Re-read against RFC 9293 on 2026-08-29** (ADR 0024, hidetzu/tcpip-stack#87).
+⚠ **Still ours.** ⚠ RFC 9293 §3.1 requires the check — "The TCP checksum is never
+optional.  The sender MUST generate it (MUST-2) and the receiver MUST check it
+(MUST-3)" — ⚠ **and says nothing about when it is checked relative to reading a
+field.** ⚠ The order is ours, and it stays recorded as ours.
+
 ### ⚠ Three things trimmed off the plain version
 
 1. ⚠ **The protocol number is not a parameter.** A pseudo-header for a TCP
