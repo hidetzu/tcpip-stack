@@ -446,25 +446,28 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
     case HANDSHAKE_REASON_THE_DATA_WAS_TAKEN_AND_DISCARDED:
         write_the_data_we_took(out, outcome->octets_taken);
         return;
-    case HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW:
+    case HANDSHAKE_REASON_A_FIN_WE_HAVE_READ_ALREADY:
         /* ⚠ The measured case: `RCV.NXT` moved over the first FIN, so every
-         * retransmission of it lands here. ⚠ Which of the two it was is not
-         * claimed, because this build does not tell them apart. */
-        fputs("  no answer: that FIN is not the next thing we are waiting for. Either\n"
-              "    we have read it already, or it begins past what we asked for\n", out);
+         * copy of it that crosses our answer lands here. ⚠ Until
+         * hidetzu/tcpip-stack#76 this and the line below were one sentence
+         * saying "either, or" — ⚠ **which was honest about what the build knew,
+         * and the build knows now.** */
+        fputs("  no answer: we have read that FIN already and moved past it\n", out);
+        return;
+    case HANDSHAKE_REASON_A_FIN_THAT_BEGINS_TOO_FAR_AHEAD:
+        fputs("  no answer: that FIN begins past what we are waiting for, and there\n"
+              "    are octets before it we have not taken\n", out);
         return;
     case HANDSHAKE_REASON_A_FIN_WE_CANNOT_PLACE:
         fputs("  no answer: nothing here is holding the connection that FIN closes, so\n"
               "    its sequence number cannot be checked against anything\n", out);
         return;
-    case HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW:
-        /* ⚠ Which of the two it was is not claimed, because ⚠ **this build does
-         * not tell them apart** — it asks one question, whether any octet is in
-         * the window (`src/handshake.c`). ⚠ Saying "either, or" is not a guess
-         * dressed as a measurement; ⚠ naming one of them would be
-         * (`CLAUDE.md` §1). */
-        fputs("  no answer: none of that data is inside the window we promised. Either\n"
-              "    we have taken it already, or it begins past what we asked for\n", out);
+    case HANDSHAKE_REASON_DATA_WE_HAVE_TAKEN_ALREADY:
+        fputs("  no answer: we have taken every octet of that already\n", out);
+        return;
+    case HANDSHAKE_REASON_DATA_THAT_BEGINS_TOO_FAR_AHEAD:
+        fputs("  no answer: that data begins past what we are waiting for, and there\n"
+              "    are octets before it we have not seen\n", out);
         return;
     case HANDSHAKE_REASON_NOT_EXPECTED_IN_THIS_STATE:
         fputs("  no answer: nothing in this connection's state expects that\n", out);
@@ -546,21 +549,23 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
      * kind is read as the same kind** (`CLAUDE.md` §6). */
     fprintf(out, "%lu acknowledgment%s for data left the device\n",
             counts->data_acknowledged, counts->data_acknowledged == 1 ? "" : "s");
-    fprintf(out, "%lu octet%s of data %s taken and discarded, and %lu segment%s "
-                 "carried data none of which was inside the window we promised\n",
+    fprintf(out, "%lu octet%s of data %s taken and discarded. %lu segment%s carried "
+                 "data we had taken already, and %lu began past what we were waiting "
+                 "for\n",
             counts->octets_taken_and_discarded,
             counts->octets_taken_and_discarded == 1 ? "" : "s",
             counts->octets_taken_and_discarded == 1 ? "was" : "were",
-            counts->data_outside_the_window,
-            counts->data_outside_the_window == 1 ? "" : "s");
-    fprintf(out, "the other side closed %lu connection%s. %lu FIN%s arrived that %s not "
-                 "the next thing we were waiting for, and %lu named a connection we hold "
-                 "nothing for\n",
+            counts->data_we_have_taken_already,
+            counts->data_we_have_taken_already == 1 ? "" : "s",
+            counts->data_that_begins_too_far_ahead);
+    fprintf(out, "the other side closed %lu connection%s. %lu FIN%s arrived that we had "
+                 "read already, %lu began past what we were waiting for, and %lu named "
+                 "a connection we hold nothing for\n",
             counts->the_other_side_closed,
             counts->the_other_side_closed == 1 ? "" : "s",
-            counts->fin_outside_the_window,
-            counts->fin_outside_the_window == 1 ? "" : "s",
-            counts->fin_outside_the_window == 1 ? "was" : "were",
+            counts->fin_we_have_read_already,
+            counts->fin_we_have_read_already == 1 ? "" : "s",
+            counts->fin_that_begins_too_far_ahead,
             counts->fin_we_could_not_place);
     fprintf(out, "%lu %s refused for want of room and %lu answer%s never left the "
                  "device, which are ours and not the sender's\n",

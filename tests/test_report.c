@@ -694,15 +694,21 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
         { HANDSHAKE_REASON_NOBODY_ACKNOWLEDGED_OUR_FIN,
           "  10.0.0.1:50568 never acknowledged our close; we stopped waiting and freed the\n"
           "    room the connection held\n" },
-        { HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW,
-          "  no answer: that FIN is not the next thing we are waiting for. Either\n"
-          "    we have read it already, or it begins past what we asked for\n" },
+        /* ⚠ Two sentences where there was one saying "either, or"
+         * (hidetzu/tcpip-stack#76). */
+        { HANDSHAKE_REASON_A_FIN_WE_HAVE_READ_ALREADY,
+          "  no answer: we have read that FIN already and moved past it\n" },
+        { HANDSHAKE_REASON_A_FIN_THAT_BEGINS_TOO_FAR_AHEAD,
+          "  no answer: that FIN begins past what we are waiting for, and there\n"
+          "    are octets before it we have not taken\n" },
         { HANDSHAKE_REASON_A_FIN_WE_CANNOT_PLACE,
           "  no answer: nothing here is holding the connection that FIN closes, so\n"
           "    its sequence number cannot be checked against anything\n" },
-        { HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW,
-          "  no answer: none of that data is inside the window we promised. Either\n"
-          "    we have taken it already, or it begins past what we asked for\n" },
+        { HANDSHAKE_REASON_DATA_WE_HAVE_TAKEN_ALREADY,
+          "  no answer: we have taken every octet of that already\n" },
+        { HANDSHAKE_REASON_DATA_THAT_BEGINS_TOO_FAR_AHEAD,
+          "  no answer: that data begins past what we are waiting for, and there\n"
+          "    are octets before it we have not seen\n" },
     };
     for (size_t i = 0; i < sizeof stayed / sizeof stayed[0]; i++) {
         memset(&outcome, 0, sizeof outcome);
@@ -799,10 +805,11 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "0 answers went out again because nobody had confirmed them\n"
         "0 connections were given up on after nobody confirmed them\n"
         "0 acknowledgments for data left the device\n"
-        "0 octets of data were taken and discarded, and 0 segments carried data "
-        "none of which was inside the window we promised\n"
-        "the other side closed 0 connections. 0 FINs arrived that were not the next "
-        "thing we were waiting for, and 0 named a connection we hold nothing for\n"
+        "0 octets of data were taken and discarded. 0 segments carried data we had "
+        "taken already, and 0 began past what we were waiting for\n"
+        "the other side closed 0 connections. 0 FINs arrived that we had read "
+        "already, 0 began past what we were waiting for, and 0 named a connection we "
+        "hold nothing for\n"
         "0 were refused for want of room and 0 answers never left the device, which "
         "are ours and not the sender's\n");
     produced_close(&produced);
@@ -822,13 +829,15 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.room.refused_for_want_of_room = 1;
     one.data_acknowledged = 1;
     one.octets_taken_and_discarded = 1;
-    one.data_outside_the_window = 1;
+    one.data_we_have_taken_already = 1;
+    one.data_that_begins_too_far_ahead = 1;
     one.the_other_side_closed = 1;
     one.our_fin_left = 1;
     one.our_fin_went_out_again = 1;
     one.closed = 1;
     one.never_acknowledged_our_fin = 1;
-    one.fin_outside_the_window = 1;
+    one.fin_we_have_read_already = 1;
+    one.fin_that_begins_too_far_ahead = 1;
     one.fin_we_could_not_place = 1;
 
     produced_open(&produced);
@@ -844,10 +853,11 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "1 answer went out again because nobody had confirmed it\n"
         "1 connection was given up on after nobody confirmed it\n"
         "1 acknowledgment for data left the device\n"
-        "1 octet of data was taken and discarded, and 1 segment carried data none "
-        "of which was inside the window we promised\n"
-        "the other side closed 1 connection. 1 FIN arrived that was not the next "
-        "thing we were waiting for, and 1 named a connection we hold nothing for\n"
+        "1 octet of data was taken and discarded. 1 segment carried data we had "
+        "taken already, and 1 began past what we were waiting for\n"
+        "the other side closed 1 connection. 1 FIN arrived that we had read already, "
+        "1 began past what we were waiting for, and 1 named a connection we hold "
+        "nothing for\n"
         "1 was refused for want of room and 1 answer never left the device, which "
         "are ours and not the sender's\n") && ok;
     produced_close(&produced);
@@ -877,9 +887,11 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.never_acknowledged_our_fin = 21;
     each.data_acknowledged = 22;
     each.octets_taken_and_discarded = 11;
-    each.data_outside_the_window = 12;
+    each.data_we_have_taken_already = 12;
+    each.data_that_begins_too_far_ahead = 23;
     each.the_other_side_closed = 13;
-    each.fin_outside_the_window = 14;
+    each.fin_we_have_read_already = 14;
+    each.fin_that_begins_too_far_ahead = 24;
     each.fin_we_could_not_place = 15;
     each.room.refused_for_want_of_room = 16;
     each.we_could_not_build_the_reply = 17;
@@ -897,11 +909,11 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "9 answers went out again because nobody had confirmed them\n"
         "10 connections were given up on after nobody confirmed them\n"
         "22 acknowledgments for data left the device\n"
-        "11 octets of data were taken and discarded, and 12 segments carried data "
-        "none of which was inside the window we promised\n"
-        "the other side closed 13 connections. 14 FINs arrived that were not the "
-        "next thing we were waiting for, and 15 named a connection we hold nothing "
-        "for\n"
+        "11 octets of data were taken and discarded. 12 segments carried data we had "
+        "taken already, and 23 began past what we were waiting for\n"
+        "the other side closed 13 connections. 14 FINs arrived that we had read "
+        "already, 24 began past what we were waiting for, and 15 named a connection "
+        "we hold nothing for\n"
         "16 were refused for want of room and 17 answers never left the device, "
         "which are ours and not the sender's\n") && ok;
     produced_close(&produced);

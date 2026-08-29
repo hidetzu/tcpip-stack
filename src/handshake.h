@@ -239,22 +239,30 @@ enum handshake_reason {
      * "delete the TCB, enter the CLOSED state and return." */
     HANDSHAKE_REASON_NOBODY_CONFIRMED_IT,
 
-    /* ⚠ A FIN arrived that ⚠ **the window we promised does not cover** — its
-     * sequence number is not the next one we are waiting for.
+    /* ⚠ A FIN we have read already. ⚠ `RCV.NXT` has moved past where it sits.
      *
-     * ⚠ RFC 793's acceptability test for a segment of length 1 against a window
-     * above zero, quoted: "RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND". ⚠ A FIN
-     * occupies one sequence number — "A control bit (finis) occupying one
-     * sequence number" — so ⚠ **a FIN is a segment of length 1 even carrying no
-     * data.**
+     * ⚠ **This is the measured case, not a rare one**: nothing acknowledged the
+     * FIN before hidetzu/tcpip-stack#66, and the Linux kernel sent five copies
+     * of it in one `close()`. ⚠ Since #66 it stops after one, ⚠ **but a copy
+     * that crossed our answer on the wire still lands here.**
      *
-     * ⚠ **This is the measured case, not a rare one**: `RCV.NXT` advances over
-     * a FIN we read, so ⚠ **every retransmission of it lands here.** ⚠ The Linux
-     * kernel sent five in one `close()` — measured 2026-08-29.
+     * ⚠ Told apart from one that begins too far ahead since
+     * hidetzu/tcpip-stack#76: ⚠ **one is a peer repeating itself and the other
+     * is a peer ahead of us**, and a single number could not show a
+     * retransmitting peer apart from a broken one. */
+    HANDSHAKE_REASON_A_FIN_WE_HAVE_READ_ALREADY,
+
+    /* ⚠ A FIN that begins past what we are waiting for — ⚠ **there are octets
+     * before it we have not taken.**
      *
-     * ⚠ Which of the two it was is not told apart, the same as
-     * `DATA_OUTSIDE_THE_WINDOW`: this build asks one question. */
-    HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW,
+     * ⚠ RFC 793 says a segment with a higher beginning sequence number "may be
+     * held for later processing." ⚠ **Nothing here holds anything**, and
+     * `docs/SPEC.md` §2 names that gap.
+     *
+     * ⚠ It is what a FIN riding more octets than the window covers becomes:
+     * ⚠ **the data is trimmed to the window, and the FIN then sits past what we
+     * took** (hidetzu/tcpip-stack#75). */
+    HANDSHAKE_REASON_A_FIN_THAT_BEGINS_TOO_FAR_AHEAD,
 
     /* ⚠ A FIN arrived and ⚠ **nothing is held for the connection it names.**
      *
@@ -281,19 +289,28 @@ enum handshake_reason {
      * measured. */
     HANDSHAKE_REASON_THE_DATA_WAS_TAKEN_AND_DISCARDED,
 
-    /* ⚠ Data arrived that ⚠ **none of the window we promised covers** — every
-     * octet of it is behind `RCV.NXT`, or every octet is beyond what was
-     * promised.
+    /* ⚠ Data every octet of which we have taken already. ⚠ `RCV.NXT` has moved
+     * past the end of it.
      *
-     * ⚠ RFC 793's sequence number check, verbatim: "segments with higher
-     * beginning sequence numbers may be held for later processing." ⚠ Nothing
-     * here holds anything, and ⚠ `docs/SPEC.md` §2 names that gap rather than
-     * leaving it silent.
+     * ⚠ **This is what a peer whose acknowledgment was lost sends**, and
+     * ⚠ **it is the ordinary case once data moves**, not a rare one. ⚠ Measured
+     * 2026-08-29 before hidetzu/tcpip-stack#74: 6 of 7 arrivals were this.
      *
-     * ⚠ Counted apart from data that was taken: ⚠ **one is octets that reached
-     * us, the other is a segment that reached us and had nothing in it we had
-     * room for.** */
-    HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW,
+     * ⚠ Nothing is sent for it, which is the gap hidetzu/tcpip-stack#80 owns. */
+    HANDSHAKE_REASON_DATA_WE_HAVE_TAKEN_ALREADY,
+
+    /* ⚠ Data that begins past what we are waiting for — ⚠ **there are octets
+     * before it we have not seen.**
+     *
+     * ⚠ RFC 793: "segments with higher beginning sequence numbers may be held
+     * for later processing." ⚠ **Nothing here holds anything**; it is refused
+     * and counted, and `docs/SPEC.md` §2 names that gap.
+     *
+     * ⚠ Told apart from data we have taken already since
+     * hidetzu/tcpip-stack#76. ⚠ **Until then both were one number and the
+     * sentence a human read said "either, or"** — which was honest about what
+     * the build knew, and ⚠ **the build knows now.** */
+    HANDSHAKE_REASON_DATA_THAT_BEGINS_TOO_FAR_AHEAD,
 
     /* ⚠ Ours, not the sender's. ⚠ The connection moved and ⚠ the answer could
      * not be built into the buffer we were given. ⚠ Counted rather than dropped
@@ -327,8 +344,11 @@ struct handshake_counts {
      * measurement taken with a window of 1024). */
     unsigned long octets_taken_and_discarded;
 
-    /* ⚠ **Segments** — a segment none of whose octets the window covered. */
-    unsigned long data_outside_the_window;
+    /* ⚠ **Segments**, and ⚠ **two numbers where there was one**
+     * (hidetzu/tcpip-stack#76): a peer repeating itself, and a peer ahead of us.
+     * ⚠ Their sum is what `data_outside_the_window` used to be. */
+    unsigned long data_we_have_taken_already;
+    unsigned long data_that_begins_too_far_ahead;
 
     /* ⚠ **Segments.** ⚠ The other side closed and we read its FIN. ⚠ Counted
      * apart from `established`, ⚠ **and both can move for one segment**: RFC 793
@@ -336,10 +356,12 @@ struct handshake_counts {
      * in the same pass. */
     unsigned long the_other_side_closed;
 
-    /* ⚠ **Segments** — a FIN the window did not cover, and a FIN naming a
-     * connection we hold nothing for. ⚠ Kept apart from each other and from
-     * everything else (hidetzu/tcpip-stack#65). */
-    unsigned long fin_outside_the_window;
+    /* ⚠ **Segments** — a FIN we have read already, a FIN beginning past what we
+     * are waiting for, and a FIN naming a connection we hold nothing for.
+     * ⚠ Kept apart from each other and from everything else
+     * (hidetzu/tcpip-stack#65, split at #76). */
+    unsigned long fin_we_have_read_already;
+    unsigned long fin_that_begins_too_far_ahead;
     unsigned long fin_we_could_not_place;
 
     /* ⚠ **Segments**, not octets. ⚠ An acknowledgment for data we took, counted
