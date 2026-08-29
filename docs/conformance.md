@@ -32,7 +32,9 @@ and ⚠ **that is different from having no requirements.**
 
 ---
 
-## ⚠ The seven not yet met, in three groups
+## ⚠ What is not yet met, in groups
+
+⚠ **Seventeen requirements are not met across the whole of Appendix B** — ⚠ **seven from hidetzu/tcpip-stack#96 (one since closed) and eleven from hidetzu/tcpip-stack#97.**
 
 ⚠ **Seven `MUST`s came back not met at hidetzu/tcpip-stack#96.** ⚠ **The issue's Stop Condition
 said to report the list rather than cut seven issues**, and ⚠ **that is what happened — none was
@@ -48,6 +50,23 @@ cut.** ⚠ **They are not seven independent gaps.** ⚠ Reading them together, t
 ⚠ **The middle and last groups cannot be handed over as they stand** — ⚠ **each would make the AI
 decide what may be claimed**, which `CLAUDE.md` §7-1 puts on the owner. ⚠ **The first can, once its
 one question is answered.**
+
+### ⚠ And four more groups, from hidetzu/tcpip-stack#97
+
+⚠ **Eleven more came back not met, ⚠ so that issue's Stop Condition fired too and no issue was cut.**
+
+| Group | The requirements | ⚠ What it is |
+|---|---|---|
+| ⚠ **The urgent mechanism** | `MUST-30`, `MUST-31`, `MUST-32`, `MUST-33`, `MUST-62` | ⚠ **The section hidetzu/tcpip-stack#97 named in advance as the one that would be got wrong.** ⚠ **The bit and the pointer are read and nothing is supported** — ⚠ calling any of it *does not arise* would make a mandated feature's absence look inapplicable |
+| ⚠ **ICMP errors reaching a connection** | `MUST-54`, `SHLD-26` | ⚠ **There is no path from ICMP to a connection.** ⚠ **`MUST-55` and `MUST-56` come out met BY ACCIDENT** — not acting is what those two happen to ask for |
+| ⚠ **An interface for an application** | `MUST-43`, `MUST-47`, `MUST-48` | ⚠ **There is no user of this stack** (ADR 0022). ⚠ **Two of the three effects exist in another shape** (`--ipv4`, `--ttl`), ⚠ **and an effect in a different shape is not the requirement met** |
+| ⚠ **ECN** | `SHLD-8` | ⚠ **One `SHOULD`, alone.** ⚠ Accepting a `SYN` that carries the bits is not implementing the mechanism |
+
+⚠ **The first three of these are not the same kind of work as the option machinery or the
+retransmission schedule.** ⚠ **They are downstream of one absence — there is nothing above this
+stack to serve** — ⚠ **and ADR 0022 records that as a decision, not an oversight.** ⚠ **Whether
+that stays the shape of this project is the owner's, and it is a larger question than any of the
+requirements below.**
 
 ⚠ **Neither `MUST-19` nor `MUST-23` is a small change wearing a large label.** ⚠ `MUST-23` looks
 like moving one constant from `3000` to `180000`; ⚠ **`docs/SPEC.md` §3 owns what the real tier
@@ -203,3 +222,130 @@ take the behaviour away and no check would say so**, which is the only reason th
 | `MUST-46` | "MUST NOT ... OPEN to broadcast/multicast IP address" | ⚠ **does not arise** — judged at hidetzu/tcpip-stack#94: nothing here performs an active `OPEN` |
 | `MUST-63` | "An incoming SYN with an invalid source address MUST be ignored either by TCP or by the IP layer ... (see Section 3.2.1.3)" | ⚠ **met in part** since hidetzu/tcpip-stack#112, ⚠ **and the part is named rather than the whole claimed.** ⚠ **Was not met at all**: measured 2026-08-29, a `SYN` sourced from `255.255.255.255` ⚠ **opened a connection and was answered.** ⚠ **Met**, each quoted from the section RFC 9293 sends the reader to — RFC 1122 §3.2.1.3: `0.0.0.0/8` (a)(b) "MUST NOT be sent, except as a source address as part of an initialization procedure", `127.0.0.0/8` (g) "MUST NOT appear outside a host", `255.255.255.255` (c) "MUST NOT be used as a source address". ⚠ **And `224.0.0.0/4`, whose grounds are OUTSIDE §3.2.1.3** — the multicast address model, ⚠ **recorded as reaching past the citation rather than quoted to it** (ADR 0025). ⚠ **Not met**: a directed broadcast, §3.2.1.3 (d)(e)(f), ⚠ **which cannot be told from a host address without a netmask.** ⚠ `tests/static.sh` `handshake` → `a_syn_from_an_impossible_source_is_refused` asserts every form above, ⚠ **the six boundary addresses one octet outside each range**, and ⚠ **that a directed broadcast source IS still answered.** ⚠ `tests/interop.sh` `a_syn_from_an_impossible_source_is_not_answered` on the wire |
 | `MUST-57` | "Silently discard SYN to bcast/mcast addr" | ⚠ **met in part** — judged at hidetzu/tcpip-stack#99; a directed broadcast is not recognised |
+
+## ⚠ Where there is no application (hidetzu/tcpip-stack#97)
+
+⚠ **Written once, and referred to rather than repeated.**
+
+⚠ **ADR 0022: there is no user of this stack.** ⚠ Nothing calls `OPEN`, `SEND`, `RECEIVE`, `CLOSE`
+or `ABORT`; the program attaches to a device, answers what arrives, and reports. ⚠ **So every
+requirement phrased as "the application MUST be able to ..." or "MUST inform the application layer"
+is about an interface that does not exist.**
+
+⚠ **A bare `MUST` of that shape is `not met`, never `does not arise`** — ⚠ **the legend above says
+so, and the reason is that "not applicable" is a claim.** ⚠ **A TCP no application can use has not
+met a requirement about serving applications; it has avoided the subject.**
+
+⚠ **A `SHOULD` or a `MAY` of that shape is `does not arise` or `not taken`**, with the condition
+quoted. ⚠ **The difference is the keyword's, not ours.**
+
+---
+
+## PUSH flag (hidetzu/tcpip-stack#97)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MAY-15` | "A TCP endpoint MAY implement PUSH flags on SEND calls" | ⚠ **not taken** — ⚠ **there are no `SEND` calls** (ADR 0022) |
+| `MUST-60` | "**If PUSH flags are not implemented**, then the sending TCP peer: (1) MUST NOT buffer data indefinitely" | ⚠ **met, and vacuously — ⚠ which is not a virtue.** ⚠ **The condition IS true**: `MAY-15` is not taken, so this arises. ⚠ **There is no send queue at all** — this stack originates no data, so nothing can be buffered indefinitely. ⚠ **It must be re-judged the moment anything is queued to send**, and nothing would notice |
+| `MUST-61` | "and (2) MUST set the PSH bit in the last buffered segment (i.e., when there is no more queued data to be sent)" | ⚠ **met, and vacuously** — same condition, same reason. ⚠ **`PSH` is never set on anything this stack builds, and there has never been queued data for it to be the last of** |
+| `MAY-16` | "the TCP implementation MAY aggregate the data internally without sending it" | ⚠ **not taken** — ⚠ no `SEND` calls to aggregate |
+| `MAY-17` | "A TCP receiver MAY pass a received PSH bit to the application layer via the PUSH flag in the interface ..., but it is not required" | ⚠ **not taken, and it could not be** — ⚠ **there is no application layer to pass it to.** ⚠ The bit is read as part of the control bits and nothing acts on it |
+| `SHLD-27` | "The transmitter SHOULD collapse successive bits when it packetizes data, to send the largest possible segment" | ⚠ **does not arise** — ⚠ **nothing here packetizes data.** ⚠ Every segment this stack builds is a fixed header with no payload (ADR 0017) |
+| `SHLD-28` | "a TCP implementation SHOULD send a maximum-sized segment whenever possible" | ⚠ **does not arise** — same condition: ⚠ **there are no data segments to size** |
+
+## Urgent Data (hidetzu/tcpip-stack#97)
+
+⚠ **This is the section hidetzu/tcpip-stack#97 named in advance as the one that would be got wrong.**
+⚠ **Calling any of it "does not arise" would make a mandated feature's absence look like an
+inapplicable clause.**
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-30` | "TCP implementations MUST still include support for the urgent mechanism" | ⚠ **not met** — ⚠ **there is no support of any kind.** ⚠ The `URG` bit and the `Urgent Pointer` are read (`MUST-66`, hidetzu/tcpip-stack#101) and ⚠ **a segment carrying `URG` is counted and reported as `urgent and nobody to tell`** — ⚠ **reading a field is not supporting a mechanism.** ⚠ **The sentence before it, `SHLD-13`, says new applications should not use it; the document still requires the support** |
+| `MUST-62` | "The urgent pointer MUST point to the sequence number of the octet following the urgent data" | ⚠ **not met, as part of `MUST-30`** — ⚠ **nothing this stack builds ever sets `URG`**, so the field is always zero and never points at anything. ⚠ **Recorded as not met rather than vacuous**: ⚠ it is one clause of a mechanism the document requires, and ⚠ **splitting it off as inapplicable would hide the whole** |
+| `MUST-31` | "A TCP implementation MUST support a sequence of urgent data of any length" | ⚠ **not met, as part of `MUST-30`** — ⚠ no length is supported, including zero |
+| `MUST-32` | "A TCP implementation MUST (MUST-32) inform the application layer asynchronously whenever it receives an urgent pointer and there was previously no pending urgent data, or whenever the urgent pointer advances" | ⚠ **not met** — ⚠ **there is no application layer** (see the section above). ⚠ **The human watching is told, and that is not the same thing**: a line on a terminal is not an asynchronous report to a program |
+| `MUST-33` | "The TCP implementation MUST (MUST-33) provide a way for the application to learn how much urgent data remains to be read" | ⚠ **not met** — ⚠ no application, and ⚠ **no urgent data is ever held to be counted** |
+| `SHLD-13` | "New applications SHOULD NOT set the URGENT flag ... due to implementation differences and middlebox issues" | ⚠ **does not arise** — ⚠ **this binds an application, and there is none** (ADR 0022). ⚠ **It is quoted here because it is the sentence `MUST-30` answers**: ⚠ the document tells applications not to use the mechanism and still requires implementations to carry it |
+
+## Send Keep-alive Packets (hidetzu/tcpip-stack#97)
+
+⚠ **The clean case this issue exists to separate.** ⚠ **Every row below is conditional in the
+document's own words on a feature that is optional and not taken** — ⚠ **so these really are
+`does not arise`, and saying so costs nothing.**
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MAY-5` | "Implementers MAY include 'keep-alives' in their TCP implementations ..., although this practice is not universally accepted" | ⚠ **not taken** — ⚠ **nothing here sends a probe on an idle connection.** ⚠ **This is the condition every row below hangs on** |
+| `MUST-24` | "**If keep-alives are included**, the application MUST be able to turn them on or off for each TCP connection" | ⚠ **does not arise** — ⚠ **the condition is quoted and it is false.** ⚠ **Two reasons, either alone sufficient**: keep-alives are not included, and there is no application |
+| `MUST-25` | "and they MUST default to off" | ⚠ **does not arise** — same sentence, same condition |
+| `MUST-26` | "Keep-alive packets MUST only be sent when no sent data is outstanding, and no data or acknowledgment packets have been received for the connection within an interval" | ⚠ **does not arise** — ⚠ **there are no keep-alive packets to constrain** (`MAY-5`) |
+| `MUST-27` | "This interval MUST be configurable" | ⚠ **does not arise** — ⚠ **there is no interval** (`MUST-26`) |
+| `MUST-28` | "and MUST default to no less than two hours" | ⚠ **does not arise** — same |
+| `MUST-29` | "**if a keep-alive mechanism is implemented** it MUST NOT interpret failure to respond to any specific probe as a dead connection" | ⚠ **does not arise** — ⚠ **the condition is quoted and it is false.** ⚠ **The reasoning behind it does apply here and is honoured elsewhere**: this stack never reports a peer as dead on the strength of one absent answer (`CLAUDE.md` §1) |
+| `SHLD-12` | "An implementation SHOULD send a keep-alive segment with no data" | ⚠ **does not arise** — ⚠ no keep-alive segment is sent at all |
+| `MAY-6` | "however, it MAY be configurable to send a keep-alive segment containing one garbage octet, for compatibility with erroneous TCP implementations" | ⚠ **not taken** — ⚠ conditional on `SHLD-12`, which does not arise |
+
+## IP Options (hidetzu/tcpip-stack#97)
+
+⚠ **A datagram whose `IHL` is greater than 5 — which is what carrying options means — is refused
+one layer below TCP**, as `IPV4_PARSE_NOT_HANDLED`: ⚠ **well-formed but unsupported, counted on its
+own, and never silently dropped** (`.claude/rules/layers.md`, ADR 0010).
+
+⚠ **So "does not arise" here means "a refusal of ours keeps the condition false", which is a
+different thing from a condition that cannot occur** — ⚠ **and `docs/SPEC.md` §2 names the refusal.**
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-50` | "**When received options are passed up to TCP from the IP layer**, a TCP implementation MUST ignore options that it does not understand" | ⚠ **does not arise** — ⚠ **no option is ever passed up**: the datagram carrying one is refused at the internet layer before TCP is reached. ⚠ **The condition is quoted, and the reason it is false is ours** |
+| `MAY-10` | "A TCP implementation MAY support the Timestamp (MAY-10) and Record Route (MAY-11) Options" | ⚠ **not taken** — ⚠ **the IP Timestamp Option**, not the TCP one (`MAY-3`, judged at hidetzu/tcpip-stack#96) — ⚠ **two different options with similar names, and this row names which** |
+| `MAY-11` | "and Record Route (MAY-11) Options" | ⚠ **not taken** — same sentence |
+| `MUST-51` | "An application MUST be able to specify a source route **when it actively opens a TCP connection**" | ⚠ **does not arise** — ⚠ **nothing here performs an active `OPEN`**, which is the same ground `MUST-46` was judged on at hidetzu/tcpip-stack#94 |
+| `MUST-52` | "and this MUST take precedence over a source route received in a datagram" | ⚠ **does not arise** — ⚠ conditional on `MUST-51`'s source route, which cannot be specified |
+| `MUST-53` | "**When a TCP connection is OPENed passively and a packet arrives with a completed IP Source Route Option** (containing a return route), TCP implementations MUST save the return route and use it for all segments sent on this connection" | ⚠ **does not arise, ⚠ and this is the one to read carefully.** ⚠ **The first half of the condition IS true** — every connection here is opened passively. ⚠ **The second half is kept false by us**: a datagram carrying the option is refused at the internet layer. ⚠ **So this is not a requirement that cannot apply; it is one we have arranged not to reach**, and ⚠ **it becomes live the day `IHL > 5` is accepted** |
+| `SHLD-24` | "If a different source route arrives in a later segment, the later definition SHOULD override the earlier one" | ⚠ **does not arise** — ⚠ conditional on `MUST-53`'s saved route |
+
+## Receiving ICMP Messages from IP (hidetzu/tcpip-stack#97)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-54` | "TCP implementations MUST act on an ICMP error message passed up from the IP layer, directing it to the connection that created the error. The necessary demultiplexing information can be found in the IP header contained within the ICMP message" | ⚠ **not met** — ⚠ **there is no path from ICMP to a connection.** ⚠ **This stack does read ICMP** — it answers an echo request — ⚠ **and an ICMP error is refused as `ICMP_TYPE_NOT_HANDLED`, counted, and never handed to TCP.** ⚠ **A bare `MUST` about a capability every TCP is expected to have: not met, not inapplicable** |
+| `MUST-55` | "TCP implementations MUST silently discard any received ICMP Source Quench messages" | ⚠ **met, ⚠ and by accident** — ⚠ **nothing acts on it because nothing acts on any ICMP error** (`MUST-54`). ⚠ **"Silently" forbids a reply on the wire and not a line telling the human**, the same reading `MUST-57` took at hidetzu/tcpip-stack#99, ⚠ **and no reply is built for it.** ⚠ **Said as accidental rather than claimed as a choice**: ⚠ it would still be met if the whole ICMP layer were deleted, which is not what the requirement is for |
+| `MUST-56` | "Since these Unreachable messages indicate soft error conditions, a TCP implementation MUST NOT abort the connection" | ⚠ **met, ⚠ and vacuously** — ⚠ **no connection is ever aborted on an ICMP message, because none reaches a connection** (`MUST-54`). ⚠ **A `MUST NOT` satisfied by never being in a position to do the thing.** ⚠ **It must be re-judged the day `MUST-54` is met** |
+| `SHLD-25` | "and it SHOULD make the information available to the application" | ⚠ **does not arise** — ⚠ **there is no application** (see the section above), ⚠ **and no information is held to make available** |
+| `SHLD-26` | "These are hard error conditions, so TCP implementations SHOULD abort the connection" | ⚠ **not met** — ⚠ **and this one is NOT vacuous.** ⚠ **ICMP hard errors do arrive at this machine**; they are refused at the ICMP layer and never reach the connection they name. ⚠ **The condition can occur and we have arranged not to see it** — ⚠ **which is different from `MUST-56`, where not acting is what the document asks for** |
+
+## TCP/ALP Interface Services (hidetzu/tcpip-stack#97)
+
+⚠ **Judged against there being no user of this stack** (ADR 0022). ⚠ **The reasoning is in the
+section above and is not repeated per row.**
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-43` | "The optional 'local IP address' parameter MUST be supported to allow the specification of the local IP address. This enables applications that need to select the local IP address used when multihoming is present" | ⚠ **not met** — ⚠ **and the capability exists in another shape, which is exactly why this is not called met.** ⚠ `--ipv4` chooses the address this stack answers for. ⚠ **But `MUST-43` is about a parameter of the `OPEN` call, and there is no `OPEN` call** — ⚠ **the same reading `MUST-20`'s R2 got at hidetzu/tcpip-stack#96: an effect in a different shape is not the requirement met** |
+| `MUST-47` | "There MUST be a mechanism for reporting soft TCP error conditions to the application" | ⚠ **not met** — ⚠ **there is no application and no `ERROR_REPORT` routine.** ⚠ **A line on a terminal is not this**: the document's mechanism is upcalled into a program |
+| `MUST-48` | "The application layer MUST be able to specify the Differentiated Services field for segments that are sent on a connection" | ⚠ **not met** — ⚠ **no application, and the field is written as 0 by the builder and is not a caller's to set** (ADR 0012). ⚠ **`--ttl` was given a caller at hidetzu/tcpip-stack#103 and this field was not** |
+| `SHLD-20` | "an application program that does not want to receive such ERROR_REPORT calls SHOULD be able to effectively disable these calls" | ⚠ **does not arise** — ⚠ conditional on `MUST-47`'s mechanism, which does not exist |
+| `SHLD-21` | "the application SHOULD be able to change the Differentiated Services field during the connection lifetime" | ⚠ **does not arise** — ⚠ conditional on `MUST-48` |
+| `SHLD-22` | "TCP implementations SHOULD pass the current Differentiated Services field value without change to the IP layer, when it sends segments on the connection" | ⚠ **does not arise** — ⚠ **there is no value to pass**: nothing sets one, and the builder writes 0 unconditionally |
+| `SHLD-23` | "Generally, an application SHOULD NOT change the Diffserv field value during the course of a connection" | ⚠ **does not arise** — ⚠ **this binds an application, and there is none** |
+| `MAY-9` | "TCP implementations MAY pass the most recently received Differentiated Services field up to the application" | ⚠ **not taken** — ⚠ **the field is not read on the way in either.** ⚠ `Type of Service` is parsed into the header struct and nothing consumes it |
+| `MAY-14` | "The FLUSH call MAY be implemented" | ⚠ **not taken** — ⚠ **there is no send queue to flush** and no call to make |
+
+## RFC 5961 Support (hidetzu/tcpip-stack#97)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MAY-12` | "RFC 5961 [9], Section 5 describes a potential blind data injection attack, and mitigation that implementations MAY choose to include" | ⚠ **not taken** — ⚠ **and worth saying plainly, because this stack takes segments from strangers**: the acceptance test for an `ACK` is the window check RFC 9293 §3.10.7.4 gives and ⚠ **not RFC 5961's narrower one.** ⚠ **A `MAY` refused is a decision only if the decision was taken** — ⚠ **this one was not; it is being recorded now** (`docs/SPEC.md` §2) |
+
+## Explicit Congestion Notification (hidetzu/tcpip-stack#97)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `SHLD-8` | "A TCP endpoint SHOULD implement ECN as described in RFC 3168" | ⚠ **not met** — ⚠ **nothing here negotiates ECN or sets `ECE` or `CWR` on anything it builds.** ⚠ **What was done instead is narrower and it was measured** (hidetzu/tcpip-stack#86): the `ECE`/`CWR` bits are given names and a `SYN` carrying them ⚠ **is no longer thrown away.** ⚠ **Measured 2026-08-29 before that change: the ECN-capable first `SYN` was refused, and the connection only opened because the Linux kernel retried without the bits** — ⚠ **so this stack looked as if it worked, on somebody else's fallback.** ⚠ `tests/interop.sh` `a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it` holds that. ⚠ **Accepting a bit is not implementing the mechanism** |
+
+## Alternative Congestion Control (hidetzu/tcpip-stack#97)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MAY-18` | "An endpoint MAY implement such alternative algorithms provided that the algorithms are conformant with the TCP specifications from the IETF Standards Track as described in RFC 2914, RFC 5033 [7], and RFC 8961 [15]" | ⚠ **not taken** — ⚠ **conditional on there being a congestion control algorithm to substitute for, and `MUST-19` records that there is none.** ⚠ **Not taken rather than does not arise**: ⚠ the `MAY` offers alternatives to the basic algorithms, and ⚠ **not having the basic ones is `MUST-19`'s row, not this one's** |
