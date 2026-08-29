@@ -62,3 +62,45 @@ and ⚠ **that is different from having no requirements.**
 | `MUST-13` | "When a connection is closed actively, it MUST linger in the TIME-WAIT state for a time 2xMSL" | ⚠ **does not arise** — ⚠ **this stack never closes actively** (ADR 0022; RFC 9293 Figures 6 and 13 put `TIME-WAIT` on the side that does) |
 | `MAY-2` | "* it MAY accept a new SYN from the remote TCP endpoint to reopen the connection directly from TIME-WAIT state" | ⚠ **does not arise** — ⚠ conditional on `TIME-WAIT`, which is never entered |
 | `SHLD-4` | "* Use Timestamps to reduce TIME-WAIT" | ⚠ **does not arise** — ⚠ same condition, and ⚠ **no option is implemented** (`docs/SPEC.md` §2) |
+
+## Window (hidetzu/tcpip-stack#95)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-1` | "The window size MUST be treated as an unsigned number, or else large window sizes will appear like negative windows and TCP will not work" | ⚠ **met** — `struct tcp_header.window` is `uint16_t` and is read with `read_16`. ⚠ `tests/static.sh` `tcp_header` → `the_kernels_syn_is_read_as_it_holds_it` asserts it against the kernel's own SYN. ⚠ **And nothing consults it**: this stack never sends data, so ⚠ **there is no `SND.WND`** |
+| `REC-1` | "It is RECOMMENDED that implementations will reserve 32-bit fields for the send and receive window sizes in the connection record and do all window computations with 32 bits" | ⚠ **not taken** — ⚠ **the connection record has no window field at all.** ⚠ The offered window is the constant `HANDSHAKE_WINDOW`, and the peer's is never stored |
+| `SHLD-14` | "SHOULD NOT ... shrink the window from the right" | ⚠ **does not arise** — ⚠ **the offered window is a constant and never shrinks** (ADR 0021) |
+| `SHLD-15` | "* Send new data when window shrinks" | ⚠ **does not arise** — ⚠ conditional on shrinking, and ⚠ **nothing here sends data** |
+| `SHLD-16` | "* Retransmit old unacked data within window" | ⚠ **does not arise** — ⚠ **no data of ours is ever unacknowledged**, because none is sent |
+| `SHLD-17` | "SHOULD NOT ... time out a connection for data past the right edge" | ⚠ **does not arise** — ⚠ same condition |
+| `MUST-34` | "Robust against shrinking window" | ⚠ **does not arise** — ⚠ **a sender's requirement**, and this stack sends no data |
+| `MAY-8` | "A TCP implementation MAY keep its offered receive window closed indefinitely" | ⚠ **not taken** — ⚠ the offered window is 1460 and constant |
+| `MUST-35` | "Use standard probing logic" | ⚠ **does not arise** — ⚠ probing is what a sender does into a closed window |
+| `MUST-36` | "Probing of zero (offered) windows MUST be supported" | ⚠ **does not arise** — ⚠ same: ⚠ **this stack never has data to probe with** |
+| `SHLD-29` | "* First probe after RTO" | ⚠ **does not arise** — ⚠ conditional on probing |
+| `SHLD-30` | "* Exponential backoff" | ⚠ **does not arise** — ⚠ same |
+| `MUST-37` | "As long as the receiving TCP peer continues to send acknowledgments in response to the probe segments, the sending TCP peer MUST allow the connection to stay open" | ⚠ **does not arise** — ⚠ **the requirement is on the sending peer**, and this stack is never it |
+| `MAY-7` | "Retransmit old data beyond SND.UNA+SND.WND" | ⚠ **not taken** — ⚠ there is no old data |
+| `MUST-66` | "A TCP receiver MUST process the RST and URG fields of all incoming segments, even when the receive window is zero" | ⚠ **not met** — hidetzu/tcpip-stack#101. ⚠ **Measured 2026-08-29**: a `RST,ACK` sent on an open connection changed nothing — ⚠ **the connection stayed open, took 13 octets afterwards and acknowledged them.** ⚠ The `RST` bit is counted as a segment the state did not expect and ⚠ **nothing reads the urgent pointer at all.** ⚠ **"even when the receive window is zero" widens the requirement; it does not condition it** |
+
+## Generating ACKs (hidetzu/tcpip-stack#95)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-58` | "In general, the processing of received segments MUST be implemented to aggregate ACK segments whenever possible" | ⚠ **met, and vacuously** — ⚠ **nothing is ever queued**, so there is never more than one segment to aggregate over. ⚠ **Said as vacuous rather than claimed as an implementation** |
+| `SHLD-31` | "Queue out-of-order segments" | ⚠ **not taken** — ⚠ **nothing is held**; `docs/SPEC.md` §2 names it, and it is why a segment beginning ahead is refused |
+| `MUST-59` | "if the TCP endpoint is processing a series of queued segments, it MUST process them all before sending any ACK segments" | ⚠ **does not arise** — ⚠ **conditional on a queue**, and `SHLD-31` above is not taken |
+| `MAY-13` | "Send ACK for out-of-order segment" | ⚠ **taken** since hidetzu/tcpip-stack#80 — ⚠ a segment we refuse draws one saying where we are. ⚠ `tests/static.sh` `handshake` → `a_segment_we_refuse_draws_an_acknowledgment` |
+| `SHLD-18` | "Delayed ACKs" | ⚠ **not taken** — ⚠ one acknowledgment per accepted segment. ⚠ hidetzu/tcpip-stack#74 measured that the question did not arise at a window of 1; ⚠ **at 1460 it could, and it is still not taken** |
+| `MUST-40` | "* Delay < 0.5 seconds" | ⚠ **does not arise** — ⚠ conditional on delaying, which `SHLD-18` is not |
+| `SHLD-19` | "* Every 2nd full-sized segment or 2*RMSS ACK'd" | ⚠ **does not arise** — ⚠ same condition |
+| `MUST-39` | "A TCP implementation MUST include a SWS avoidance algorithm in the receiver" | ⚠ **not met** — hidetzu/tcpip-stack#102. ⚠ **There is no algorithm.** ⚠ **The condition it guards cannot arise here** — the offered window is a constant, so no window update is ever sent — ⚠ **but "include an algorithm" is what the requirement asks, and arguing it away would be reading a `MUST` as satisfied by an accident of design** |
+
+## Sending Data (hidetzu/tcpip-stack#95)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-49` | "Time to Live (TTL): The TTL value used to send TCP segments MUST be configurable" | ⚠ **not met** — hidetzu/tcpip-stack#103. ⚠ `ipv4_build_datagram` writes 64, ⚠ **written once and not reachable from any option.** ⚠ `docs/SPEC.md` §1 records the value; ⚠ **it did not record that it cannot be changed** |
+| `MUST-38` | "Sender SWS-Avoidance Algorithm" | ⚠ **does not arise** — ⚠ **this stack sends no data** |
+| `SHLD-7` | "Nagle algorithm" | ⚠ **does not arise** — ⚠ same |
+| `MUST-17` | "* Application can disable Nagle algorithm" | ⚠ **does not arise** — ⚠ conditional on Nagle, and ⚠ **there is no application** (ADR 0022) |
