@@ -176,8 +176,10 @@ enum handshake_reply {
     /* ⚠ An acknowledgment for a segment we would not take — ⚠ **it accepts
      * nothing, it says where we are.**
      *
-     * ⚠ RFC 793's first step of SEGMENT ARRIVES, verbatim: "If an incoming
-     * segment is not acceptable, an acknowledgment should be sent in reply
+     * ⚠ RFC 9293 §3.10.7.4, verbatim — ⚠ **and "should" is lowercase there, so
+     * it is the document describing behaviour and not requiring it** (§2):
+     * "If an incoming segment is not acceptable, an acknowledgment should be
+     * sent in reply
      * (unless the RST bit is set, if so drop the segment and return):
      * <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>. After sending the acknowledgment,
      * drop the unacceptable segment and return."

@@ -83,8 +83,22 @@ incoming segment is not acceptable, an acknowledgment should be sent in reply
 `<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>`."
 
 ⚠ **hidetzu/tcpip-stack#80 sends that acknowledgment for refused data and a
-refused `FIN`, and NOT for a retransmitted SYN.** ⚠ **That is a contradiction,
-not a gap that was named** — hidetzu/tcpip-stack#89 owns it.
+refused `FIN`, and NOT for a retransmitted SYN.**
+
+⚠ **This paragraph first called that a contradiction. ⚠ It is not, and the
+correction is the point.** ⚠ The sentence reads "an acknowledgment **should** be
+sent in reply" ⚠ **in lowercase**, and RFC 9293 §2 binds the keywords "when, and
+only when, they appear in all capitals" — ⚠ **there is no labelled `MUST` or
+`SHOULD` in that passage.** ⚠ Calling it a contradiction collapsed `MUST`,
+`SHOULD` and prose into one thing, ⚠ **which is exactly what ADR 0024 warned the
+new baseline would tempt.**
+
+⚠ **Measured before deciding** (hidetzu/tcpip-stack#89, closed): with the
+acknowledgment implemented, the peer's behaviour was ⚠ **identical** — six
+retransmitted `SYN`s, `connect()` failing after six seconds — ⚠ because a peer in
+`SYN-SENT` drops a bare `ACK` carrying no `SYN`. ⚠ **Not required, and measured
+to change nothing, so it is not implemented**, and `docs/SPEC.md` §2-1 records
+that with its grounds.
 
 ⚠ **The other reading in this ADR is untouched**: `SND.UNA =< SEG.ACK =< SND.NXT`
 is the document's own sentence in both, and accepting both ends is reading it,

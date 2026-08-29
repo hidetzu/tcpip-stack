@@ -339,13 +339,26 @@ static bool build_what_is_due(const struct transmission_control_block *block,
     return true;
 }
 
-/* Send the acknowledgment RFC 793 asks for when a segment was not acceptable.
+/* Send the acknowledgment the document describes for a segment that was not
+ * acceptable.
  *
- * ⚠ Verbatim, from the first step of SEGMENT ARRIVES: "If an incoming segment is
- * not acceptable, an acknowledgment should be sent in reply (unless the RST bit
- * is set, if so drop the segment and return): <SEQ=SND.NXT><ACK=RCV.NXT>
- * <CTL=ACK>. After sending the acknowledgment, drop the unacceptable segment and
- * return."
+ * ⚠ Verbatim, RFC 9293 §3.10.7.4 (and RFC 793's first step of SEGMENT ARRIVES
+ * in the same words): "If an incoming segment is not acceptable, an
+ * acknowledgment should be sent in reply (unless the RST bit is set, if so drop
+ * the segment and return): <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>. After sending
+ * the acknowledgment, drop the unacceptable segment and return."
+ *
+ * ⚠ **"should" there is lowercase, and RFC 9293 §2 says the keywords bind
+ * "when, and only when, they appear in all capitals".** ⚠ So this is ⚠ **the
+ * document describing behaviour, not requiring it** — ⚠ and calling it
+ * something the document "asks for" would collapse `MUST`, `SHOULD` and prose
+ * into one thing (`CLAUDE.md` §1).
+ *
+ * ⚠ **The grounds for doing it are measured, not textual**: with our
+ * acknowledgment for data dropped on purpose, the peer's `Send-Q` sticks at 5,
+ * and ⚠ **this is what lets it reach 0 once the loss stops**
+ * (hidetzu/tcpip-stack#80, `tests/foreign.sh`
+ * `a_peer_whose_acknowledgment_was_lost_recovers`).
  *
  * ⚠ **It accepts nothing.** ⚠ The segment was dropped; this says where we are,
  * so ⚠ **a peer whose acknowledgment was lost learns it instead of resending

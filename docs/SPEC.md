@@ -127,7 +127,7 @@ of RFC 9293 each was judged against, quoted where the claim is recorded.**
 |---|---|
 | A non-zero `Reserved` is malformed (ADR 0013) | ⚠ **Contradicted** — "must be ignored in received segments" (§3.1). Done: hidetzu/tcpip-stack#86 |
 | A `Data Offset` below 5 is malformed (ADR 0013, `src/tcp.h`) | ⚠ **The document's now** — "present only when DOffset > 5" (§3.1). ⚠ No code changed |
-| A retransmitted `SYN` is not the in-window `SYN` error (ADR 0016) | ⚠ **Still ours** — Table 6 gives the test, ⚠ **placing the step is ours.** ⚠ But **a contradiction beside it**: §3.10.7.4 asks for an acknowledgment we do not send — hidetzu/tcpip-stack#89 |
+| A retransmitted `SYN` is not the in-window `SYN` error (ADR 0016) | ⚠ **Still ours** — Table 6 gives the test, ⚠ **placing the step is ours** |
 | `SND.UNA =< SEG.ACK =< SND.NXT` accepts both ends (ADR 0016) | ⚠ **The document's, and always was** — reading its sentence, not extending it |
 | The checksum is decided before any field's content (ADR 0014) | ⚠ **Still ours** — §3.1 requires the check (MUST-3) and ⚠ **says nothing about when** |
 | 1000 ms between answers (ADR 0019) | ⚠ **Now ours too** — ⚠ RFC 9293 has no `LBOUND` and no "e.g., 1 second", measured. ⚠ It defers to RFC 6298, which clause 3 does not pull in |
@@ -140,15 +140,38 @@ of RFC 9293 each was judged against, quoted where the claim is recorded.**
 ⚠ **ADR 0010 and ADR 0011 are out of scope for that pass and say so**: they draw the same shape for
 IPv4 and ICMP and are held to RFC 791 and RFC 792, ⚠ **which ADR 0024 did not move.**
 
-⚠ **Two changed behaviour, and only one of them is done.** ⚠ hidetzu/tcpip-stack#86 made `Reserved`
-four bits — ⚠ **`tcp_counts.malformed` means less than it did**, four causes to three, and that is
-said rather than left for the number to change meaning quietly. ⚠ hidetzu/tcpip-stack#89 is the
-other.
+⚠ **One changed behaviour.** ⚠ hidetzu/tcpip-stack#86 made `Reserved` four bits — ⚠ **`tcp_counts.malformed`
+means less than it did**, four causes to three, and that is said rather than left for the number to
+change meaning quietly.
 
-⚠ **One more was found and is deliberately not an issue yet**: RFC 9293 §3.10.7.4 says an acceptable
+### ⚠ One verdict of that pass was itself overstated, and is corrected here
+
+⚠ **hidetzu/tcpip-stack#87 called a second claim "contradicted" and cut hidetzu/tcpip-stack#89 for
+it**: RFC 9293 §3.10.7.4 describes an acknowledgment for an unacceptable segment, and a retransmitted
+`SYN` draws none from us.
+
+⚠ **That was wrong, and it is the very failure ADR 0024 warned about.** ⚠ The sentence reads "an
+acknowledgment **should** be sent in reply" ⚠ **in lowercase**, and RFC 9293 §2 says the keywords
+bind "when, and only when, they appear in all capitals". ⚠ **There is no labelled `MUST` or `SHOULD`
+in that passage.** ⚠ So it is the document **describing** behaviour, not requiring it — ⚠ and calling
+it a contradiction collapsed `MUST`, `SHOULD` and prose into one thing (`CLAUDE.md` §1).
+
+⚠ **Measured 2026-08-29 before deciding**: the acknowledgment was implemented and the peer's
+behaviour was ⚠ **identical** — six retransmitted `SYN`s and a `connect()` failing after six seconds,
+with it and without it. ⚠ A peer in `SYN-SENT` drops a bare `ACK` carrying no `SYN`.
+
+⚠ **So it is not implemented** (hidetzu/tcpip-stack#89, closed): ⚠ **not required, and measured to
+change nothing.** ⚠ Recorded here with its grounds rather than left as an open issue that looked like
+a conformance failure.
+
+⚠ **What hidetzu/tcpip-stack#80 does is unaffected**, and its grounds were always the measurement and
+not the sentence: ⚠ with our acknowledgment for data dropped on purpose the peer's `Send-Q` sticks,
+and ⚠ **this is what lets it reach 0.** ⚠ **The comments that read as though the document asked for
+it were corrected in the same pass.**
+
+⚠ **One more was found and is deliberately not an issue**: RFC 9293 §3.10.7.4 says an acceptable
 `SYN` in `SYN-RECEIVED` on a passive `OPEN` should "return this connection to the LISTEN state", and
-⚠ **this build does not.** ⚠ **It has not been measured**, and hidetzu/tcpip-stack#89 names it so it
-is not lost.
+⚠ **this build does not.** ⚠ **Lowercase again, and unmeasured** — ⚠ named here so it is not lost.
 
 ## 3. Measured numbers
 
