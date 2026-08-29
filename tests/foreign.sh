@@ -1879,6 +1879,87 @@ for protocol, name in ((tcp, "tcp"), (icmp, "icmp")):
 # answered. ⚠ **That one still does** — a directed broadcast cannot be told from
 # a host address without a netmask, ⚠ **and this case pins it so the gap cannot
 # close by accident.**
+# ⚠ hidetzu/tcpip-stack#112 on the wire. ⚠ RFC 9293 `MUST-63`, §3.9.2.3: "An
+# incoming SYN with an invalid source address MUST be ignored either by TCP or
+# by the IP layer ... (see Section 3.2.1.3)."
+#
+# ⚠ Measured before the change, same conditions, 2026-08-29: ⚠ **a `SYN` whose
+# source was 255.255.255.255 opened a connection and was answered.**
+#
+# ⚠ The `SYN` is built by hand over `AF_PACKET`, ⚠ **because no kernel will send
+# one from an address RFC 1122 forbids as a source** — ⚠ that is the point of
+# the requirement, and it is why the other end here is a raw socket rather than
+# the kernel's stack. ⚠ **The kernel is still the other end for the half that
+# must keep working**: an ordinary source is answered.
+inside_a_syn_from_an_impossible_source_is_not_answered() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    for source in 0.0.0.0 127.0.0.1 255.255.255.255 224.0.0.1 10.0.0.99; do
+        "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+            --timeout 1500 >"$work/out-$source.txt" 2>&1 &
+        reader=$!
+        if ! wait_for_interface tap0; then
+            note_failure "tap0 never appeared while the stack was attached for $source"
+            kill "$reader" 2>/dev/null
+            wait "$reader" 2>/dev/null
+            return
+        fi
+        sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+        ip addr add 10.0.0.1/24 dev tap0
+        ip link set tap0 up
+
+        LC_ALL=C python3 -c '
+import socket, struct, sys
+def sum_of(o):
+    t = 0
+    for i in range(0, len(o) - 1, 2): t += (o[i] << 8) | o[i + 1]
+    if len(o) % 2: t += o[-1] << 8
+    while t >> 16: t = (t & 0xffff) + (t >> 16)
+    return (~t) & 0xffff
+OURS = bytes.fromhex(sys.argv[1].replace(":", ""))
+source = socket.inet_aton(sys.argv[2])
+destination = socket.inet_aton("10.0.0.2")
+segment = struct.pack("!HHIIBBHHH", 41000, 80, 1000, 0, 5 << 4, 0x02, 64240, 0, 0)
+pseudo = source + destination + bytes([0, 6, 0, len(segment)])
+segment = segment[:16] + struct.pack("!H", sum_of(pseudo + segment)) + segment[18:]
+header = struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(segment), 1, 0, 64, 6, 0) \
+    + source + destination
+header = header[:10] + struct.pack("!H", sum_of(header)) + header[12:]
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.send(OURS + b"\x02\xaa\xaa\xaa\xaa\xaa" + b"\x08\x00" + header + segment)
+' "$our_mac" "$source" >"$work/sent-$source.txt" 2>&1
+        sleep 0.6
+        kill -INT "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        ip link del tap0 2>/dev/null
+    done
+
+    # ⚠ Refused, ⚠ **and no connection opened** — `MUST-63` says "ignored", and
+    # ⚠ a connection taken and then dropped would not have been ignored.
+    for source in 0.0.0.0 127.0.0.1 255.255.255.255 224.0.0.1; do
+        assert_file_contains "$work/out-$source.txt" \
+            "1 segment was from an address that can never send anything" \
+            "a SYN from $source is refused and counted"
+        assert_file_contains "$work/out-$source.txt" \
+            "0 connections were opened and 0 answered" \
+            "no connection state was created for a SYN from $source"
+    done
+
+    # ⚠ The other half: ⚠ **an ordinary source is still answered**, or refusing
+    # these would pass for a stack that refuses everything.
+    assert_file_contains "$work/out-10.0.0.99.txt" "1 connection was opened and 1 answered" \
+        "an ordinary source is still answered"
+    assert_file_contains "$work/out-10.0.0.99.txt" \
+        "0 segments were from an address that can never send anything" \
+        "an ordinary source is not counted as an impossible one"
+
+    printf '    SYNs from 0.0.0.0, 127.0.0.1, 255.255.255.255 and 224.0.0.1 opened\n'
+    printf '    nothing; one from 10.0.0.99 opened a connection. ⚠ A directed\n'
+    printf '    broadcast source is NOT covered and is still answered\n'
+}
+
 inside_a_syn_to_everyone_is_not_answered() {
     our_mac=02:00:00:00:00:02
     for ours in 255.255.255.255 224.0.0.1 10.0.0.2; do
@@ -2206,6 +2287,10 @@ case_a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it() {
 case_the_time_to_live_we_were_given_reaches_the_wire() {
     in_namespace the_time_to_live_we_were_given_reaches_the_wire
 }
+case_a_syn_from_an_impossible_source_is_not_answered() {
+    in_namespace a_syn_from_an_impossible_source_is_not_answered
+}
+
 case_a_syn_to_everyone_is_not_answered() {
     in_namespace a_syn_to_everyone_is_not_answered
 }
@@ -2222,7 +2307,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

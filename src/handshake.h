@@ -302,6 +302,31 @@ enum handshake_reason {
      * as well is ours, and is the narrower behaviour** (hidetzu/tcpip-stack#99). */
     HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE,
 
+    /* ⚠ The segment's SOURCE address is one that may never be a source, and
+     * ⚠ **nothing is done with it — no state, no reply.**
+     *
+     * ⚠ RFC 9293 `MUST-63`, §3.9.2.3: "An incoming SYN with an invalid source
+     * address MUST be ignored either by TCP or by the IP layer ... (see
+     * Section 3.2.1.3)." ⚠ Which forms, and which one is still missing, are in
+     * `ipv4.h` beside the predicate — ⚠ **not repeated here** (`CLAUDE.md`:
+     * written in two places, one goes stale).
+     *
+     * ⚠ **Counted apart from `ADDRESSED_TO_EVERYONE`.** ⚠ They are refusals for
+     * opposite reasons — ⚠ **one is where it was going, the other is where it
+     * claims to have come from** — and ⚠ a count that merged them could not tell
+     * a misdirected segment from a forged one.
+     *
+     * ⚠ **This one IS the sender's**, and the sentence may say so: the address
+     * it used is one RFC 1122 says must not be used. ⚠ That is not the shape
+     * `CLAUDE.md` §4-1 forbids, which is blaming the sender for a gap of ours.
+     *
+     * ⚠ **It applies to every segment and not only a `SYN`.** ⚠ §3.9.2.3 says
+     * "implementers should note that this guidance is applicable to all incoming
+     * segments" ⚠ **in lowercase, so it is not a requirement** — ⚠ refusing the
+     * rest as well is ours, and is the narrower behaviour, exactly as it is for
+     * `ADDRESSED_TO_EVERYONE` (hidetzu/tcpip-stack#112). */
+    HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE,
+
     /* ⚠ Ours, not the sender's: every block is in use
      * (hidetzu/tcpip-stack#42 Owner Decision 1). */
     HANDSHAKE_REASON_NO_ROOM,
@@ -491,6 +516,10 @@ struct handshake_counts {
 
     /* ⚠ **Segments** addressed to a broadcast or a multicast address. */
     unsigned long addressed_to_everyone;
+
+    /* ⚠ Apart from the one above: ⚠ **where it was going, against where it
+     * claims to have come from.** */
+    unsigned long from_an_impossible_source;
 
     /* ⚠ **Connections** the other side reset. ⚠ Apart from every other ending:
      * one was closed properly, one timed out, ⚠ **this one was cut.** */

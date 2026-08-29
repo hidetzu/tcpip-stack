@@ -28,17 +28,49 @@ static uint16_t read_16(const uint8_t *at)
     return (uint16_t)(((uint16_t)at[0] << 8) | at[1]);
 }
 
+/* ⚠ The two predicates below both need these, and ⚠ **each is written once.**
+ * ⚠ Writing "all thirty-two bits set" or the class D mask in both would be the
+ * same decision in two places, and ⚠ **the two would diverge in silence the
+ * first time either moved** (`CLAUDE.md` §3). */
+
+/* ⚠ RFC 1122 §3.2.1.3 (c), `{ -1, -1 }`: all thirty-two bits set. ⚠ Every octet
+ * is read, not just the first — ⚠ **the form is `{ -1, -1 }` and not
+ * `255.<anything>`**, and reading one octet would name addresses the document
+ * does not. */
+static bool is_the_limited_broadcast(const uint8_t *address)
+{
+    return address[0] == 255u && address[1] == 255u &&
+           address[2] == 255u && address[3] == 255u;
+}
+
+/* ⚠ RFC 791 §3.2 on class D: "the first four bits being 1110". ⚠ Read as a mask
+ * rather than a range, so ⚠ **the boundary is the document's and not arithmetic
+ * of ours.** */
+static bool is_multicast(const uint8_t *address)
+{
+    return (address[0] & 0xf0u) == 0xe0u;
+}
+
 bool ipv4_address_is_broadcast_or_multicast(const uint8_t *address)
 {
-    /* ⚠ The limited broadcast, all thirty-two bits set. */
-    if (address[0] == 255u && address[1] == 255u &&
-        address[2] == 255u && address[3] == 255u) {
-        return true;
+    return is_the_limited_broadcast(address) || is_multicast(address);
+}
+
+bool ipv4_address_can_be_a_source(const uint8_t *address)
+{
+    /* ⚠ RFC 1122 §3.2.1.3 (a) and (b), read as one: both have a
+     * <Network-number> of zero, which is the first octet here. */
+    if (address[0] == 0u) {
+        return false;
     }
-    /* ⚠ RFC 791 §3.2 on class D: "the first four bits being 1110". ⚠ Read as a
-     * mask rather than a range, so ⚠ **the boundary is the document's and not
-     * arithmetic of ours.** */
-    return (address[0] & 0xf0u) == 0xe0u;
+    /* ⚠ (g): "Addresses of this form MUST NOT appear outside a host." */
+    if (address[0] == 127u) {
+        return false;
+    }
+    /* ⚠ (c), and multicast — ⚠ **whose grounds are outside §3.2.1.3, as ipv4.h
+     * says.** ⚠ Both are the same two tests the predicate above is made of, and
+     * ⚠ **that is why they are functions and not repeated expressions.** */
+    return !is_the_limited_broadcast(address) && !is_multicast(address);
 }
 
 enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes,

@@ -177,6 +177,52 @@ enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes
  * shape `CLAUDE.md` §1 forbids. */
 bool ipv4_address_is_broadcast_or_multicast(const uint8_t *address);
 
+/* ⚠ Could this address have sent anything at all?
+ *
+ * ⚠ **A different question from the one above, with a different citation.**
+ * That one asks whether a connection may be made TO an address; ⚠ this asks
+ * whether an address may have been the SOURCE of what just arrived.
+ * ⚠ **One function answering both would be two decisions in one place**
+ * (`CLAUDE.md` §3), so there are two (hidetzu/tcpip-stack#112 Owner Decision 3).
+ *
+ * ⚠ RFC 9293 `MUST-63`, §3.9.2.3: "An incoming SYN with an invalid source
+ * address MUST be ignored either by TCP or by the IP layer ... (see
+ * Section 3.2.1.3)." ⚠ **The section it sends the reader to is RFC 1122's**, and
+ * that is where every form below comes from.
+ *
+ * ⚠ **Returns false for the forms RFC 1122 §3.2.1.3 says MUST NOT be a source
+ * and that are recognisable from the address alone**, quoted:
+ *
+ *     0.0.0.0/8         (a) and (b): "MUST NOT be sent, except as a source
+ *                       address as part of an initialization procedure by which
+ *                       the host learns its own IP address."
+ *                       ⚠ **A `SYN` is not that procedure.**
+ *     127.0.0.0/8       (g): "Addresses of this form MUST NOT appear outside a
+ *                       host."
+ *     255.255.255.255   (c): "It MUST NOT be used as a source address."
+ *
+ * ⚠ **And one more, whose grounds are NOT §3.2.1.3:**
+ *
+ *     224.0.0.0/4       ⚠ **The multicast address model, not the section
+ *                       RFC 9293 cites.** ⚠ A Class D address names a group of
+ *                       receivers; ⚠ **it is never one host that could have
+ *                       sent a segment.** ⚠ **Recorded as reaching outside the
+ *                       citation rather than quoted to it**
+ *                       (hidetzu/tcpip-stack#112 Owner Decision 1).
+ *
+ * ⚠ **What this returns TRUE for and should not**, and it is named rather than
+ * pretended away — ⚠ the same gap `ipv4_address_is_broadcast_or_multicast` has,
+ * ⚠ **for the same reason**:
+ *
+ *     10.0.0.255 etc.   ⚠ **a directed broadcast** — §3.2.1.3 (d), (e) and (f),
+ *                       each "MUST NOT be used as a source address".
+ *                       ⚠ **It cannot be told from a host address without a
+ *                       netmask, and nothing here has one.**
+ *
+ * ⚠ **So `MUST-63` is met in part**, and `docs/conformance.md` says which part.
+ * ⚠ **Never met** (hidetzu/tcpip-stack#112 Owner Decision 2). */
+bool ipv4_address_can_be_a_source(const uint8_t *address);
+
 /* Why a datagram was not built. ⚠ An enum never reaches a human. */
 enum ipv4_build {
     IPV4_BUILD_OK = 0,

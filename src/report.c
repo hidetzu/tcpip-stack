@@ -504,6 +504,15 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
         fputs("  no answer: that was addressed to a broadcast or multicast address,\n"
               "    and a connection is never made to one\n", out);
         return;
+    case HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE:
+        /* ⚠ This one IS the sender's, and the sentence may say so without
+         * scolding: ⚠ **it names the address it used and what we did.**
+         * ⚠ It does not say the sender forged it — ⚠ nothing here measured
+         * that, and a misconfigured host looks the same from here
+         * (`CLAUDE.md` §1). */
+        fputs("  no answer: that claims to come from an address that can never\n"
+              "    send anything, so nothing was taken from it\n", out);
+        return;
     case HANDSHAKE_REASON_NO_ROOM:
         /* ⚠ Ours, and it says so (hidetzu/tcpip-stack#42 Owner Decision 1). */
         fputs("  no answer: we are already holding a connection, and this build has\n"
@@ -609,6 +618,9 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
                  "a connection is never made to\n",
             counts->addressed_to_everyone,
             counts->addressed_to_everyone == 1 ? " was" : "s were");
+    fprintf(out, "%lu segment%s from an address that can never send anything\n",
+            counts->from_an_impossible_source,
+            counts->from_an_impossible_source == 1 ? " was" : "s were");
     fprintf(out, "%lu %s refused for want of room and %lu answer%s never left the "
                  "device, which are ours and not the sender's\n",
             counts->room.refused_for_want_of_room,
