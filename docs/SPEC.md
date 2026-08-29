@@ -196,6 +196,21 @@ it were corrected in the same pass.**
 `SYN` in `SYN-RECEIVED` on a passive `OPEN` should "return this connection to the LISTEN state", and
 ⚠ **this build does not.** ⚠ **Lowercase again, and unmeasured** — ⚠ named here so it is not lost.
 
+### ⚠ 2-1-1. What else binds, and only for what
+
+⚠ **ADR 0024 clause 3 admits a document one function at a time.** ⚠ **Two were admitted 2026-08-29**,
+with their scope named:
+
+| Document | ⚠ Binding for | ⚠ Not binding for |
+|---|---|---|
+| **RFC 6298** | the round-trip measurement, the RTO, the retransmission timer's management, backing off | ⚠ **the TCP Timestamps Option** (RFC 7323 is not admitted) |
+| **RFC 5681** | slow start, congestion avoidance, and the `cwnd` / `ssthresh` / `FlightSize` definitions they rest on | ⚠ **fast retransmit and fast recovery**, limited transmit, SACK, ECN, restarting idle connections |
+
+⚠ **A requirement from an unadmitted section is recorded as unmet, not implemented quietly.**
+
+⚠ **Neither carries labelled `MUST-n`** — both use BCP 14 directly — ⚠ **so a capital keyword in
+them binds with no label to look for**, and ⚠ **a lowercase one still does not.**
+
 ## ⚠ 2-2. Held to the requirement summary
 
 ⚠ **RFC 9293 Appendix B is a requirement summary**, and ⚠ **[`conformance.md`](conformance.md) is

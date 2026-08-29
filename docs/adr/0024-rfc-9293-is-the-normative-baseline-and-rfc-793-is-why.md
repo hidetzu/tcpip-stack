@@ -74,6 +74,46 @@ here had ever met it**, because nothing turned ECN on.
 3. ⚠ **What RFC 9293 leaves to other RFCs is added to the baseline one function at a time, when
    that function is implemented** — ⚠ never wholesale.
 
+### ⚠ Amendment, 2026-08-29 — clause 3 admits two documents, with their scope named
+
+⚠ **The owner's, taken the same day**, on hidetzu/tcpip-stack#130 and hidetzu/tcpip-stack#132:
+
+> ADR 0024 を改訂し、RFC 6298 を RTT/RTO/retransmission/backoff の正本、RFC 5681 を
+> slow start/congestion avoidance の正本として、**適用範囲を限定して**追加してください。
+
+4. ⚠ **RFC 6298 is normative for the round-trip measurement, the retransmission timeout, the
+   retransmission timer's management, and the backing off of that timeout.** ⚠ RFC 9293 §3.8.1
+   sends us there in capitals: "The RTO **MUST** be computed according to the algorithm in [10],
+   including Karn's algorithm for taking RTT samples (`MUST-18`)."
+5. ⚠ **RFC 5681 is normative for slow start and congestion avoidance.** ⚠ RFC 9293 §3.8.2 sends us
+   there for `MUST-19`: "A TCP endpoint **MUST** implement the basic congestion control algorithms
+   slow start, congestion avoidance, and exponential backoff of RTO".
+
+### ⚠ What the amendment does NOT admit, and this is the limit the owner asked for
+
+⚠ **Clause 3 is not repealed.** ⚠ **These two documents enter for the functions named above and for
+nothing else**, and ⚠ **a sentence of theirs about anything else is not binding here:**
+
+| ⚠ In | ⚠ Out, and it stays out |
+|---|---|
+| RFC 6298 §2 (SRTT, RTTVAR, RTO), §3 (Karn's), §4 (clock granularity), §5 (managing the timer, backoff) | ⚠ **The TCP Timestamps Option**, which §3 names as the one safe way to sample a retransmitted segment. ⚠ **RFC 7323 is not admitted** |
+| RFC 5681 §3.1 (slow start, congestion avoidance) and the `cwnd`/`ssthresh`/`FlightSize` definitions §3.1 rests on | ⚠ **§3.2 fast retransmit and fast recovery.** ⚠ **`MUST-19` names three algorithms and these are not among them**, and §3.2 rests on counting duplicate ACKs, which this stack does not do |
+| | ⚠ **§4.1 restarting idle connections, §4.2 generating acknowledgments, §4.3 loss recovery** |
+| | ⚠ **RFC 3042 limited transmit, RFC 3390's IW rationale as a requirement, RFC 2018 SACK, RFC 3168 ECN** |
+
+⚠ **A requirement from an unadmitted section is recorded in `docs/conformance.md` the way any other
+unmet thing is** — ⚠ **not implemented quietly because a neighbouring paragraph was.**
+
+### ⚠ Both documents carry their own BCP 14 clause, and it is not RFC 9293's
+
+⚠ **RFC 6298 §1 and RFC 5681 both say their keywords are to be read as RFC 2119 describes.**
+⚠ **So they have no labelled `MUST-n`**, and ⚠ **a capital keyword in them binds on its own** —
+there is no label to look for and ⚠ **its absence is not evidence of anything**
+(`CLAUDE.md` §9's third row is about the opposite mistake, and this is where it could be made
+backwards).
+
+⚠ **A lowercase keyword in either is still not a requirement.** ⚠ Both documents contain them.
+
 ## Consequences
 
 ### ⚠ Nothing already written is withdrawn, and nothing is silently re-attributed
@@ -92,6 +132,11 @@ the baseline mentions them would be claiming a scope this stack does not have.**
 
 ⚠ **The same shape hidetzu/tcpip-stack#66 already used**: RFC 1122's correction was taken and
 ⚠ **nothing else from RFC 1122 was.**
+
+⚠ **The 2026-08-29 amendment is clause 3 being used, not bent.** ⚠ Two functions are being
+implemented — the retransmission timeout and congestion control — ⚠ **so the two documents that
+define them enter, for those functions.** ⚠ **The table above is what "limited" means**, and
+⚠ **without it the amendment would be the wholesale admission clause 3 exists to refuse.**
 
 ### ⚠ What this leaves to be done, and it is not documentation
 
