@@ -777,9 +777,9 @@ static bool case_the_acknowledgment_for_data_is_the_one_the_document_describes(v
  * change cannot pass for a stack that claims everything that arrives.
  *
  * ⚠ Until hidetzu/tcpip-stack#80 this asserted that nothing was built at all.
- * ⚠ **Something is built now** — RFC 793's first step asks for an
- * acknowledgment saying where we are — ⚠ **and the case's real subject is
- * unchanged: we do not pretend to have taken it.** ⚠ `RCV.NXT` does not move
+ * ⚠ **Something is built now** — the acknowledgment the document describes for
+ * an unacceptable segment — ⚠ **and the case's real subject is unchanged: we do
+ * not pretend to have taken it.** ⚠ `RCV.NXT` does not move
  * and the segment is not the one that accepts data. */
 static bool case_nothing_is_acknowledged_for_data_the_window_did_not_cover(void)
 {
@@ -850,13 +850,14 @@ static bool case_nothing_is_acknowledged_for_data_the_window_did_not_cover(void)
     return ok;
 }
 
-/* ⚠ hidetzu/tcpip-stack#80. ⚠ **A segment we refuse draws the acknowledgment
- * RFC 793 asks for**, and ⚠ **it says where we are without accepting
- * anything.**
+/* ⚠ hidetzu/tcpip-stack#80. ⚠ **A segment we refuse draws an acknowledgment**,
+ * and ⚠ **it says where we are without accepting anything.**
  *
- * ⚠ Verbatim, from the first step of SEGMENT ARRIVES: "If an incoming segment is
- * not acceptable, an acknowledgment should be sent in reply ...
- * <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>."
+ * ⚠ Verbatim, RFC 9293 §3.10.7.4: "If an incoming segment is not acceptable, an
+ * acknowledgment should be sent in reply ... <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>."
+ * ⚠ **Lowercase "should", so not a BCP 14 requirement** (§2) — ⚠ the grounds for
+ * doing it are the measurement in `tests/foreign.sh`
+ * `a_peer_whose_acknowledgment_was_lost_recovers`, not the sentence."
  *
  * ⚠ All four ways to be refused, and ⚠ **the numbers are asserted, not just the
  * fact that something came back.** */
