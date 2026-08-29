@@ -2720,6 +2720,122 @@ static bool case_an_acknowledgment_for_data_stops_the_resending(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#138. ⚠ RFC 9293 §3.9.2.2 classifies ICMP errors, and
+ * ⚠ **each class does a different thing.**
+ *
+ * ⚠ **The classes are asserted apart on purpose**: ⚠ a check that only showed
+ * "the error was seen" would pass for a build that treated every one the same,
+ * ⚠ **and telling them apart is the whole of what the section decides.** */
+static bool case_each_class_of_icmp_error_does_its_own_thing(void)
+{
+    bool ok = true;
+
+    /* ⚠ The classification itself, ⚠ **quoted from §3.9.2.2 code by code.** */
+    static const struct {
+        uint8_t type; uint8_t code; enum icmp_error_class want; const char *what;
+    } classes[] = {
+        { ICMP_TYPE_SOURCE_QUENCH, 0, ICMP_ERROR_SOURCE_QUENCH, "a source quench" },
+        { ICMP_TYPE_DESTINATION_UNREACHABLE, 0, ICMP_ERROR_SOFT, "unreachable code 0" },
+        { ICMP_TYPE_DESTINATION_UNREACHABLE, 1, ICMP_ERROR_SOFT, "unreachable code 1" },
+        { ICMP_TYPE_DESTINATION_UNREACHABLE, 5, ICMP_ERROR_SOFT, "unreachable code 5" },
+        { ICMP_TYPE_DESTINATION_UNREACHABLE, 2, ICMP_ERROR_HARD, "unreachable code 2" },
+        { ICMP_TYPE_DESTINATION_UNREACHABLE, 3, ICMP_ERROR_HARD, "unreachable code 3" },
+        { ICMP_TYPE_DESTINATION_UNREACHABLE, 4, ICMP_ERROR_HARD, "unreachable code 4" },
+        { ICMP_TYPE_TIME_EXCEEDED, 0, ICMP_ERROR_SOFT, "time exceeded code 0" },
+        { ICMP_TYPE_TIME_EXCEEDED, 1, ICMP_ERROR_SOFT, "time exceeded code 1" },
+        { ICMP_TYPE_PARAMETER_PROBLEM, 0, ICMP_ERROR_SOFT, "parameter problem code 0" },
+        { ICMP_TYPE_PARAMETER_PROBLEM, 7, ICMP_ERROR_SOFT,
+          "parameter problem code 7 — the document names no code, so every one is soft" },
+        /* ⚠ **The document classifies some and not others**, and ⚠ **silence is
+         * not a class** (`CLAUDE.md` §1). */
+        { ICMP_TYPE_DESTINATION_UNREACHABLE, 6, ICMP_ERROR_NOT_CLASSIFIED,
+          "unreachable code 6, which section 3.9.2.2 does not name" },
+        { ICMP_TYPE_DESTINATION_UNREACHABLE, 15, ICMP_ERROR_NOT_CLASSIFIED,
+          "unreachable code 15" },
+        { ICMP_TYPE_TIME_EXCEEDED, 2, ICMP_ERROR_NOT_CLASSIFIED,
+          "time exceeded code 2, which RFC 792 does not define" },
+        { 200u, 0, ICMP_ERROR_NOT_CLASSIFIED, "a type that is not an error at all" },
+    };
+    for (size_t i = 0; i < sizeof classes / sizeof classes[0]; i++) {
+        enum icmp_error_class got = icmp_class_of_error(classes[i].type, classes[i].code);
+        if (got != classes[i].want) {
+            fprintf(stderr, "  %s came back as class %d, not %d\n",
+                    classes[i].what, (int)got, (int)classes[i].want);
+            ok = false;
+        }
+    }
+
+    /* ⚠ And what each one DOES to a connection. */
+    static const struct {
+        enum icmp_error_class what; bool still_there; const char *name;
+    } acts[] = {
+        { ICMP_ERROR_SOURCE_QUENCH,   true,  "a source quench" },
+        { ICMP_ERROR_SOFT,            true,  "a soft error" },
+        { ICMP_ERROR_NOT_CLASSIFIED,  true,  "an unclassified error" },
+        /* ⚠ `SHLD-26`: "These are hard error conditions, so TCP implementations
+         * SHOULD abort the connection." */
+        { ICMP_ERROR_HARD,            false, "a hard error" },
+    };
+    for (size_t i = 0; i < sizeof acts / sizeof acts[0]; i++) {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        struct connection_id id = the_connection();
+        struct handshake_outcome outcome;
+        handshake_receive_error(&world.connections, &id, acts[i].what,
+                                &world.counts, &outcome);
+
+        bool there = connections_find(&world.connections, &id) != NULL;
+        if (there != acts[i].still_there) {
+            fprintf(stderr, "  after %s the connection is %s, and it should be %s\n",
+                    acts[i].name, there ? "still held" : "gone",
+                    acts[i].still_there ? "still held" : "gone");
+            ok = false;
+        }
+        /* ⚠ **Nothing is ever sent** — ⚠ `MUST-55`'s "silently" forbids it for a
+         * source quench, ⚠ **and none of the others asks for a segment
+         * either.** */
+        if (outcome.reply_bytes != 0) {
+            fprintf(stderr, "  %s put %zu octets on the wire\n",
+                    acts[i].name, outcome.reply_bytes);
+            ok = false;
+        }
+        /* ⚠ **Exactly one counter moves**, and it is that class's. */
+        unsigned long moved =
+            world.counts.source_quenches_we_discarded +
+            world.counts.soft_errors_that_changed_nothing +
+            world.counts.hard_errors_that_ended_a_connection +
+            world.counts.errors_the_document_does_not_classify +
+            world.counts.errors_for_no_connection_we_hold;
+        if (moved != 1u) {
+            fprintf(stderr, "  %s moved %lu of the five counters, not one\n",
+                    acts[i].name, moved);
+            ok = false;
+        }
+    }
+
+    /* ⚠ An error naming a connection nothing here holds. ⚠ **Not ours and not
+     * the sender's**: it may name one that has since closed. */
+    {
+        struct world world;
+        a_world(&world);
+        struct connection_id id = the_connection();
+        struct handshake_outcome outcome;
+        handshake_receive_error(&world.connections, &id, ICMP_ERROR_HARD,
+                                &world.counts, &outcome);
+        if (world.counts.errors_for_no_connection_we_hold != 1u ||
+            world.counts.hard_errors_that_ended_a_connection != 0u) {
+            fputs("  an error for a connection nobody holds was counted as one "
+                  "that ended something\n", stderr);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 /* ⚠ hidetzu/tcpip-stack#132 AC 5. ⚠ RFC 5681 §2: "a TCP MUST NOT send data with
  * a sequence number higher than the sum of the highest acknowledged sequence
  * number and **the minimum of cwnd and rwnd**."
@@ -4691,6 +4807,8 @@ static const struct test_case cases[] = {
       case_our_close_is_the_segment_the_document_describes },
     { "every_segment_we_build_carries_the_same_window",
       case_every_segment_we_build_carries_the_same_window },
+    { "each_class_of_icmp_error_does_its_own_thing",
+      case_each_class_of_icmp_error_does_its_own_thing },
     { "the_smaller_of_cwnd_and_rwnd_governs",
       case_the_smaller_of_cwnd_and_rwnd_governs },
     { "the_initial_congestion_window_follows_the_table",

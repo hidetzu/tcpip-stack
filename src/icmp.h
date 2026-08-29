@@ -48,6 +48,106 @@
 #define ICMP_TYPE_ECHO_REPLY 0u
 #define ICMP_CODE_ECHO 0u
 
+/* RFC 792's error message types, ⚠ **read off its own diagrams**: Destination
+ * Unreachable gives "Type: 3", Source Quench "4", Time Exceeded "11" and
+ * Parameter Problem "12". */
+/* The least an error message can carry back and still name anything.
+ *
+ * ⚠ RFC 792: "The internet header plus the first 64 bits of the original
+ * datagram's data." ⚠ **An internet header with no options is twenty octets and
+ * 64 bits is eight** — ⚠ **and the ports a match needs are inside those eight**:
+ * "If a higher level protocol uses port numbers, they are assumed to be in the
+ * first 64 data bits."
+ *
+ * ⚠ **Not `IPV4_FIXED_HEADER_BYTES + 8` written here**: `src/icmp.c` deliberately
+ * knows nothing about what a datagram carries (ADR 0007), ⚠ **and pulling
+ * `ipv4.h` in to reach one constant would give it that knowledge.** */
+#define ICMP_CARRIED_LEAST_BYTES 28u
+
+#define ICMP_TYPE_DESTINATION_UNREACHABLE 3u
+#define ICMP_TYPE_SOURCE_QUENCH 4u
+#define ICMP_TYPE_TIME_EXCEEDED 11u
+#define ICMP_TYPE_PARAMETER_PROBLEM 12u
+
+/* What an error means for a connection.
+ *
+ * ⚠ RFC 9293 §3.9.2.2 classifies them and ⚠ **this enum is that classification
+ * and nothing more** — ⚠ what to DO about each is the State layer's
+ * (`.claude/rules/layers.md`). */
+enum icmp_error_class {
+    /* ⚠ "TCP implementations MUST silently discard any received ICMP Source
+     * Quench messages (MUST-55)." */
+    ICMP_ERROR_SOURCE_QUENCH = 0,
+
+    /* ⚠ "For IPv4 ICMP, these include: Destination Unreachable -- codes 0, 1, 5;
+     * Time Exceeded -- codes 0, 1; and Parameter Problem." ⚠ "a TCP
+     * implementation MUST NOT abort the connection (MUST-56)". */
+    ICMP_ERROR_SOFT,
+
+    /* ⚠ "For ICMP these include Destination Unreachable -- codes 2-4." ⚠ "These
+     * are hard error conditions, so TCP implementations SHOULD abort the
+     * connection (SHLD-26)." */
+    ICMP_ERROR_HARD,
+
+    /* ⚠ **The document classifies some codes and not others.** ⚠ Destination
+     * Unreachable has sixteen codes and §3.9.2.2 names six; ⚠ Time Exceeded's
+     * two are named and it has no others, ⚠ **but a sender may still put
+     * something else there.**
+     *
+     * ⚠ **Silence in an RFC is not permission and it is not a class**
+     * (`CLAUDE.md` §1). ⚠ So an unclassified error is its own answer:
+     * ⚠ **counted, said, and the connection is left alone** — ⚠ which is the
+     * safe direction and is said to be a choice rather than a reading. */
+    ICMP_ERROR_NOT_CLASSIFIED
+};
+
+/* Which class this type and code fall in.
+ *
+ * ⚠ **Pure**: no fd, no clock, no packet. ⚠ It is handed two numbers the Parse
+ * layer already validated. */
+enum icmp_error_class icmp_class_of_error(uint8_t type, uint8_t code);
+
+/* An error message, read into host terms.
+ *
+ * ⚠ **`carried` points into the caller's frame** and ⚠ **lives exactly as long
+ * as that does** (`.claude/rules/c.md`). ⚠ It is the internet header of the
+ * datagram that caused the error, followed by at least the first 64 bits of its
+ * data — ⚠ RFC 792: "This data is used by the host to match the message to the
+ * appropriate process." */
+struct icmp_error {
+    uint8_t type;
+    uint8_t code;
+    const uint8_t *carried;
+    size_t carried_bytes;
+};
+
+/* Why an error message was not read. ⚠ An enum never reaches a human. */
+enum icmp_error_parse {
+    ICMP_ERROR_PARSE_OK = 0,
+
+    /* ⚠ Fewer octets than the fixed fields need, ⚠ **or fewer carried back than
+     * RFC 792 promises**: "The internet header plus the first 64 bits". ⚠ The
+     * sender is wrong either way, ⚠ **and this is not the same as a Type we do
+     * not act on.** */
+    ICMP_ERROR_PARSE_MALFORMED,
+
+    /* ⚠ Well formed and not an error message at all — an echo, a reply, or
+     * anything else. ⚠ **The sender is fine.** */
+    ICMP_ERROR_PARSE_NOT_AN_ERROR,
+
+    /* ⚠ Its own answer, exactly as it is for an echo: ⚠ **something changed it,
+     * or it was never right.** */
+    ICMP_ERROR_PARSE_CHECKSUM_DISAGREES
+};
+
+/* Read an ICMP error message.
+ *
+ * ⚠ `message_bytes` is what was actually read, ⚠ **never what a header claims**
+ * (`.claude/rules/c.md`). ⚠ Everything here is untrusted input, ⚠ **including
+ * the internet header it quotes back at us.** */
+enum icmp_error_parse icmp_parse_error(const uint8_t *message, size_t message_bytes,
+                                       struct icmp_error *error);
+
 /* Why a message was not accepted. ⚠ An enum never reaches a human
  * (`CLAUDE.md` §4). */
 enum icmp_parse {

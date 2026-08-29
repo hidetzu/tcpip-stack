@@ -900,6 +900,10 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "0 segments were from an address that can never send anything\n"
         "0 octets of ours went out again in 0 segments because nobody had "
         "acknowledged them\n"
+        "0 source quenches were discarded, 0 soft errors changed nothing, 0 hard "
+        "errors ended a connection\n"
+        "0 errors arrived that the document does not classify, and 0 named no "
+        "connection we hold\n"
         "0 congestion windows were cut to one segment because something went "
         "unacknowledged\n"
         "0 connections have sent the same thing again 3 times or more, which is as "
@@ -936,6 +940,11 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.round_trips_we_would_not_use = 1;
     one.reached_r1 = 1;
     one.congestion_windows_we_cut = 1;
+    one.source_quenches_we_discarded = 1;
+    one.soft_errors_that_changed_nothing = 1;
+    one.hard_errors_that_ended_a_connection = 1;
+    one.errors_the_document_does_not_classify = 1;
+    one.errors_for_no_connection_we_hold = 1;
     one.reset_by_the_other_side = 1;
     one.reset_outside_the_window = 1;
     one.urgent_and_nobody_to_tell = 1;
@@ -980,6 +989,10 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "1 segment was from an address that can never send anything\n"
         "1 octet of ours went out again in 1 segment because nobody had "
         "acknowledged them\n"
+        "1 source quench was discarded, 1 soft error changed nothing, 1 hard "
+        "error ended a connection\n"
+        "1 error arrived that the document does not classify, and 1 named no "
+        "connection we hold\n"
         "1 congestion window was cut to one segment because something went "
         "unacknowledged\n"
         "1 connection has sent the same thing again 3 times or more, which is as "
@@ -1036,6 +1049,11 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.round_trips_we_would_not_use = 37;
     each.reached_r1 = 38;
     each.congestion_windows_we_cut = 39;
+    each.source_quenches_we_discarded = 40;
+    each.soft_errors_that_changed_nothing = 41;
+    each.hard_errors_that_ended_a_connection = 42;
+    each.errors_the_document_does_not_classify = 43;
+    each.errors_for_no_connection_we_hold = 44;
     each.reset_by_the_other_side = 27;
     each.reset_outside_the_window = 28;
     each.urgent_and_nobody_to_tell = 29;
@@ -1068,6 +1086,10 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "30 segments were from an address that can never send anything\n"
         "35 octets of ours went out again in 34 segments because nobody had "
         "acknowledged them\n"
+        "40 source quenches were discarded, 41 soft errors changed nothing, 42 hard "
+        "errors ended a connection\n"
+        "43 errors arrived that the document does not classify, and 44 named no "
+        "connection we hold\n"
         "39 congestion windows were cut to one segment because something went "
         "unacknowledged\n"
         "38 connections have sent the same thing again 3 times or more, which is as "

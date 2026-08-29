@@ -17,6 +17,7 @@
 
 #include "arp_responder.h"
 #include "echo_responder.h"
+#include "icmp.h"
 #include "handshake.h"
 #include "moment.h"
 #include "ethernet.h"
@@ -618,6 +619,83 @@ int main(int argc, char **argv)
                     internet.protocol == IPV4_PROTOCOL_TCP &&
                     memcmp(internet.destination_address, options.protocol_address,
                            IPV4_ADDRESS_BYTES) == 0;
+
+                /* ⚠ The same shape as the diversion below, and for the same
+                 * reason: ⚠ **only a datagram FOR US carrying ICMP is looked at
+                 * here**, and ⚠ **one that is not still reaches `echo_respond`
+                 * and is counted there**, so those numbers keep meaning what
+                 * they meant (hidetzu/tcpip-stack#138).
+                 *
+                 * ⚠ **An echo is not diverted** — `icmp_parse_error` answers
+                 * `NOT_AN_ERROR` for it and it falls through untouched. */
+                bool for_us_over_icmp =
+                    options.tcp_port != 0 &&
+                    ipv4_parse_header(frame + ETHERNET_HEADER_BYTES,
+                                      (size_t)bytes - ETHERNET_HEADER_BYTES,
+                                      &internet) == IPV4_PARSE_OK &&
+                    internet.protocol == IPV4_PROTOCOL_ICMP &&
+                    memcmp(internet.destination_address, options.protocol_address,
+                           IPV4_ADDRESS_BYTES) == 0;
+
+                if (for_us_over_icmp) {
+                    size_t internet_header_bytes =
+                        (size_t)internet.internet_header_length * IPV4_HEADER_LENGTH_UNIT;
+                    const uint8_t *message =
+                        frame + ETHERNET_HEADER_BYTES + internet_header_bytes;
+                    size_t message_bytes =
+                        (size_t)internet.total_length - internet_header_bytes;
+
+                    struct icmp_error error;
+                    enum icmp_error_parse read_error =
+                        icmp_parse_error(message, message_bytes, &error);
+                    if (read_error == ICMP_ERROR_PARSE_OK) {
+                        /* ⚠ The connection the error names, read out of what it
+                         * quoted back. ⚠ **Everything in here is untrusted
+                         * input, including the header it claims is ours**
+                         * (`.claude/rules/c.md`) — ⚠ so it is parsed with the
+                         * same function every other datagram gets, and
+                         * ⚠ **the ports come from the first 64 bits after it**
+                         * (RFC 792).
+                         *
+                         * ⚠ **The orientation is ours-first**: the datagram it
+                         * quotes is one WE sent, so its source is our address
+                         * and its destination is theirs. */
+                        struct ipv4_header inner;
+                        if (ipv4_parse_quoted_header(error.carried, error.carried_bytes,
+                                              &inner) == IPV4_PARSE_OK &&
+                            inner.protocol == IPV4_PROTOCOL_TCP) {
+                            size_t inner_header_bytes =
+                                (size_t)inner.internet_header_length *
+                                IPV4_HEADER_LENGTH_UNIT;
+                            if (error.carried_bytes >= inner_header_bytes + 4u) {
+                                const uint8_t *ports = error.carried + inner_header_bytes;
+                                struct connection_id id;
+                                memset(&id, 0, sizeof id);
+                                memcpy(id.local.address, inner.source_address,
+                                       CONNECTION_ADDRESS_BYTES);
+                                memcpy(id.remote.address, inner.destination_address,
+                                       CONNECTION_ADDRESS_BYTES);
+                                id.local.port =
+                                    (uint16_t)(((uint16_t)ports[0] << 8) | ports[1]);
+                                id.remote.port =
+                                    (uint16_t)(((uint16_t)ports[2] << 8) | ports[3]);
+
+                                struct handshake_outcome about;
+                                handshake_receive_error(
+                                    &connections, &id,
+                                    icmp_class_of_error(error.type, error.code),
+                                    &handshake_counts, &about);
+                                report_handshake_outcome(stdout, &about);
+                                fflush(stdout);
+                                frames_read++;
+                                continue;
+                            }
+                        }
+                    }
+                    /* ⚠ Anything else falls through to `echo_respond`, ⚠ **which
+                     * is where every other reason an ICMP message is not acted
+                     * on is already counted.** */
+                }
 
                 if (for_us_over_tcp) {
                     size_t internet_header_bytes =

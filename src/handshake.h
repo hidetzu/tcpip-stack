@@ -23,6 +23,7 @@
 
 #include "connection.h"
 #include "ethernet.h"
+#include "icmp.h"
 #include "ipv4.h"
 #include "tcp.h"
 
@@ -604,6 +605,22 @@ enum handshake_reason {
      * that did not happen looks exactly like having nothing to send.** */
     HANDSHAKE_REASON_THEIR_WINDOW_HAD_NO_ROOM,
 
+    /* ⚠ An ICMP error naming this connection, by class.
+     *
+     * ⚠ RFC 9293 §3.9.2.2 classifies them and ⚠ **each class is a different
+     * answer**: ⚠ a Source Quench is discarded and nothing is said on the wire,
+     * ⚠ a soft error leaves the connection alone, ⚠ a hard one ends it, and
+     * ⚠ **one the document does not classify is its own thing** — ⚠ silence is
+     * not a class (`CLAUDE.md` §1). */
+    HANDSHAKE_REASON_A_SOURCE_QUENCH_WE_DISCARDED,
+    HANDSHAKE_REASON_A_SOFT_ERROR_THAT_CHANGES_NOTHING,
+    HANDSHAKE_REASON_A_HARD_ERROR_THAT_ENDS_IT,
+    HANDSHAKE_REASON_AN_ERROR_THE_DOCUMENT_DOES_NOT_CLASSIFY,
+
+    /* ⚠ An error about a connection nobody here holds. ⚠ **Not ours and not the
+     * sender's**: it may name one that has since closed. */
+    HANDSHAKE_REASON_AN_ERROR_FOR_NO_CONNECTION_WE_HOLD,
+
     /* ⚠ Ours, not the sender's: every block is in use
      * (hidetzu/tcpip-stack#42 Owner Decision 1). */
     HANDSHAKE_REASON_NO_ROOM,
@@ -845,6 +862,15 @@ struct handshake_counts {
      * never large look the same from outside** (`CLAUDE.md` §1). */
     unsigned long congestion_windows_we_cut;
 
+    /* ⚠ ICMP errors, ⚠ **each class on its own.** ⚠ Merged, a connection ended
+     * by a hard error would be indistinguishable from one left alone by a soft
+     * one — ⚠ **which is the whole of what RFC 9293 §3.9.2.2 decides.** */
+    unsigned long source_quenches_we_discarded;
+    unsigned long soft_errors_that_changed_nothing;
+    unsigned long hard_errors_that_ended_a_connection;
+    unsigned long errors_the_document_does_not_classify;
+    unsigned long errors_for_no_connection_we_hold;
+
     /* ⚠ **Connections** the other side reset. ⚠ Apart from every other ending:
      * one was closed properly, one timed out, ⚠ **this one was cut.** */
     unsigned long reset_by_the_other_side;
@@ -1075,6 +1101,28 @@ bool handshake_send_what_is_next(struct connections *connections,
  *
  * ⚠ Returns false when nothing is waiting. ⚠ For a caller about to decide how
  * long to wait (hidetzu/tcpip-stack#58). */
+/* An ICMP error naming one of our connections.
+ *
+ * ⚠ RFC 9293 `MUST-54`: "TCP implementations MUST act on an ICMP error message
+ * passed up from the IP layer, **directing it to the connection that created the
+ * error**."
+ *
+ * ⚠ `id` is built from what the error carried back — ⚠ **the addresses from the
+ * internet header it quotes and the ports from the first 64 bits of the
+ * datagram's data** (RFC 792). ⚠ **It is in the same orientation every other
+ * caller here uses**: `local` is ours.
+ *
+ * ⚠ **Nothing is sent, ever.** ⚠ Not for a Source Quench — `MUST-55`'s
+ * "silently" forbids it — ⚠ and not for the others either: RFC 9293 asks for a
+ * connection to be left alone or ended, ⚠ **and neither is a segment.**
+ *
+ * ⚠ **`connections` is not const**: a hard error deletes a block. */
+void handshake_receive_error(struct connections *connections,
+                             const struct connection_id *id,
+                             enum icmp_error_class what,
+                             struct handshake_counts *counts,
+                             struct handshake_outcome *outcome);
+
 bool handshake_next_moment(const struct connections *connections,
                            struct moment *due);
 

@@ -1421,6 +1421,76 @@ bool handshake_send_what_is_next(struct connections *connections,
     return false;
 }
 
+void handshake_receive_error(struct connections *connections,
+                             const struct connection_id *id,
+                             enum icmp_error_class what,
+                             struct handshake_counts *counts,
+                             struct handshake_outcome *outcome)
+{
+    memset(outcome, 0, sizeof *outcome);
+    outcome->id = *id;
+    outcome->state = CONNECTION_LISTEN;
+
+    struct transmission_control_block *held = connections_find(connections, id);
+    if (held == NULL) {
+        /* ⚠ Not ours and not the sender's: ⚠ **it may name a connection that has
+         * since closed**, which is the ordinary case and not a fault. */
+        stayed(outcome, HANDSHAKE_REASON_AN_ERROR_FOR_NO_CONNECTION_WE_HOLD,
+               &counts->errors_for_no_connection_we_hold);
+        return;
+    }
+    outcome->state = held->state;
+
+    switch (what) {
+    case ICMP_ERROR_SOURCE_QUENCH:
+        /* ⚠ `MUST-55`: "TCP implementations MUST silently discard any received
+         * ICMP Source Quench messages." ⚠ **"Silently" forbids a segment on the
+         * wire, not a line telling the human who is watching** — the same
+         * reading `MUST-57` took at hidetzu/tcpip-stack#99.
+         *
+         * ⚠ **It was met before this existed, and by accident**: nothing acted
+         * on any ICMP error at all (hidetzu/tcpip-stack#97). ⚠ **It is met by a
+         * decision now** — ⚠ the message reaches this function and is dropped
+         * here. */
+        stayed(outcome, HANDSHAKE_REASON_A_SOURCE_QUENCH_WE_DISCARDED,
+               &counts->source_quenches_we_discarded);
+        return;
+    case ICMP_ERROR_SOFT:
+        /* ⚠ `MUST-56`: "Since these Unreachable messages indicate soft error
+         * conditions, a TCP implementation MUST NOT abort the connection."
+         * ⚠ **Met by a decision now, not by never seeing one.**
+         *
+         * ⚠ `SHLD-25` — "SHOULD make the information available to the
+         * application" — ⚠ **does not arise: there is none** (ADR 0022). */
+        stayed(outcome, HANDSHAKE_REASON_A_SOFT_ERROR_THAT_CHANGES_NOTHING,
+               &counts->soft_errors_that_changed_nothing);
+        return;
+    case ICMP_ERROR_HARD:
+        /* ⚠ `SHLD-26`: "These are hard error conditions, so TCP implementations
+         * SHOULD abort the connection."
+         *
+         * ⚠ **A `SHOULD` and the document says so in the same breath**: "[35]
+         * notes that some implementations do not abort connections when an ICMP
+         * hard error is received for a connection that is in any of the
+         * synchronized states." ⚠ **Taken anyway, and that is a decision**
+         * (ADR 0035). */
+        connections_release(connections, held);
+        outcome->decision = HANDSHAKE_MOVED;
+        outcome->state = CONNECTION_LISTEN;
+        outcome->reason = HANDSHAKE_REASON_A_HARD_ERROR_THAT_ENDS_IT;
+        counts->hard_errors_that_ended_a_connection++;
+        return;
+    case ICMP_ERROR_NOT_CLASSIFIED:
+        /* ⚠ **The document classifies some codes and not others**, and
+         * ⚠ **silence in an RFC is not permission** (`CLAUDE.md` §1).
+         * ⚠ **The connection is left alone** — ⚠ the safe direction, ⚠ **said as
+         * a choice of ours and not as a reading.** */
+        stayed(outcome, HANDSHAKE_REASON_AN_ERROR_THE_DOCUMENT_DOES_NOT_CLASSIFY,
+               &counts->errors_the_document_does_not_classify);
+        return;
+    }
+}
+
 bool handshake_next_moment(const struct connections *connections, struct moment *due)
 {
     for (size_t i = 0; i < CONNECTIONS_AT_ONCE; i++) {
