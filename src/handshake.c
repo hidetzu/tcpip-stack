@@ -63,6 +63,7 @@ static void moved(struct handshake_outcome *outcome, enum connection_state state
  * ⚠ Built from the inside out, so each layer's payload is already in place.
  * Returns 0 when it would not fit. */
 static size_t build_the_answer(const struct transmission_control_block *block,
+                               enum handshake_reply what,
                                const struct connection_id *id,
                                const uint8_t *requester_hardware_address,
                                const uint8_t *our_hardware_address,
@@ -77,27 +78,39 @@ static size_t build_the_answer(const struct transmission_control_block *block,
     fields.source_port = id->local.port;
     fields.destination_port = id->remote.port;
     fields.acknowledgment_number = block->rcv_nxt;
-    /* ⚠ Which segment this is follows from the state, ⚠ **so a retransmission
-     * cannot build a different one from the send it repeats.**
+    /* ⚠ Which segment this is, said by the caller.
      *
-     * ⚠ In LAST-ACK the sequence number is the one our FIN occupies —
+     * ⚠ Until hidetzu/tcpip-stack#80 it followed from the state, ⚠ **and it
+     * could not any more**: one state now produces two shapes — an
+     * acknowledgment for data we took, and one for a segment we would not.
+     * ⚠ **Inferring it would put the rule in two layers and let them drift**
+     * (`CLAUDE.md` §3).
+     *
+     * ⚠ In LAST-ACK the sequence number of our FIN is the one it occupies —
      * `SND.NXT` was advanced over it when it was first built, so the FIN sits
      * one below. ⚠ RFC 793: "All segments preceding and including FIN will be
      * retransmitted until acknowledged", and ⚠ **a retransmission carrying a
      * different number is a different segment.** */
-    if (block->state == CONNECTION_LAST_ACK) {
+    switch (what) {
+    case HANDSHAKE_REPLY_OUR_FIN:
         fields.sequence_number = block->snd_nxt - 1u;
         fields.control_bits = TCP_CONTROL_FIN | TCP_CONTROL_ACK;
-    } else if (block->state == CONNECTION_ESTABLISHED) {
-        /* ⚠ RFC 793: "<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>". ⚠ `SND.NXT` is not
-         * moved: an ACK is "A control bit (acknowledge) occupying no sequence
-         * space", so ⚠ **nothing is consumed and there is nothing to
-         * retransmit.** */
+        break;
+    case HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED:
+    case HANDSHAKE_REPLY_WHERE_WE_ARE:
+        /* ⚠ RFC 793: "<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>", for both — ⚠ **the
+         * document gives the same form in its seventh step and in its first.**
+         * ⚠ `SND.NXT` is not moved: an ACK is "A control bit (acknowledge)
+         * occupying no sequence space", so ⚠ **nothing is consumed and there is
+         * nothing to retransmit.** */
         fields.sequence_number = block->snd_nxt;
         fields.control_bits = TCP_CONTROL_ACK;
-    } else {
+        break;
+    case HANDSHAKE_REPLY_THE_ANSWER:
+    case HANDSHAKE_REPLY_NONE:
         fields.sequence_number = block->iss;
         fields.control_bits = TCP_CONTROL_SYN | TCP_CONTROL_ACK;
+        break;
     }
     /* ⚠ A promise of exactly this many octets, and ⚠ `take_the_data` is what
      * backs it (hidetzu/tcpip-stack#64 Owner Decision 1). */
@@ -309,30 +322,62 @@ static enum where_it_sat read_the_fin(struct transmission_control_block *block,
  * reason and its counter). ⚠ On failure the buffer is reported as empty, and
  * ⚠ a caller must not send what was not built. */
 static bool build_what_is_due(const struct transmission_control_block *block,
+                              enum handshake_reply what,
                               const struct connection_id *id,
                               const uint8_t *requester_hardware_address,
                               const uint8_t *our_hardware_address,
                               uint8_t *reply, size_t reply_bytes,
                               struct handshake_outcome *outcome)
 {
-    outcome->reply_bytes = build_the_answer(block, id, requester_hardware_address,
+    outcome->reply_bytes = build_the_answer(block, what, id, requester_hardware_address,
                                             our_hardware_address, reply, reply_bytes);
     if (outcome->reply_bytes == 0) {
         outcome->reply = HANDSHAKE_REPLY_NONE;
         return false;
     }
-    switch (block->state) {
-    case CONNECTION_LAST_ACK:
-        outcome->reply = HANDSHAKE_REPLY_OUR_FIN;
-        break;
-    case CONNECTION_ESTABLISHED:
-        outcome->reply = HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED;
-        break;
-    default:
-        outcome->reply = HANDSHAKE_REPLY_THE_ANSWER;
-        break;
-    }
+    outcome->reply = what;
     return true;
+}
+
+/* Send the acknowledgment RFC 793 asks for when a segment was not acceptable.
+ *
+ * ⚠ Verbatim, from the first step of SEGMENT ARRIVES: "If an incoming segment is
+ * not acceptable, an acknowledgment should be sent in reply (unless the RST bit
+ * is set, if so drop the segment and return): <SEQ=SND.NXT><ACK=RCV.NXT>
+ * <CTL=ACK>. After sending the acknowledgment, drop the unacceptable segment and
+ * return."
+ *
+ * ⚠ **It accepts nothing.** ⚠ The segment was dropped; this says where we are,
+ * so ⚠ **a peer whose acknowledgment was lost learns it instead of resending
+ * until it gives up** (hidetzu/tcpip-stack#80).
+ *
+ * ⚠ **The reason and its count are already set by the caller and are not
+ * touched here.** ⚠ Failing to build it does not un-refuse the segment: the
+ * refusal stands and is reported, and ⚠ **a caller must not send what was not
+ * built.**
+ *
+ * ⚠ Nothing is counted for the send here — ⚠ **a segment that was built is not
+ * a segment that left**, and the caller counts what the wire took. */
+static void say_where_we_are(const struct transmission_control_block *block,
+                             const struct connection_id *id,
+                             const uint8_t *requester_hardware_address,
+                             const uint8_t *our_hardware_address,
+                             uint8_t *reply, size_t reply_bytes,
+                             struct handshake_outcome *outcome)
+{
+    (void)build_what_is_due(block, HANDSHAKE_REPLY_WHERE_WE_ARE, id,
+                            requester_hardware_address, our_hardware_address,
+                            reply, reply_bytes, outcome);
+}
+
+/* What the state of a connection that is waiting says should go out again.
+ *
+ * ⚠ Only these two states wait, and ⚠ **each waits for one thing**, so there is
+ * nothing to choose between here (see `the_one_waiting`). */
+static enum handshake_reply what_is_owed(const struct transmission_control_block *block)
+{
+    return block->state == CONNECTION_LAST_ACK ? HANDSHAKE_REPLY_OUR_FIN
+                                               : HANDSHAKE_REPLY_THE_ANSWER;
 }
 
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
@@ -403,9 +448,9 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                 read_the_fin(held, header, now, outcome, counts);
                 moved(outcome, held->state, &counts->established);
                 if (held->state == CONNECTION_LAST_ACK &&
-                    !build_what_is_due(held, id, requester_hardware_address,
-                                       our_hardware_address, reply, reply_bytes,
-                                       outcome)) {
+                    !build_what_is_due(held, HANDSHAKE_REPLY_OUR_FIN, id,
+                                       requester_hardware_address, our_hardware_address,
+                                       reply, reply_bytes, outcome)) {
                     held->state = CONNECTION_CLOSE_WAIT;
                     held->snd_nxt -= 1u;
                     outcome->state = CONNECTION_CLOSE_WAIT;
@@ -454,9 +499,9 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                 outcome->decision = HANDSHAKE_MOVED;
                 outcome->reason = HANDSHAKE_REASON_NONE;
                 outcome->state = held->state;
-                if (!build_what_is_due(held, id, requester_hardware_address,
-                                       our_hardware_address, reply, reply_bytes,
-                                       outcome)) {
+                if (!build_what_is_due(held, HANDSHAKE_REPLY_OUR_FIN, id,
+                                       requester_hardware_address, our_hardware_address,
+                                       reply, reply_bytes, outcome)) {
                     /* ⚠ Ours, not the sender's. ⚠ The connection is left in
                      * CLOSE-WAIT rather than claiming to have closed, and
                      * ⚠ **the block is NOT given back**: their FIN was read and
@@ -479,6 +524,8 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                 stayed(outcome, HANDSHAKE_REASON_A_FIN_THAT_BEGINS_TOO_FAR_AHEAD,
                        &counts->fin_that_begins_too_far_ahead);
             }
+            say_where_we_are(held, id, requester_hardware_address, our_hardware_address,
+                             reply, reply_bytes, outcome);
             return;
         }
 
@@ -518,18 +565,23 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                  * ⚠ When it will not fit, the octets were still taken and
                  * `RCV.NXT` still moved: ⚠ **giving them back is not possible**,
                  * so the failure is reported as ours and the taking stands. */
-                if (!build_what_is_due(held, id, requester_hardware_address,
+                if (!build_what_is_due(held, HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED,
+                                       id, requester_hardware_address,
                                        our_hardware_address, reply, reply_bytes,
                                        outcome)) {
                     stayed(outcome, HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY,
                            &counts->we_could_not_build_the_reply);
                 }
-            } else if (the_data == WE_HAVE_HAD_IT_ALREADY) {
-                stayed(outcome, HANDSHAKE_REASON_DATA_WE_HAVE_TAKEN_ALREADY,
-                       &counts->data_we_have_taken_already);
             } else {
-                stayed(outcome, HANDSHAKE_REASON_DATA_THAT_BEGINS_TOO_FAR_AHEAD,
-                       &counts->data_that_begins_too_far_ahead);
+                if (the_data == WE_HAVE_HAD_IT_ALREADY) {
+                    stayed(outcome, HANDSHAKE_REASON_DATA_WE_HAVE_TAKEN_ALREADY,
+                           &counts->data_we_have_taken_already);
+                } else {
+                    stayed(outcome, HANDSHAKE_REASON_DATA_THAT_BEGINS_TOO_FAR_AHEAD,
+                           &counts->data_that_begins_too_far_ahead);
+                }
+                say_where_we_are(held, id, requester_hardware_address,
+                                 our_hardware_address, reply, reply_bytes, outcome);
             }
             return;
         }
@@ -599,7 +651,8 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     taken->answer_due = moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
     taken->give_up_at = moment_after(now, HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS);
 
-    if (!build_what_is_due(taken, id, requester_hardware_address, our_hardware_address,
+    if (!build_what_is_due(taken, HANDSHAKE_REPLY_THE_ANSWER, id,
+                           requester_hardware_address, our_hardware_address,
                            reply, reply_bytes, outcome)) {
         /* ⚠ The connection was opened and we cannot answer it. ⚠ Ours, not the
          * sender's, and ⚠ the block is given back so the next SYN is not refused
@@ -692,7 +745,7 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
 
         /* ⚠ Addressed from what the connection remembers: ⚠ **there is no
          * arriving frame to read it from** (hidetzu/tcpip-stack#59). */
-        if (!build_what_is_due(waiting, &waiting->id,
+        if (!build_what_is_due(waiting, what_is_owed(waiting), &waiting->id,
                                waiting->requester_hardware_address,
                                our_hardware_address, reply, reply_bytes, outcome)) {
             /* ⚠ Ours, not the sender's. ⚠ The attempt is spent either way — the

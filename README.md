@@ -260,10 +260,11 @@ reports `TIME-WAIT`.
 ⚠ Why one segment and not two, and why `LAST-ACK` and not what RFC 793's CLOSE Call prints, are in
 [ADR 0023](docs/adr/0023-our-close-rides-the-acknowledgment-of-theirs.md).
 
-⚠ **What is still not sent**: three places RFC 793 §3.9 asks for a reset produce a counted reason and
-no segment, and ⚠ **a segment we refuse draws nothing** — the document asks for an acknowledgment
-there too. ⚠ **The initial sequence number is fixed, which is a known weakness outside a private
-namespace** — [`docs/SPEC.md`](docs/SPEC.md) §2 says so plainly.
+⚠ **A segment we refuse draws an acknowledgment saying where we are**, which is what lets a peer
+whose own acknowledgment was lost recover — ⚠ measured 2026-08-29 with the loss made to happen on
+purpose. ⚠ **What is still not sent**: the three places RFC 793 §3.9 asks for a reset produce a
+counted reason and no segment. ⚠ **The initial sequence number is fixed, which is a known weakness
+outside a private namespace** — [`docs/SPEC.md`](docs/SPEC.md) §2 says so plainly.
 
 ⚠ **Whether the kernel then lets the connection go** is the milestone above.
 

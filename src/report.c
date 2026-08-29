@@ -547,8 +547,10 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
     /* ⚠ The first number here is octets and the second is segments. ⚠ Both say
      * which, on the line, because ⚠ **a number beside a number of a different
      * kind is read as the same kind** (`CLAUDE.md` §6). */
-    fprintf(out, "%lu acknowledgment%s for data left the device\n",
-            counts->data_acknowledged, counts->data_acknowledged == 1 ? "" : "s");
+    fprintf(out, "%lu acknowledgment%s for data left the device, and %lu said where "
+                 "we are without accepting anything\n",
+            counts->data_acknowledged, counts->data_acknowledged == 1 ? "" : "s",
+            counts->told_them_where_we_are);
     fprintf(out, "%lu octet%s of data %s taken and discarded. %lu segment%s carried "
                  "data we had taken already, and %lu began past what we were waiting "
                  "for\n",
