@@ -670,6 +670,15 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
         { HANDSHAKE_REASON_NO_CONNECTION_HELD,
           "  no answer: nothing here is expecting a segment from 10.0.0.1:50568\n" },
         /* ⚠ Ours, and it says so. */
+        { HANDSHAKE_REASON_THE_OTHER_SIDE_RESET_IT,
+          "  10.0.0.1:50568 reset the connection; it is gone and the room it held is free\n"
+          "    again (CLOSED)\n" },
+        { HANDSHAKE_REASON_A_RESET_OUTSIDE_THE_WINDOW,
+          "  no answer: that reset is not for a sequence number we are waiting\n"
+          "    for, so nothing was done with it\n" },
+        { HANDSHAKE_REASON_URGENT_AND_NOBODY_TO_TELL,
+          "  no answer: that was marked urgent, and there is nobody here to\n"
+          "    hand it to. That is ours, not the sender's\n" },
         { HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE,
           "  no answer: that was addressed to a broadcast or multicast address,\n"
           "    and a connection is never made to one\n" },
@@ -814,6 +823,9 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "the other side closed 0 connections. 0 FINs arrived that we had read "
         "already, 0 began past what we were waiting for, and 0 named a connection we "
         "hold nothing for\n"
+        "the other side reset 0 connections and 0 resets named a sequence number we "
+        "are not waiting for. 0 segments were marked urgent with nobody here to hand "
+        "it to\n"
         "0 segments were addressed to a broadcast or multicast address, which a "
         "connection is never made to\n"
         "0 were refused for want of room and 0 answers never left the device, which "
@@ -834,6 +846,9 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.answered = 1;
     one.room.refused_for_want_of_room = 1;
     one.addressed_to_everyone = 1;
+    one.reset_by_the_other_side = 1;
+    one.reset_outside_the_window = 1;
+    one.urgent_and_nobody_to_tell = 1;
     one.data_acknowledged = 1;
     one.told_them_where_we_are = 1;
     one.octets_taken_and_discarded = 1;
@@ -867,6 +882,9 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "the other side closed 1 connection. 1 FIN arrived that we had read already, "
         "1 began past what we were waiting for, and 1 named a connection we hold "
         "nothing for\n"
+        "the other side reset 1 connection and 1 reset named a sequence number we "
+        "are not waiting for. 1 segment was marked urgent with nobody here to hand "
+        "it to\n"
         "1 segment was addressed to a broadcast or multicast address, which a "
         "connection is never made to\n"
         "1 was refused for want of room and 1 answer never left the device, which "
@@ -907,6 +925,9 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.fin_we_could_not_place = 15;
     each.room.refused_for_want_of_room = 16;
     each.addressed_to_everyone = 26;
+    each.reset_by_the_other_side = 27;
+    each.reset_outside_the_window = 28;
+    each.urgent_and_nobody_to_tell = 29;
     each.we_could_not_build_the_reply = 17;
 
     produced_open(&produced);
@@ -928,6 +949,9 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "the other side closed 13 connections. 14 FINs arrived that we had read "
         "already, 24 began past what we were waiting for, and 15 named a connection "
         "we hold nothing for\n"
+        "the other side reset 27 connections and 28 resets named a sequence number "
+        "we are not waiting for. 29 segments were marked urgent with nobody here to "
+        "hand it to\n"
         "26 segments were addressed to a broadcast or multicast address, which a "
         "connection is never made to\n"
         "16 were refused for want of room and 17 answers never left the device, "

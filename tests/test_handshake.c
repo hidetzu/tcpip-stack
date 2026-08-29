@@ -2179,6 +2179,151 @@ static bool case_a_segment_addressed_to_everyone_is_refused(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#101. ⚠ RFC 9293 `MUST-66`: "A TCP receiver MUST process
+ * the RST and URG fields of all incoming segments, even when the receive window
+ * is zero."
+ *
+ * ⚠ §3.10.7.4 for the synchronised states: "If the RST bit is set ... Enter the
+ * CLOSED state, delete the TCB, and return." ⚠ For `SYN-RECEIVED` on a passive
+ * `OPEN`: "return this connection to LISTEN state ... The user need not be
+ * informed." ⚠ **Holding nothing is our LISTEN**, so both come to the same
+ * thing. */
+static bool case_a_reset_ends_the_connection(void)
+{
+    bool ok = true;
+    static const enum { WHILE_OPENING, WHILE_OPEN } when[] = { WHILE_OPENING, WHILE_OPEN };
+
+    for (size_t i = 0; i < sizeof when / sizeof when[0]; i++) {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (when[i] == WHILE_OPENING) {
+            if (!open_one(&world, THEIR_ISN, &held)) {
+                return false;
+            }
+        } else if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        uint32_t at_the_edge = held->rcv_nxt;
+
+        struct tcp_header reset = a_segment(TCP_CONTROL_RST, at_the_edge, 0);
+        struct handshake_outcome outcome = receive(&world, &reset);
+
+        if (outcome.reason != HANDSHAKE_REASON_THE_OTHER_SIDE_RESET_IT ||
+            outcome.state != CONNECTION_CLOSED ||
+            world.counts.reset_by_the_other_side != 1) {
+            fprintf(stderr, "  a reset in state %d came back as reason %d\n",
+                    (int)when[i], (int)outcome.reason);
+            ok = false;
+        }
+        /* ⚠ **The block is gone**, which is what "delete the TCB" means here. */
+        struct connection_id id = the_connection();
+        if (connections_find(&world.connections, &id) != NULL) {
+            fputs("  the connection was still held after a reset\n", stderr);
+            ok = false;
+        }
+        /* ⚠ Nothing is sent for it. */
+        if (outcome.reply_bytes != 0) {
+            fprintf(stderr, "  %zu octets were built in answer to a reset\n",
+                    outcome.reply_bytes);
+            ok = false;
+        }
+        /* ⚠ And a later `SYN` opens one, so the room really is free. */
+        struct tcp_header again = a_segment(TCP_CONTROL_SYN, THEIR_ISN + 500u, 0);
+        if (receive(&world, &again).state != CONNECTION_SYN_RECEIVED) {
+            fputs("  a later SYN was refused after a reset\n", stderr);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* ⚠ The other half, and it is the document's own exception: ⚠ **a `RST` the
+ * window does not cover is dropped and draws nothing.**
+ *
+ * ⚠ RFC 9293 §3.10.7.4's first step: an unacceptable segment draws an
+ * acknowledgment ⚠ **"(unless the RST bit is set, if so drop the segment and
+ * return)"** — ⚠ so this is the one refusal that stays silent. */
+static bool case_a_reset_outside_the_window_changes_nothing(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    uint32_t was = held->rcv_nxt;
+
+    bool ok = true;
+    static const uint32_t away[] = { 1u, 5000u };
+    for (size_t i = 0; i < sizeof away / sizeof away[0]; i++) {
+        uint32_t sits_at = i == 0 ? was - away[i] : was + away[i];
+        struct tcp_header reset = a_segment(TCP_CONTROL_RST, sits_at, 0);
+        struct handshake_outcome outcome = receive(&world, &reset);
+        if (outcome.reason != HANDSHAKE_REASON_A_RESET_OUTSIDE_THE_WINDOW) {
+            fprintf(stderr, "  a reset at %lu with RCV.NXT %lu came back as reason %d\n",
+                    (unsigned long)sits_at, (unsigned long)was, (int)outcome.reason);
+            ok = false;
+        }
+        /* ⚠ **Nothing sent** — unlike refused data or a refused FIN. */
+        if (outcome.reply_bytes != 0 || outcome.reply != HANDSHAKE_REPLY_NONE) {
+            fprintf(stderr, "  %zu octets were built for a reset outside the window\n",
+                    outcome.reply_bytes);
+            ok = false;
+        }
+    }
+    /* ⚠ And the connection is untouched. */
+    struct connection_id id = the_connection();
+    if (connections_find(&world.connections, &id) == NULL ||
+        held->state != CONNECTION_ESTABLISHED || held->rcv_nxt != was ||
+        world.counts.reset_by_the_other_side != 0 ||
+        world.counts.reset_outside_the_window != 2) {
+        fprintf(stderr, "  the connection moved: state %d, reset %lu, outside %lu\n",
+                (int)held->state, world.counts.reset_by_the_other_side,
+                world.counts.reset_outside_the_window);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ A segment marked urgent. ⚠ **The pointer is read and there is nobody to
+ * hand it to** (ADR 0022), and ⚠ **it is counted and said** rather than passing
+ * as ordinary. */
+static bool case_an_urgent_segment_is_counted_and_said(void)
+{
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+
+    bool ok = true;
+    struct tcp_header urgent =
+        a_segment(TCP_CONTROL_URG | TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u);
+    struct handshake_outcome outcome = receive(&world, &urgent);
+    if (outcome.reason != HANDSHAKE_REASON_URGENT_AND_NOBODY_TO_TELL ||
+        world.counts.urgent_and_nobody_to_tell != 1 ||
+        world.counts.not_expected_in_this_state != 0) {
+        fprintf(stderr, "  a segment marked urgent came back as reason %d\n",
+                (int)outcome.reason);
+        ok = false;
+    }
+
+    /* ⚠ The other half: ⚠ **`URG` beside data does not stop the data being
+     * taken** — this reason is reached only when nothing else was. */
+    struct tcp_header with_data =
+        carrying(a_segment(TCP_CONTROL_URG | TCP_CONTROL_ACK, held->rcv_nxt,
+                           held->iss + 1u), 2);
+    struct handshake_outcome took = receive(&world, &with_data);
+    if (took.octets_taken != 2 || world.counts.urgent_and_nobody_to_tell != 1) {
+        fprintf(stderr, "  urgent data was not taken: %u octets, urgent counted %lu\n",
+                (unsigned)took.octets_taken, world.counts.urgent_and_nobody_to_tell);
+        ok = false;
+    }
+    return ok;
+}
+
 /* ⚠ AC 5. ⚠ **Nothing is sent for a connection that has not seen a FIN**, so
  * this change cannot pass for a stack that sends on everything. */
 static bool case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin(void)
@@ -3125,6 +3270,11 @@ static const struct test_case cases[] = {
       case_a_duplicate_and_a_segment_ahead_are_told_apart_at_the_wrap },
     { "the_time_to_live_we_send_with_is_the_callers",
       case_the_time_to_live_we_send_with_is_the_callers },
+    { "a_reset_ends_the_connection", case_a_reset_ends_the_connection },
+    { "a_reset_outside_the_window_changes_nothing",
+      case_a_reset_outside_the_window_changes_nothing },
+    { "an_urgent_segment_is_counted_and_said",
+      case_an_urgent_segment_is_counted_and_said },
     { "a_segment_addressed_to_everyone_is_refused",
       case_a_segment_addressed_to_everyone_is_refused },
     { "nothing_is_sent_for_a_connection_that_has_not_seen_a_fin",
