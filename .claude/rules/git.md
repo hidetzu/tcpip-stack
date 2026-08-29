@@ -12,9 +12,16 @@ by [`CLAUDE.md`](../../CLAUDE.md) §8.** ⚠ Not here.
 git push --force
 git reset --hard
 git clean -fd
-git checkout -- .
-git restore .
+git checkout -- .          ⚠ and `git checkout <path>`, which is the same
+git restore .              ⚠ and `git restore <path>`
 ```
+
+- MUST: ⚠ **The single-path form is the same operation.** ⚠ `git checkout src/tcp.c` discards
+  everything uncommitted in that file, ⚠ **including work written minutes ago for another reason.**
+  ⚠ **Grounds: `CLAUDE.md` §9** — it happened three times in one session, always while undoing a
+  mutation, and ⚠ **once it was a check that noticed rather than the person.**
+- MUST: ⚠ **To undo a change you made on purpose, copy the file aside first and copy it back.**
+  ⚠ Every mutation that did so cost nothing.
 
 - MUST: ⚠ **When one is genuinely needed, say what will be lost, first.**
 - MUST: ⚠ **Never discard or overwrite someone's uncommitted work.**
