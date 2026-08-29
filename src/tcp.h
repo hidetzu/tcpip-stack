@@ -81,8 +81,19 @@
 /* The fixed part, in octets. ⚠ Derived, never written as 20. */
 #define TCP_FIXED_HEADER_BYTES (TCP_HEADER_LENGTH_MINIMUM * TCP_HEADER_LENGTH_UNIT)
 
-/* ⚠ RFC 793's six Control Bits, in the order the document lists them,
- * left to right. */
+/* The Control Bits, in the order the document lists them, left to right.
+ *
+ * ⚠ **Eight, not six.** ⚠ RFC 793 listed six and called the two above them
+ * `Reserved`. ⚠ RFC 9293 §3.1 — the normative baseline since ADR 0024 —
+ * assigns them: "The currently assigned control bits are CWR, ECE, URG, ACK,
+ * PSH, RST, SYN, and FIN", with `Reserved` reduced to four bits.
+ *
+ * ⚠ **`CWR` and `ECE` belong to ECN, and nothing here implements ECN.**
+ * ⚠ They are read and ⚠ **acted on by nothing** — ADR 0024 clause 3 adds a
+ * function RFC 9293 defers only when that function is implemented
+ * (hidetzu/tcpip-stack#86). */
+#define TCP_CONTROL_CWR 0x80u
+#define TCP_CONTROL_ECE 0x40u
 #define TCP_CONTROL_URG 0x20u
 #define TCP_CONTROL_ACK 0x10u
 #define TCP_CONTROL_PSH 0x08u
@@ -120,10 +131,16 @@ enum tcp_parse {
     TCP_PARSE_OK = 0,
 
     /* ⚠ Malformed: the octets do not hold what the header says they hold, or
-     * the header breaks what RFC 793 states. ⚠ Whoever sent it is wrong.
-     * ⚠ Four inputs land here — fewer octets than the fixed fields need; a Data
-     * Offset below or beyond what a header can be; a Reserved that is not zero;
-     * and ⚠ an option list that does not walk (ADR 0013).
+     * the header breaks what the document states. ⚠ Whoever sent it is wrong.
+     * ⚠ **Three inputs land here** — fewer octets than the fixed fields need; a
+     * Data Offset below or beyond what a header can be; and ⚠ an option list
+     * that does not walk (ADR 0013).
+     *
+     * ⚠ **It was four until hidetzu/tcpip-stack#86.** ⚠ A `Reserved` that is
+     * not zero was one of them, and ⚠ **RFC 9293 §3.1 says a receiver must
+     * ignore it.** ⚠ **This counter means less than it did**, and
+     * `docs/SPEC.md` §2-1 says so rather than letting the number quietly change
+     * what it stands for.
      *
      * ⚠ There is no "well-formed but unsupported" answer in this file, and that
      * is not an oversight: ⚠ reading a header declines nothing. ⚠ Options are
@@ -145,7 +162,20 @@ struct tcp_header {
     uint32_t sequence_number;
     uint32_t acknowledgment_number;
     uint8_t data_offset;   /* in 32-bit words, as the document counts */
-    uint8_t reserved;      /* ⚠ six bits, and the document says they are zero */
+    /* ⚠ **Four bits**, and ⚠ **a set one changes nothing.**
+     *
+     * ⚠ RFC 9293 §3.1, verbatim: "A set of control bits reserved for future
+     * use.  Must be zero in generated segments and must be ignored in received
+     * segments if the corresponding future features are not implemented by the
+     * sending or receiving host."
+     *
+     * ⚠ Until hidetzu/tcpip-stack#86 this was six bits and a set one made the
+     * segment malformed — ⚠ **our reading of RFC 793's "Must be zero", recorded
+     * as ours** (ADR 0013). ⚠ RFC 793 is silent about what a receiver does;
+     * ⚠ **RFC 9293 is not**, and ADR 0024 made it the baseline.
+     *
+     * ⚠ **Carried so a caller can see it**, and ⚠ nothing here reads it. */
+    uint8_t reserved;
     uint8_t control_bits;  /* the six above */
     uint16_t window;
     uint16_t checksum;     /* ⚠ carried, never verified here */

@@ -126,13 +126,14 @@ static bool answer_is(const char *what, const struct segment *s, enum tcp_parse 
 }
 
 /* Writes a six-bit Reserved across the two octets it lives in. */
+/* ⚠ Four bits, all of them in the offset octet.
+ *
+ * ⚠ Until hidetzu/tcpip-stack#86 this wrote six, two of them in the control-bit
+ * octet — ⚠ **those two are `CWR` and `ECE` now** (RFC 9293 §3.1). */
 static void write_reserved(struct segment *s, unsigned reserved)
 {
     s->octets[AT_OFFSET_AND_RESERVED] =
-        (unsigned char)((s->octets[AT_OFFSET_AND_RESERVED] & 0xf0) |
-                        ((reserved >> 2) & 0x0f));
-    s->octets[AT_CONTROL_BITS] =
-        (unsigned char)((s->octets[AT_CONTROL_BITS] & 0x3f) | ((reserved & 0x03) << 6));
+        (unsigned char)((s->octets[AT_OFFSET_AND_RESERVED] & 0xf0) | (reserved & 0x0f));
 }
 
 static void write_data_offset(struct segment *s, unsigned words)
@@ -310,18 +311,22 @@ static bool case_a_data_offset_beyond_what_arrived_is_malformed(void)
     return ok;
 }
 
-/* ⚠ RFC 793: "Reserved: 6 bits - Reserved for future use.  Must be zero."
- * ⚠ Set means the sender broke what the document states. ⚠ The document does not
- * tell a receiver to reject it — that is our reading, the third time this
- * repository has drawn it from the same shape of sentence (ADR 0013).
+/* ⚠ RFC 9293 §3.1, verbatim: "Reserved (Rsrvd):  4 bits — A set of control bits
+ * reserved for future use.  Must be zero in generated segments and **must be
+ * ignored in received segments** if the corresponding future features are not
+ * implemented by the sending or receiving host."
  *
- * ⚠ All six bits, and they do not live in one octet: four are the low half of
- * one and two are the top of the next. ⚠ A parser that read only the four would
- * pass a case that tried only the values below 4. */
-static bool case_a_reserved_that_is_not_zero_is_malformed(void)
+ * ⚠ **Until hidetzu/tcpip-stack#86 this case asserted the opposite**: a set bit
+ * made the segment malformed, from RFC 793's "Must be zero" — ⚠ **a conclusion
+ * recorded as ours** (ADR 0013), because RFC 793 does not tell a receiver what
+ * to do. ⚠ **RFC 9293 does**, and ADR 0024 made it the baseline.
+ *
+ * ⚠ **Every one of the four bits on its own**, so a build that ignored one and
+ * refused another shows. */
+static bool case_a_reserved_that_is_not_zero_is_ignored(void)
 {
     bool ok = true;
-    for (unsigned reserved = 1; reserved < 64; reserved++) {
+    for (unsigned reserved = 1; reserved < 16; reserved++) {
         struct segment s;
         if (!load_the_syn(&s)) {
             return false;
@@ -330,31 +335,53 @@ static bool case_a_reserved_that_is_not_zero_is_malformed(void)
         repair_the_checksum(&s);
         char what[64];
         snprintf(what, sizeof what, "reserved %u", reserved);
-        if (!answer_is(what, &s, TCP_PARSE_MALFORMED)) {
+        if (!answer_is(what, &s, TCP_PARSE_OK)) {
+            ok = false;
+            continue;
+        }
+        /* ⚠ Carried, and ⚠ **not leaked into the control bits.** */
+        struct tcp_header header;
+        (void)tcp_parse_header(s.octets, s.bytes, s.source_address,
+                               s.destination_address, &header);
+        if (header.reserved != reserved) {
+            fprintf(stderr, "  reserved %u was read as %u\n", reserved, header.reserved);
+            ok = false;
+        }
+        if (header.control_bits != TCP_CONTROL_SYN) {
+            fprintf(stderr, "  reserved %u leaked into the control bits: 0x%02x\n",
+                    reserved, header.control_bits);
             ok = false;
         }
     }
 
-    /* ⚠ The other half: a zero Reserved with every Control Bit set is accepted,
-     * so this case cannot pass for a parser that reads the wrong bits. */
+    /* ⚠ The other half: ⚠ **ignoring it must not mean ignoring the segment.**
+     * ⚠ A build that returned OK for everything would pass every line above, so
+     * a segment that IS malformed for another reason must still be refused,
+     * with `Reserved` set at the same time. */
     struct segment s;
     if (!load_the_syn(&s)) {
         return false;
     }
-    write_reserved(&s, 0);
-    s.octets[AT_CONTROL_BITS] = (unsigned char)(s.octets[AT_CONTROL_BITS] | 0x3f);
+    write_reserved(&s, 0x0f);
+    write_data_offset(&s, TCP_HEADER_LENGTH_MINIMUM - 1u);
     repair_the_checksum(&s);
-    if (!answer_is("reserved 0 with every control bit set", &s, TCP_PARSE_OK)) {
+    if (!answer_is("reserved set and a data offset below the fixed header", &s,
+                   TCP_PARSE_MALFORMED)) {
         ok = false;
     }
     return ok;
 }
 
-/* ⚠ The six Control Bits are six separate things, and ⚠ none of them may be
- * read as part of Reserved. */
+/* ⚠ The Control Bits are separate things, and ⚠ none of them may be read as
+ * part of Reserved.
+ *
+ * ⚠ **Eight since hidetzu/tcpip-stack#86**, not six: RFC 9293 §3.1 lists "CWR,
+ * ECE, URG, ACK, PSH, RST, SYN, and FIN". ⚠ `CWR` and `ECE` are read here and
+ * ⚠ **acted on by nothing** — ADR 0024 clause 3. */
 static bool case_each_control_bit_is_read_on_its_own(void)
 {
     static const struct { unsigned bit; const char *name; } bits[] = {
+        { TCP_CONTROL_CWR, "CWR" }, { TCP_CONTROL_ECE, "ECE" },
         { TCP_CONTROL_URG, "URG" }, { TCP_CONTROL_ACK, "ACK" },
         { TCP_CONTROL_PSH, "PSH" }, { TCP_CONTROL_RST, "RST" },
         { TCP_CONTROL_SYN, "SYN" }, { TCP_CONTROL_FIN, "FIN" },
@@ -366,8 +393,7 @@ static bool case_each_control_bit_is_read_on_its_own(void)
             return false;
         }
         write_reserved(&s, 0);
-        s.octets[AT_CONTROL_BITS] =
-            (unsigned char)((s.octets[AT_CONTROL_BITS] & 0xc0) | bits[i].bit);
+        s.octets[AT_CONTROL_BITS] = (unsigned char)bits[i].bit;
         repair_the_checksum(&s);
 
         struct tcp_header header;
@@ -389,29 +415,27 @@ static bool case_each_control_bit_is_read_on_its_own(void)
         }
     }
 
-    /* ⚠ The other half, and it needs a segment we DECLINE: with Reserved zero,
-     * a parser that never masked the Control Bits reports the same six bits and
-     * every case above passes. ⚠ So set the two Reserved bits that share the
-     * octet and require them not to appear among the Control Bits.
+    /* ⚠ The other half: ⚠ **a parser that never masked would read `Reserved`
+     * among the Control Bits.** ⚠ Set all four and require the Control Bits to
+     * show only what was put there.
      *
-     * ⚠ The segment comes back malformed — Reserved is not zero — and ⚠ the
-     * fields are still filled, which is this parser's contract for a segment it
-     * declines. ⚠ An earlier version of this case had no such input, and
-     * ⚠ removing the mask left it passing. */
-    for (unsigned reserved = 1; reserved <= 3; reserved++) {
+     * ⚠ Until hidetzu/tcpip-stack#86 this needed a segment we DECLINE, because
+     * a non-zero `Reserved` was malformed. ⚠ **It is accepted now**, which
+     * makes the half simpler and ⚠ **not weaker**: the leak it looks for is the
+     * same one. */
+    for (unsigned reserved = 1; reserved <= 15; reserved++) {
         struct segment s;
         if (!load_the_syn(&s)) {
             return false;
         }
         write_reserved(&s, reserved);
-        s.octets[AT_CONTROL_BITS] =
-            (unsigned char)((s.octets[AT_CONTROL_BITS] & 0xc0) | TCP_CONTROL_SYN);
+        s.octets[AT_CONTROL_BITS] = (unsigned char)TCP_CONTROL_SYN;
         repair_the_checksum(&s);
 
         struct tcp_header header;
         if (tcp_parse_header(s.octets, s.bytes, s.source_address, s.destination_address,
-                             &header) != TCP_PARSE_MALFORMED) {
-            fprintf(stderr, "  reserved %u was not declined\n", reserved);
+                             &header) != TCP_PARSE_OK) {
+            fprintf(stderr, "  reserved %u was declined\n", reserved);
             ok = false;
             continue;
         }
@@ -781,18 +805,13 @@ static bool case_the_order_the_answers_are_decided_in(void)
 {
     bool ok = true;
 
-    /* Reserved set AND the checksum left alone, so both are wrong at once. */
+    /* ⚠ Until hidetzu/tcpip-stack#86 the first half of this case set `Reserved`,
+     * ⚠ **which is no longer malformed at all** (RFC 9293 §3.1). ⚠ The three
+     * that remain are the three causes left, and ⚠ **each is fed with the
+     * checksum left alone**, so both things are wrong at once.
+     *
+     * A Data Offset below the fixed header, and the checksum left alone. */
     struct segment s;
-    if (!load_the_syn(&s)) {
-        return false;
-    }
-    write_reserved(&s, 1);
-    if (!answer_is("reserved set with the checksum left alone", &s,
-                   TCP_PARSE_CHECKSUM_DISAGREES)) {
-        ok = false;
-    }
-
-    /* A Data Offset below the fixed header, and the checksum left alone. */
     if (!load_the_syn(&s)) {
         return false;
     }
@@ -819,9 +838,19 @@ static bool case_the_order_the_answers_are_decided_in(void)
     if (!load_the_syn(&s)) {
         return false;
     }
-    write_reserved(&s, 1);
+    write_data_offset(&s, 0);
     repair_the_checksum(&s);
-    if (!answer_is("reserved set alone", &s, TCP_PARSE_MALFORMED)) {
+    if (!answer_is("a data offset of 0 alone", &s, TCP_PARSE_MALFORMED)) {
+        ok = false;
+    }
+
+    if (!load_the_syn(&s)) {
+        return false;
+    }
+    s.octets[TCP_FIXED_HEADER_BYTES] = 2;
+    s.octets[TCP_FIXED_HEADER_BYTES + 1] = 0;
+    repair_the_checksum(&s);
+    if (!answer_is("an option length of 0 alone", &s, TCP_PARSE_MALFORMED)) {
         ok = false;
     }
 
@@ -871,8 +900,8 @@ static const struct test_case cases[] = {
       case_a_data_offset_below_the_fixed_header_is_malformed },
     { "a_data_offset_beyond_what_arrived_is_malformed",
       case_a_data_offset_beyond_what_arrived_is_malformed },
-    { "a_reserved_that_is_not_zero_is_malformed",
-      case_a_reserved_that_is_not_zero_is_malformed },
+    { "a_reserved_that_is_not_zero_is_ignored",
+      case_a_reserved_that_is_not_zero_is_ignored },
     { "each_control_bit_is_read_on_its_own", case_each_control_bit_is_read_on_its_own },
     { "an_option_list_that_does_not_walk_is_malformed",
       case_an_option_list_that_does_not_walk_is_malformed },

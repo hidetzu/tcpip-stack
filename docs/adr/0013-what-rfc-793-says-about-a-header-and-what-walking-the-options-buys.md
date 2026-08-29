@@ -1,7 +1,7 @@
 # 0013 — What RFC 793 says about a header, and what walking the options buys
 
 Date: 2026-08-28
-Status: accepted
+Status: accepted; ⚠ **the `Reserved` conclusion is superseded by ADR 0024 and hidetzu/tcpip-stack#86**
 Issue: hidetzu/tcpip-stack#40
 
 ## Context
@@ -56,6 +56,11 @@ it the document's way (`.claude/rules/c.md`: borrow the RFC's names, exactly).
   named in the document's list and ⚠ **its meaning was not looked up.**
 - ⚠ **RFC 793 has been updated by later documents.** ⚠ **Everything above was
   read in RFC 793 itself**, and ⚠ nothing here is attributed to a successor.
+
+⚠ **This one moved the other way on 2026-08-29.** ⚠ RFC 9293 §3.1 states the
+minimum where RFC 793 did not: "Options: [TCP Option]; size(Options) ==
+(DOffset-5)*32; ⚠ **present only when DOffset > 5**". ⚠ **The claim stops being
+ours and becomes the document's**, and ⚠ **nothing about the code changes.**
 
 ## Decision
 
@@ -114,6 +119,22 @@ time this repository has drawn it from the same shape of sentence** — ADR 0010
 for IPv4's reserved flag bit, ADR 0011 for ICMP's `Code`, and here. ⚠ **RFC 793
 does not tell a receiver to reject such a segment**, and this is not presented as
 if it did.
+
+⚠ **Superseded on 2026-08-29** (ADR 0024, hidetzu/tcpip-stack#86). ⚠ **The
+conclusion was ours because RFC 793 is silent, and it said so.** ⚠ RFC 9293 §3.1
+is not silent: "Reserved (Rsrvd): 4 bits ... Must be zero in generated segments
+and **must be ignored in received segments** if the corresponding future
+features are not implemented" — ⚠ **four bits, and a receiver must ignore them.**
+
+⚠ **A set `Reserved` no longer makes a segment malformed.** ⚠ Measured before
+the change, with `net.ipv4.tcp_ecn=1`: the Linux kernel's first SYN carries
+`CWR|ECE|SYN` and was thrown away, ⚠ **and the connection opened only because
+Linux fell back to a plain SYN.**
+
+⚠ **The reasoning above is not withdrawn** — it is what RFC 793 says and what
+was concluded from it. ⚠ **ADR 0010 and ADR 0011 drew the same shape for IPv4
+and ICMP and are untouched**: they are held to RFC 791 and RFC 792, which
+ADR 0024 did not move.
 
 ### ⚠ An option-length of 0 is a hang, not a wrong answer
 
