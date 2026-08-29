@@ -126,6 +126,41 @@ static size_t build_the_answer(const struct transmission_control_block *block,
     return ETHERNET_HEADER_BYTES + datagram_bytes;
 }
 
+/* Where a segment sat, relative to what we are waiting for.
+ *
+ * ⚠ It exists so that ⚠ **the two ways a segment can be unacceptable are one
+ * answer each**, rather than one answer and a sentence saying "either, or"
+ * (hidetzu/tcpip-stack#76).
+ *
+ * ⚠ An enum never reaches a human (`CLAUDE.md` §4). */
+enum where_it_sat {
+    /* ⚠ At least one octet of it was inside the window, or the FIN sat exactly
+     * where we were waiting. */
+    IT_WAS_ACCEPTED = 0,
+
+    /* ⚠ All of it is behind `RCV.NXT`. ⚠ We have had it. */
+    WE_HAVE_HAD_IT_ALREADY,
+
+    /* ⚠ It begins past `RCV.NXT`. ⚠ There is something before it we have not
+     * seen, and ⚠ **nothing here holds a segment to wait for it.** */
+    IT_BEGINS_TOO_FAR_AHEAD
+};
+
+/* Which of the two a refused sequence number is.
+ *
+ * ⚠ `RCV.NXT` minus where the segment ends (for data) or sits (for a FIN),
+ * unsigned: ⚠ **the lower half of the space means we are past it, the upper half
+ * means it is past us.** ⚠ That is the same reading `at_or_before` uses, and it
+ * holds where the space wraps for the same reason.
+ *
+ * ⚠ Zero cannot reach here: a segment ending exactly at `RCV.NXT` with data in
+ * it was accepted, and a FIN sitting exactly there was read. */
+static enum where_it_sat which_side(uint32_t rcv_nxt, uint32_t theirs)
+{
+    return (uint32_t)(rcv_nxt - theirs) < 0x80000000u ? WE_HAVE_HAD_IT_ALREADY
+                                                     : IT_BEGINS_TOO_FAR_AHEAD;
+}
+
 /* Take delivery of as much of the segment's data as the window promised, and
  * ⚠ **discard it** (hidetzu/tcpip-stack#64 Owner Decision 2). ⚠ How many were
  * taken goes into `outcome->octets_taken`, and is 0 when none were.
@@ -150,19 +185,24 @@ static size_t build_the_answer(const struct transmission_control_block *block,
  * twice** — a retransmission of it is then entirely behind us. ⚠ **Nothing is
  * sent from here**; the caller's branch builds the acknowledgment RFC 793 asks
  * for once this has said how much was taken (hidetzu/tcpip-stack#74). */
-static void take_the_data(struct transmission_control_block *block,
-                          const struct tcp_header *header,
-                          struct handshake_outcome *outcome,
-                          struct handshake_counts *counts)
+static enum where_it_sat take_the_data(struct transmission_control_block *block,
+                                       const struct tcp_header *header,
+                                       struct handshake_outcome *outcome,
+                                       struct handshake_counts *counts)
 {
     outcome->octets_taken = 0;
     if (header->data_bytes == 0) {
-        return;
+        return IT_WAS_ACCEPTED;
     }
 
     uint32_t behind_us = block->rcv_nxt - header->sequence_number;
     if (behind_us >= header->data_bytes) {
-        return;
+        /* ⚠ Which of the two it is, judged from where the segment ENDS: ⚠ a
+         * segment that begins behind us but reaches past `RCV.NXT` was
+         * accepted above, so ⚠ **reaching here means the whole of it is on one
+         * side or the other.** */
+        return which_side(block->rcv_nxt,
+                          header->sequence_number + (uint32_t)header->data_bytes);
     }
 
     size_t still_to_come = header->data_bytes - behind_us;
@@ -176,6 +216,7 @@ static void take_the_data(struct transmission_control_block *block,
     outcome->we_would_acknowledge = block->rcv_nxt;
     outcome->octets_taken = (uint16_t)take;
     counts->octets_taken_and_discarded += (unsigned long)take;
+    return IT_WAS_ACCEPTED;
 }
 
 /* Read the FIN if the segment carries one the window covers, and ⚠ **move the
@@ -220,20 +261,21 @@ static void take_the_data(struct transmission_control_block *block,
  *
  * Returns false when the segment carries no FIN or carries one outside the
  * window; ⚠ **`outcome->the_fin_was_read` says which of those it was not.** */
-static bool read_the_fin(struct transmission_control_block *block,
-                         const struct tcp_header *header, struct moment now,
-                         struct handshake_outcome *outcome,
-                         struct handshake_counts *counts)
+static enum where_it_sat read_the_fin(struct transmission_control_block *block,
+                                      const struct tcp_header *header,
+                                      struct moment now,
+                                      struct handshake_outcome *outcome,
+                                      struct handshake_counts *counts)
 {
     if ((header->control_bits & TCP_CONTROL_FIN) == 0) {
-        return false;
+        return IT_WAS_ACCEPTED;
     }
 
     /* ⚠ The FIN's own sequence number is the one after the data it rides with,
      * and `rcv_nxt` has already moved over whatever data was taken. */
     uint32_t where_the_fin_sits = header->sequence_number + (uint32_t)header->data_bytes;
     if (where_the_fin_sits != block->rcv_nxt) {
-        return false;
+        return which_side(block->rcv_nxt, where_the_fin_sits);
     }
 
     block->rcv_nxt = where_the_fin_sits + 1u;
@@ -256,7 +298,7 @@ static bool read_the_fin(struct transmission_control_block *block,
     outcome->we_would_acknowledge = block->rcv_nxt;
     outcome->the_fin_was_read = true;
     counts->the_other_side_closed++;
-    return true;
+    return IT_WAS_ACCEPTED;
 }
 
 /* Build whatever `block->state` says is due into the caller's buffer, and say
@@ -402,7 +444,8 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
              held->state == CONNECTION_LAST_ACK) &&
             carries_ack && (header->control_bits & TCP_CONTROL_FIN) != 0) {
             take_the_data(held, header, outcome, counts);
-            if (read_the_fin(held, header, now, outcome, counts)) {
+            enum where_it_sat the_fin = read_the_fin(held, header, now, outcome, counts);
+            if (the_fin == IT_WAS_ACCEPTED) {
                 /* ⚠ It moved, and ⚠ **no counter moves here**: `read_the_fin`
                  * has already counted it, the same way `take_the_data` and
                  * `connections_take` count their own. ⚠ `established` must not
@@ -427,8 +470,15 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                 }
                 return;
             }
-            stayed(outcome, HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW,
-                   &counts->fin_outside_the_window);
+            /* ⚠ Two answers, not one with an "either, or" in it
+             * (hidetzu/tcpip-stack#76). */
+            if (the_fin == WE_HAVE_HAD_IT_ALREADY) {
+                stayed(outcome, HANDSHAKE_REASON_A_FIN_WE_HAVE_READ_ALREADY,
+                       &counts->fin_we_have_read_already);
+            } else {
+                stayed(outcome, HANDSHAKE_REASON_A_FIN_THAT_BEGINS_TOO_FAR_AHEAD,
+                       &counts->fin_that_begins_too_far_ahead);
+            }
             return;
         }
 
@@ -452,8 +502,8 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
         }
 
         if (held->state == CONNECTION_ESTABLISHED && header->data_bytes != 0) {
-            take_the_data(held, header, outcome, counts);
-            if (outcome->octets_taken != 0) {
+            enum where_it_sat the_data = take_the_data(held, header, outcome, counts);
+            if (the_data == IT_WAS_ACCEPTED) {
                 /* ⚠ The one other reason that does not go through `stayed()`,
                  * and for the same cause `NO_ROOM` gives below:
                  * ⚠ **`take_the_data` has already counted it**, in octets.
@@ -474,9 +524,12 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                     stayed(outcome, HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY,
                            &counts->we_could_not_build_the_reply);
                 }
+            } else if (the_data == WE_HAVE_HAD_IT_ALREADY) {
+                stayed(outcome, HANDSHAKE_REASON_DATA_WE_HAVE_TAKEN_ALREADY,
+                       &counts->data_we_have_taken_already);
             } else {
-                stayed(outcome, HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW,
-                       &counts->data_outside_the_window);
+                stayed(outcome, HANDSHAKE_REASON_DATA_THAT_BEGINS_TOO_FAR_AHEAD,
+                       &counts->data_that_begins_too_far_ahead);
             }
             return;
         }

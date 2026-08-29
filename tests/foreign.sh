@@ -1052,9 +1052,12 @@ for bits, sequence, acknowledgment in ours[:1]:
         return
     fi
     # ⚠ Counted apart, and ⚠ **the refusal is not silent** (`.claude/rules/c.md`).
+    # ⚠ Counted as what it actually was — ⚠ **begun past what we were waiting
+    # for**, not as one we had read already (hidetzu/tcpip-stack#76). ⚠ Before
+    # that split both landed on one number and this could not tell them apart.
     assert_file_contains "$work/out.txt" \
-        "1 FIN arrived that was not the next thing we were waiting for" \
-        "a FIN we do not expect is counted on its own"
+        "0 FINs arrived that we had read already, 1 began past what we were waiting for" \
+        "a FIN 500 ahead is counted as ahead, not as one we had read"
     assert_file_contains "$work/out.txt" "the other side closed 1 connection" \
         "only the FIN we were waiting for closed the connection"
 

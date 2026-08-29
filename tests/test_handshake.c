@@ -657,7 +657,8 @@ static bool case_data_on_an_open_connection_is_taken_and_discarded(void)
     /* ⚠ Not folded in with a segment the state did not expect
      * (hidetzu/tcpip-stack#64 AC 2). */
     if (world.counts.not_expected_in_this_state != 0 ||
-        world.counts.data_outside_the_window != 0) {
+        world.counts.data_we_have_taken_already != 0 ||
+        world.counts.data_that_begins_too_far_ahead != 0) {
         fputs("  data on an open connection moved somebody else's counter\n", stderr);
         ok = false;
     }
@@ -908,8 +909,11 @@ static bool case_data_outside_the_window_is_refused_and_nothing_moves(void)
         uint32_t was = held->rcv_nxt;
 
         struct handshake_outcome outcome = receive(&world, &first);
-        if (outcome.reason != HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW ||
-            world.counts.data_outside_the_window != 1) {
+        /* ⚠ Its own answer since hidetzu/tcpip-stack#76: ⚠ **we have had it**,
+         * not "either we have had it or it is ahead". */
+        if (outcome.reason != HANDSHAKE_REASON_DATA_WE_HAVE_TAKEN_ALREADY ||
+            world.counts.data_we_have_taken_already != 1 ||
+            world.counts.data_that_begins_too_far_ahead != 0) {
             fprintf(stderr, "  the same octet again came back as reason %d\n",
                     (int)outcome.reason);
             ok = false;
@@ -935,12 +939,16 @@ static bool case_data_outside_the_window_is_refused_and_nothing_moves(void)
         struct tcp_header ahead =
             carrying(a_segment(TCP_CONTROL_ACK, was + 4096u, held->iss + 1u), 1);
         struct handshake_outcome outcome = receive(&world, &ahead);
-        if (outcome.reason != HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW ||
+        /* ⚠ The other answer, and ⚠ **the two do not share a counter.** */
+        if (outcome.reason != HANDSHAKE_REASON_DATA_THAT_BEGINS_TOO_FAR_AHEAD ||
+            world.counts.data_that_begins_too_far_ahead != 1 ||
+            world.counts.data_we_have_taken_already != 0 ||
             outcome.octets_taken != 0 || held->rcv_nxt != was ||
             world.counts.octets_taken_and_discarded != 0) {
             fprintf(stderr, "  data beginning past the window came back as reason %d, "
-                            "%lu octets counted\n",
-                    (int)outcome.reason, world.counts.octets_taken_and_discarded);
+                            "%lu already-had and %lu too-far-ahead\n",
+                    (int)outcome.reason, world.counts.data_we_have_taken_already,
+                    world.counts.data_that_begins_too_far_ahead);
             ok = false;
         }
     }
@@ -1010,7 +1018,7 @@ static bool case_a_segment_longer_than_the_window_is_taken_a_window_at_a_time(vo
     }
     /* ⚠ A fourth arrival is entirely behind us now. */
     struct handshake_outcome again = receive(&world, &oversized);
-    if (again.reason != HANDSHAKE_REASON_DATA_OUTSIDE_THE_WINDOW ||
+    if (again.reason != HANDSHAKE_REASON_DATA_WE_HAVE_TAKEN_ALREADY ||
         world.counts.octets_taken_and_discarded != too_much) {
         fprintf(stderr, "  a fourth arrival took more: reason %d, %lu counted\n",
                 (int)again.reason, world.counts.octets_taken_and_discarded);
@@ -1205,7 +1213,9 @@ static bool case_a_fin_sits_after_the_data_it_rides_with(void)
         carrying(a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, from, other->iss + 1u),
                  past_it);
     struct handshake_outcome refused = receive(&second, &fin_with_more);
-    if (refused.reason != HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW ||
+    /* ⚠ **Too far ahead**, not "already read": the data before it was trimmed
+     * away, so the FIN sits past what we took (hidetzu/tcpip-stack#76). */
+    if (refused.reason != HANDSHAKE_REASON_A_FIN_THAT_BEGINS_TOO_FAR_AHEAD ||
         refused.the_fin_was_read || other->state != CONNECTION_ESTABLISHED) {
         fprintf(stderr, "  a FIN riding %zu octets came back as reason %d, state %d\n",
                 past_it, (int)refused.reason, (int)other->state);
@@ -1243,7 +1253,7 @@ static bool case_a_fin_we_have_already_read_is_not_read_again(void)
 
     for (unsigned again = 1; again <= 4; again++) {
         struct handshake_outcome outcome = receive(&world, &fin);
-        if (outcome.reason != HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW) {
+        if (outcome.reason != HANDSHAKE_REASON_A_FIN_WE_HAVE_READ_ALREADY) {
             fprintf(stderr, "  retransmission %u came back as reason %d\n", again,
                     (int)outcome.reason);
             ok = false;
@@ -1254,9 +1264,11 @@ static bool case_a_fin_we_have_already_read_is_not_read_again(void)
         }
     }
     if (world.counts.the_other_side_closed != 1 ||
-        world.counts.fin_outside_the_window != 4) {
+        world.counts.fin_we_have_read_already != 4 ||
+        world.counts.fin_that_begins_too_far_ahead != 0) {
         fprintf(stderr, "  one FIN and four copies were counted %lu and %lu\n",
-                world.counts.the_other_side_closed, world.counts.fin_outside_the_window);
+                world.counts.the_other_side_closed,
+                world.counts.fin_we_have_read_already);
         ok = false;
     }
     if (held->rcv_nxt != after_the_first || held->state != CONNECTION_LAST_ACK) {
@@ -1430,7 +1442,7 @@ static bool case_a_fin_is_read_where_the_sequence_space_wraps(void)
     struct tcp_header behind = a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK,
                                          0xffffffffu, held->iss + 1u);
     struct handshake_outcome refused = receive(&world, &behind);
-    if (refused.reason != HANDSHAKE_REASON_A_FIN_OUTSIDE_THE_WINDOW ||
+    if (refused.reason != HANDSHAKE_REASON_A_FIN_WE_HAVE_READ_ALREADY ||
         refused.the_fin_was_read || held->rcv_nxt != 1u) {
         fprintf(stderr, "  a FIN at 0xffffffff was read again: reason %d, RCV.NXT %lu\n",
                 (int)refused.reason, (unsigned long)held->rcv_nxt);
@@ -1722,6 +1734,134 @@ static bool case_a_segment_the_window_covers_is_taken_whole(void)
         if (outcome.reply != HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED) {
             fprintf(stderr, "  %zu octets drew a reply of kind %d\n", sizes[i],
                     (int)outcome.reply);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* ⚠ hidetzu/tcpip-stack#76 AC 3 and AC 4 together.
+ *
+ * ⚠ **"Behind us" and "ahead of us" are exactly the pair a plain comparison
+ * gets wrong**, and ⚠ **nothing else in this file puts `RCV.NXT` where the two
+ * readings disagree.** ⚠ Measured: with `>` in place of the unsigned reading,
+ * every other case here still passed.
+ *
+ * ⚠ And the totals: ⚠ **what was one counter is two that sum to it.** */
+static bool case_a_duplicate_and_a_segment_ahead_are_told_apart_at_the_wrap(void)
+{
+    bool ok = true;
+
+    /* ⚠ `RCV.NXT` just past the wrap, and a duplicate ending just before it.
+     * ⚠ A plain `RCV.NXT > where it ends` reads 5 > 0xfffffffe as false and
+     * would call this one ahead of us. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_one(&world, 0xfffffff9u, &held)) {
+            return false;
+        }
+        struct tcp_header confirm =
+            a_segment(TCP_CONTROL_ACK, 0xfffffffau, held->iss + 1u);
+        if (receive(&world, &confirm).state != CONNECTION_ESTABLISHED) {
+            fputs("  the connection did not reach ESTABLISHED at the wrap\n", stderr);
+            return false;
+        }
+        /* Five octets across the wrap: 0xfffffffa .. 0xfffffffe, so RCV.NXT
+         * becomes 0xffffffff. */
+        struct tcp_header first =
+            carrying(a_segment(TCP_CONTROL_ACK, 0xfffffffau, held->iss + 1u), 5);
+        if (receive(&world, &first).octets_taken != 5 ||
+            held->rcv_nxt != 0xffffffffu) {
+            fprintf(stderr, "  RCV.NXT is %lu after five octets from 0xfffffffa\n",
+                    (unsigned long)held->rcv_nxt);
+            return false;
+        }
+        /* Six more, so RCV.NXT crosses zero and lands at 5. */
+        struct tcp_header across =
+            carrying(a_segment(TCP_CONTROL_ACK, 0xffffffffu, held->iss + 1u), 6);
+        if (receive(&world, &across).octets_taken != 6 || held->rcv_nxt != 5u) {
+            fprintf(stderr, "  RCV.NXT is %lu after six more across the wrap\n",
+                    (unsigned long)held->rcv_nxt);
+            return false;
+        }
+
+        struct handshake_outcome duplicate = receive(&world, &first);
+        if (duplicate.reason != HANDSHAKE_REASON_DATA_WE_HAVE_TAKEN_ALREADY ||
+            world.counts.data_we_have_taken_already != 1 ||
+            world.counts.data_that_begins_too_far_ahead != 0) {
+            fprintf(stderr, "  a duplicate ending at 0xfffffffe with RCV.NXT at 5 came "
+                            "back as reason %d\n", (int)duplicate.reason);
+            ok = false;
+        }
+    }
+
+    /* ⚠ `RCV.NXT` just before the wrap, and a segment beginning just after it.
+     * ⚠ A plain comparison reads 0xfffffffa > 5 as true and would call this one
+     * something we have had. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_one(&world, 0xfffffff9u, &held)) {
+            return false;
+        }
+        struct tcp_header confirm =
+            a_segment(TCP_CONTROL_ACK, 0xfffffffau, held->iss + 1u);
+        if (receive(&world, &confirm).state != CONNECTION_ESTABLISHED ||
+            held->rcv_nxt != 0xfffffffau) {
+            fputs("  the connection did not reach ESTABLISHED before the wrap\n", stderr);
+            return false;
+        }
+        struct tcp_header ahead =
+            carrying(a_segment(TCP_CONTROL_ACK, 5u, held->iss + 1u), 3);
+        struct handshake_outcome outcome = receive(&world, &ahead);
+        if (outcome.reason != HANDSHAKE_REASON_DATA_THAT_BEGINS_TOO_FAR_AHEAD ||
+            world.counts.data_that_begins_too_far_ahead != 1 ||
+            world.counts.data_we_have_taken_already != 0 ||
+            held->rcv_nxt != 0xfffffffau) {
+            fprintf(stderr, "  a segment at 5 with RCV.NXT at 0xfffffffa came back as "
+                            "reason %d\n", (int)outcome.reason);
+            ok = false;
+        }
+    }
+
+    /* ⚠ AC 4: ⚠ **the two sum to what the one number used to be.** ⚠ Three
+     * duplicates and two ahead, in one connection, counted 3 and 2. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        uint32_t was = held->rcv_nxt;
+        struct tcp_header took =
+            carrying(a_segment(TCP_CONTROL_ACK, was, held->iss + 1u), 2);
+        if (receive(&world, &took).octets_taken != 2) {
+            fputs("  the first two octets were not taken\n", stderr);
+            return false;
+        }
+        struct tcp_header ahead =
+            carrying(a_segment(TCP_CONTROL_ACK, was + 50u, held->iss + 1u), 2);
+        for (unsigned i = 0; i < 3; i++) {
+            (void)receive(&world, &took);
+        }
+        for (unsigned i = 0; i < 2; i++) {
+            (void)receive(&world, &ahead);
+        }
+        if (world.counts.data_we_have_taken_already != 3 ||
+            world.counts.data_that_begins_too_far_ahead != 2) {
+            fprintf(stderr, "  three duplicates and two ahead were counted %lu and %lu\n",
+                    world.counts.data_we_have_taken_already,
+                    world.counts.data_that_begins_too_far_ahead);
+            ok = false;
+        }
+        /* ⚠ And nothing else moved: the octets taken are still just the two. */
+        if (world.counts.octets_taken_and_discarded != 2) {
+            fprintf(stderr, "  %lu octets were taken, not 2\n",
+                    world.counts.octets_taken_and_discarded);
             ok = false;
         }
     }
@@ -2664,6 +2804,8 @@ static const struct test_case cases[] = {
       case_every_segment_we_build_carries_the_same_window },
     { "a_segment_the_window_covers_is_taken_whole",
       case_a_segment_the_window_covers_is_taken_whole },
+    { "a_duplicate_and_a_segment_ahead_are_told_apart_at_the_wrap",
+      case_a_duplicate_and_a_segment_ahead_are_told_apart_at_the_wrap },
     { "nothing_is_sent_for_a_connection_that_has_not_seen_a_fin",
       case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin },
     { "what_goes_out_again_for_a_closing_connection_is_our_close",
