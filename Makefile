@@ -82,7 +82,7 @@ SEND_ONE_FRAME      := $(BUILD)/send-one-frame
 #   make check-static CHECK_ARGS="--case report_lines"
 CHECK_ARGS ?=
 
-.PHONY: all build build-sanitized build-harness check check-static check-real check-foreign clean
+.PHONY: all build build-sanitized build-harness check check-static check-isolated check-interop check-real check-foreign clean
 
 all: build
 
@@ -165,16 +165,38 @@ $(SEND_ONE_FRAME): $(SEND_ONE_FRAME_SOURCE) $(LIB_SOURCES) $(HEADERS)
 	$(CC) $(STD) $(WARN) $(OPT) $(SANITIZE) -Isrc -o $@ \
 		$(SEND_ONE_FRAME_SOURCE) $(LIB_SOURCES)
 
-check: check-static check-real check-foreign
+check: check-static check-isolated check-interop
 
 check-static:
 	@MAKE="$(MAKE)" tests/static.sh $(CHECK_ARGS)
 
+check-isolated:
+	@MAKE="$(MAKE)" tests/isolated.sh $(CHECK_ARGS)
+
+check-interop:
+	@MAKE="$(MAKE)" tests/interop.sh $(CHECK_ARGS)
+
+# ⚠ The names these two had until hidetzu/tcpip-stack#116. ⚠ They exist so that a
+# habit, a script, or a past issue body reaching for the old name is told what
+# happened rather than meeting "No rule to make target", ⚠ which says nothing a
+# reader can act on (`CLAUDE.md` §4: not an internal state, a sentence).
+#
+# ⚠ They FAIL. ⚠ An alias that quietly ran the new target would leave the old
+# name alive for ever, and ⚠ **the point of the rename was that `real` says how
+# true a check is rather than what it needs** (ADR 0026).
 check-real:
-	@MAKE="$(MAKE)" tests/real.sh $(CHECK_ARGS)
+	@printf 'This tier is called `isolated` now, and the target is `make check-isolated`.\n' >&2
+	@printf 'The tiers are named after who the other end is: `static` (nobody),\n' >&2
+	@printf '`isolated` (the device and us), `interop` (the Linux kernel).\n' >&2
+	@printf 'See docs/adr/0026 for the table of what was called what.\n' >&2
+	@false
 
 check-foreign:
-	@MAKE="$(MAKE)" tests/foreign.sh $(CHECK_ARGS)
+	@printf 'This tier is called `interop` now, and the target is `make check-interop`.\n' >&2
+	@printf 'The tiers are named after who the other end is: `static` (nobody),\n' >&2
+	@printf '`isolated` (the device and us), `interop` (the Linux kernel).\n' >&2
+	@printf 'See docs/adr/0026 for the table of what was called what.\n' >&2
+	@false
 
 clean:
 	rm -rf $(BUILD)
