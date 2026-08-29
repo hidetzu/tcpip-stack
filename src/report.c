@@ -677,6 +677,12 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
             counts->data_octets_we_sent_again == 1 ? "" : "s",
             counts->data_segments_we_sent_again,
             counts->data_segments_we_sent_again == 1 ? "" : "s");
+    /* ⚠ RFC 5681 §3.1's cut. ⚠ Counted, because ⚠ **a window that shrank and one
+     * that was never large look the same from outside** (`CLAUDE.md` §1). */
+    fprintf(out, "%lu congestion window%s cut to one segment because something "
+                 "went unacknowledged\n",
+            counts->congestion_windows_we_cut,
+            counts->congestion_windows_we_cut == 1 ? " was" : "s were");
     /* ⚠ R1 crossed. ⚠ RFC 9293 §3.8.3 (b) asks for negative advice to the IP
      * layer there, ⚠ **and there is none here to advise** — so the line says
      * what happened and ⚠ **claims nothing about a routing layer**

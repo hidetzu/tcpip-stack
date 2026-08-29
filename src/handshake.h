@@ -106,6 +106,37 @@ uint32_t handshake_initial_send_sequence(struct moment now);
 /* ⚠ `SHLD-10`: "The value of R1 SHOULD correspond to at least 3
  * retransmissions, at the current RTO." ⚠ **A count, which is the unit the
  * sentence uses.** */
+/* RFC 5681's congestion window, and ⚠ **every number here is the document's.**
+ *
+ * ⚠ **`SMSS` is the effective send MSS.** ⚠ RFC 5681 §2: "The SMSS is the size
+ * of the largest segment that the sender can transmit. This value can be based
+ * on the maximum transmission unit of the network ..., RMSS ..., or other
+ * factors." ⚠ **That is exactly what `handshake_effective_send_mss` returns**
+ * (RFC 9293 `MUST-16`), ⚠ **so no second idea of "how large a segment may be"
+ * is introduced** (`CLAUDE.md` §3).
+ *
+ * ⚠ **`FlightSize` is `SND.NXT - SND.UNA`.** ⚠ §2: "The amount of data that has
+ * been sent but not yet cumulatively acknowledged." */
+
+/* ⚠ §3.1: "IW, the initial value of cwnd, MUST be set using the following
+ * guidelines as an upper bound." ⚠ **The boundaries are the document's**, and
+ * the upper bound is taken exactly — ⚠ **a smaller one would be ours to
+ * defend.** */
+#define HANDSHAKE_IW_SMSS_LARGE  2190u  /* above this: 2 segments */
+#define HANDSHAKE_IW_SMSS_MEDIUM 1095u  /* above this: 3 segments */
+
+/* ⚠ §3.1: "The initial value of ssthresh SHOULD be set arbitrarily high (e.g.,
+ * to the size of the largest possible advertised window)." ⚠ **The example is
+ * taken**: sixteen bits of `Window` is the largest one that can be advertised
+ * without a scale option, ⚠ **and no scale option is implemented** (ADR 0024's
+ * scope table). */
+#define HANDSHAKE_SSTHRESH_AT_THE_START 65535u
+
+/* ⚠ §3.1: "upon a timeout ... cwnd MUST be set to no more than the loss window,
+ * LW, which equals 1 full-sized segment (regardless of the value of IW)."
+ * ⚠ **In segments, because that is the unit the sentence uses.** */
+#define HANDSHAKE_LW_SEGMENTS 1u
+
 #define HANDSHAKE_R1_RETRANSMISSIONS 3u
 
 /* ⚠ `SHLD-11`: "The value of R2 SHOULD correspond to at least 100 seconds."
@@ -346,6 +377,24 @@ enum handshake_window handshake_maximum_segment_size_for_mtu(unsigned int mtu,
 enum handshake_window handshake_effective_send_mss(uint16_t send_mss,
                                                    unsigned int mtu,
                                                    uint16_t *effective);
+
+/* RFC 5681 §3.1's initial congestion window, for a sender whose `SMSS` is this.
+ *
+ * ⚠ Quoted whole, because ⚠ **each line has two limits and both bind**:
+ *
+ *     If SMSS > 2190 bytes:
+ *         IW = 2 * SMSS bytes and MUST NOT be more than 2 segments
+ *     If (SMSS > 1095 bytes) and (SMSS <= 2190 bytes):
+ *         IW = 3 * SMSS bytes and MUST NOT be more than 3 segments
+ *     if SMSS <= 1095 bytes:
+ *         IW = 4 * SMSS bytes and MUST NOT be more than 4 segments
+ *
+ * ⚠ **The two limits agree here**: `n * SMSS` bytes IS `n` segments when a
+ * segment is `SMSS`. ⚠ **Said rather than assumed** — a build that sent smaller
+ * segments would have to satisfy both, and this one does not send smaller ones.
+ *
+ * ⚠ **Pure**: no fd, no clock, no device. */
+uint32_t handshake_initial_congestion_window(uint16_t smss);
 
 /* One octet of what we were asked to send, by its offset from the first.
  *
@@ -789,6 +838,12 @@ struct handshake_counts {
      * no IP layer here to advise**, so ⚠ **this is counted and said and
      * `MUST-20` (b) stays not met** (`docs/conformance.md`). */
     unsigned long reached_r1;
+
+    /* ⚠ Connections whose congestion window was cut to the loss window.
+     * ⚠ RFC 5681 §3.1: "upon a timeout ... cwnd MUST be set to no more than the
+     * loss window". ⚠ **Counted, because a window that shrank and one that was
+     * never large look the same from outside** (`CLAUDE.md` §1). */
+    unsigned long congestion_windows_we_cut;
 
     /* ⚠ **Connections** the other side reset. ⚠ Apart from every other ending:
      * one was closed properly, one timed out, ⚠ **this one was cut.** */

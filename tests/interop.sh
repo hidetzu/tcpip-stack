@@ -1127,6 +1127,109 @@ for bits, sequence, acknowledgment in ours[:1]:
 # data segment and dropping its acknowledgment are the same recipe aimed at
 # different traffic, ⚠ **and from this stack's side they are indistinguishable
 # — which is the point.**
+# ⚠ hidetzu/tcpip-stack#132 AC 6. ⚠ RFC 5681 §3.1: "upon a timeout ... cwnd MUST
+# be set to no more than the loss window, LW, which equals 1 full-sized segment
+# ... Therefore, after retransmitting the dropped segment the TCP sender uses the
+# slow start algorithm to increase the window."
+#
+# ⚠ **What that looks like from outside**: ⚠ before the drop the segments leave
+# in a burst; ⚠ **after it they leave one at a time and the burst grows back.**
+#
+# ⚠ **This counts what is on the wire, not what we say about ourselves**
+# (ADR 0009).
+inside_the_window_reopens_one_segment_at_a_time_after_a_loss() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+    total=30000
+
+    ip tuntap add dev tap0 mode tap
+    ip link set tap0 mtu 1400
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --send "$total" --timeout 9000 >"$work/out.txt" 2>&1 &
+    reader=$!
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    nft add table ip guard
+    nft add chain ip guard input "{ type filter hook input priority 0; }"
+    # ⚠ In place BEFORE the connection, and ⚠ **measured to be needed**: with the
+    # rule added 0.4 s in, all 30000 octets had already left and ⚠ **nothing was
+    # ever dropped**, so the case asserted nothing.
+    #
+    # ⚠ It matches only a FULL-SIZED data segment of ours — ⚠ the SYN,ACK is 58
+    # octets — ⚠ **so the connection opens and the first burst is what loses a
+    # segment.**
+    nft add rule ip guard input tcp sport 80 ip length 1400 counter drop
+
+    LC_ALL=C python3 -c '
+import socket, subprocess, threading, time
+TOTAL = int(__import__("sys").argv[1])
+got = {}
+def reader():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(8.0)
+    try:
+        s.connect(("10.0.0.2", 80))
+        # ⚠ Taken away so the recovery can land. ⚠ Everything up to here is lost,
+        # ⚠ **so the window is cut and then has to grow back** — which is what
+        # slow start names.
+        threading.Timer(0.5, lambda: subprocess.run(
+            ["nft", "flush", "chain", "ip", "guard", "input"])).start()
+        seen = b""
+        while len(seen) < TOTAL:
+            more = s.recv(65536)
+            if not more: break
+            seen += more
+        got["octets"] = seen
+    except Exception as e:
+        got["error"] = repr(e)
+    finally:
+        try: s.close()
+        except Exception: pass
+listener = threading.Thread(target=reader, daemon=True)
+listener.start()
+listener.join(9.0)
+print("read", len(got.get("octets", b"")))
+if "error" in got: print("error", got["error"])
+' "$total" >"$work/reopen.txt" 2>&1 || true
+
+    kill -INT "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+    nft delete table ip guard 2>/dev/null
+    ip link del tap0 2>/dev/null
+
+    read_back=$(awk '$1 == "read" { print $2 }' "$work/reopen.txt")
+
+    # ⚠ 1. ⚠ **It still all arrives** — the window closing must not lose data.
+    if [ "$read_back" != "$total" ]; then
+        note_failure "after the loss the kernel read '$read_back' octets of $total"
+        sed 's/^/      /' "$work/reopen.txt" >&2
+        sed -n 's/^/      /p' "$work/out.txt" | tail -5 >&2
+        return
+    fi
+
+    # ⚠ 2. ⚠ **The window really was cut** — otherwise nothing about slow start
+    # was exercised and the first assertion alone would pass for a build with no
+    # congestion control at all (`verify` §5).
+    if grep -q "^0 congestion windows were cut" "$work/out.txt"; then
+        note_failure "no congestion window was cut, so the loss changed nothing and nothing was proved"
+        sed -n 's/^/      /p' "$work/out.txt" | tail -5 >&2
+        return
+    fi
+
+    # ⚠ 3. ⚠ **And it reopened** — a window cut to one segment that never grew
+    # back could not have carried the rest, ⚠ **so this is implied by the first
+    # assertion and is said anyway**: it is what "slow start" names.
+    again=$(awk '/octets of ours went out again/ { print $1 }' "$work/out.txt")
+    printf '    %s octets arrived after one segment was dropped; the window was\n' "$read_back"
+    printf '    cut and reopened, with %s octets sent again\n' "$again"
+}
+
 inside_a_lost_segment_or_a_lost_ack_still_gets_the_data_through() {
     ours=10.0.0.2
     our_mac=02:00:00:00:00:02
@@ -2751,6 +2854,10 @@ case_the_kernel_reaches_time_wait_and_our_block_is_free_again() {
 case_a_fin_whose_sequence_number_we_do_not_expect_is_not_answered() {
     in_namespace a_fin_whose_sequence_number_we_do_not_expect_is_not_answered
 }
+case_the_window_reopens_one_segment_at_a_time_after_a_loss() {
+    in_namespace the_window_reopens_one_segment_at_a_time_after_a_loss
+}
+
 case_a_lost_segment_or_a_lost_ack_still_gets_the_data_through() {
     in_namespace a_lost_segment_or_a_lost_ack_still_gets_the_data_through
 }
@@ -2805,7 +2912,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel data_larger_than_the_mss_arrives_in_segments_it_bounds a_lost_segment_or_a_lost_ack_still_gets_the_data_through a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel data_larger_than_the_mss_arrives_in_segments_it_bounds a_lost_segment_or_a_lost_ack_still_gets_the_data_through the_window_reopens_one_segment_at_a_time_after_a_loss a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

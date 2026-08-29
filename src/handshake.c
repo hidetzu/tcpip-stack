@@ -176,6 +176,51 @@ static bool crossed_r1(struct transmission_control_block *block)
     return true;
 }
 
+uint32_t handshake_initial_congestion_window(uint16_t smss)
+{
+    unsigned int segments = 4u;
+    if (smss > HANDSHAKE_IW_SMSS_LARGE) {
+        segments = 2u;
+    } else if (smss > HANDSHAKE_IW_SMSS_MEDIUM) {
+        segments = 3u;
+    }
+    return (uint32_t)segments * (uint32_t)smss;
+}
+
+/* ⚠ RFC 5681 §3.1, on an acknowledgment covering new data.
+ *
+ * ⚠ "The slow start algorithm is used when cwnd < ssthresh, while the congestion
+ * avoidance algorithm is used when cwnd > ssthresh. When cwnd and ssthresh are
+ * equal, the sender may use either." ⚠ **Equal is congestion avoidance here, and
+ * the document allows either** — ⚠ said rather than left to be read off the
+ * comparison.
+ *
+ * ⚠ Slow start uses equation (2), `cwnd += min (N, SMSS)`, which the document
+ * ⚠ **RECOMMENDs** and which satisfies the `MUST` above it ("increments cwnd by
+ * at most SMSS bytes for each ACK").
+ *
+ * ⚠ Congestion avoidance uses equation (3), `cwnd += SMSS*SMSS/cwnd`, which the
+ * document says ⚠ **a TCP MAY use.** ⚠ **It cannot truncate to zero in this
+ * stack\'s range**: `cwnd` is bounded by `rwnd`, sixteen bits, and the smallest
+ * `SMSS` a tap can give is 28 — ⚠ 28*28/65535 IS zero, ⚠ **so the guard below is
+ * not decoration.** */
+static void grew_by(struct transmission_control_block *block, uint32_t acknowledged,
+                    uint16_t smss)
+{
+    if (block->cwnd < block->ssthresh) {
+        uint32_t by = acknowledged < smss ? acknowledged : smss;
+        block->cwnd += by;
+        return;
+    }
+    uint32_t by = ((uint32_t)smss * (uint32_t)smss) / block->cwnd;
+    /* ⚠ **Never nothing.** ⚠ Integer division truncates, and a window that
+     * stopped growing for ever would be a stall this document does not ask for.
+     * ⚠ **One octet is the smallest step that is still growth**, and it is
+     * ⚠ **far below "one full-sized segment per RTT", which is the ceiling the
+     * MUST puts on it.** */
+    block->cwnd += by == 0u ? 1u : by;
+}
+
 uint32_t handshake_initial_send_sequence(struct moment now)
 {
     /* ⚠ Truncated to 32 bits on purpose: ⚠ **the document's clock IS a 32-bit
@@ -843,7 +888,22 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
         if (carries_ack && held->snd_una != header->acknowledgment_number &&
             at_or_before(held->snd_una, header->acknowledgment_number) &&
             at_or_before(header->acknowledgment_number, held->snd_nxt)) {
+            uint32_t newly = header->acknowledgment_number - held->snd_una;
             held->snd_una = header->acknowledgment_number;
+
+            /* ⚠ RFC 5681 §3.1, on an acknowledgment covering new data.
+             * ⚠ **Only when a window exists**: before the first send there is no
+             * `cwnd` and `IW` has not been applied.
+             *
+             * ⚠ `held->send_mss` stands in for `SMSS`. ⚠ **The receive path is
+             * not handed the device's MTU**, so the effective send MSS cannot be
+             * computed here; ⚠ **`send_mss` is the other half of `MUST-16`'s
+             * minimum and is never smaller than the effective one**, so
+             * ⚠ **the growth can only be at or below what the document allows**
+             * — ⚠ which is the direction the `MUST` bounds. */
+            if (held->cwnd_is_set && newly != 0u) {
+                grew_by(held, newly, held->send_mss);
+            }
 
             /* ⚠ RFC 6298 §2 and §3, in that order: ⚠ **the sample is taken
              * before the timer is restarted**, so the timer gets the RTO this
@@ -1189,6 +1249,16 @@ bool handshake_send_what_is_next(struct connections *connections,
         outcome->id = block->id;
         outcome->state = block->state;
 
+        /* ⚠ RFC 9293 `MUST-16`, per connection: ⚠ **the smaller of what THEY
+         * told us and what one of OUR frames carries.** ⚠ `send_mss` is theirs
+         * or `MUST-15`'s default of 536; the MTU gives the other half. */
+        uint16_t effective_send_mss = 0;
+        if (handshake_effective_send_mss(block->send_mss, mtu,
+                                         &effective_send_mss) != HANDSHAKE_WINDOW_OK ||
+            effective_send_mss == 0u) {
+            return false;
+        }
+
         /* ⚠ RFC 6298 §5.4: "Retransmit the earliest segment that has not been
          * acknowledged by the TCP receiver."
          *
@@ -1215,6 +1285,29 @@ bool handshake_send_what_is_next(struct connections *connections,
 
                 /* ⚠ RFC 9293 §3.8.3 (a): the count is of "the same segment"
                  * being sent again. ⚠ §5.5 doubles the timeout with it. */
+                /* ⚠ RFC 5681 §3.1, on loss detected by the retransmission
+                 * timer: "the value of ssthresh MUST be set to no more than the
+                 * value given in equation (4): ssthresh = max (FlightSize / 2,
+                 * 2*SMSS)". ⚠ **`FlightSize`, not `cwnd`** — the document calls
+                 * that "an easy mistake to make".
+                 *
+                 * ⚠ "when a TCP sender detects segment loss using the
+                 * retransmission timer and the given segment has already been
+                 * retransmitted ... the value of ssthresh is held constant."
+                 * ⚠ **So only the first expiry for the same thing moves it.**
+                 *
+                 * ⚠ "upon a timeout ... cwnd MUST be set to no more than the
+                 * loss window, LW, which equals 1 full-sized segment." */
+                if (block->cwnd_is_set) {
+                    if (block->retransmissions == 0u) {
+                        uint32_t half = unacknowledged / 2u;
+                        uint32_t two = 2u * (uint32_t)effective_send_mss;
+                        block->ssthresh = half > two ? half : two;
+                    }
+                    block->cwnd = (uint32_t)HANDSHAKE_LW_SEGMENTS *
+                                  (uint32_t)effective_send_mss;
+                    counts->congestion_windows_we_cut++;
+                }
                 block->retransmissions++;
                 back_off(block);
                 if (crossed_r1(block)) {
@@ -1230,25 +1323,32 @@ bool handshake_send_what_is_next(struct connections *connections,
             continue;
         }
 
-        /* ⚠ RFC 9293 `MUST-16`, per connection: ⚠ **the smaller of what THEY
-         * told us and what one of OUR frames carries.** ⚠ `send_mss` is theirs
-         * or `MUST-15`'s default of 536; the MTU gives the other half. */
-        uint16_t effective_send_mss = 0;
-        if (handshake_effective_send_mss(block->send_mss, mtu,
-                                         &effective_send_mss) != HANDSHAKE_WINDOW_OK ||
-            effective_send_mss == 0u) {
-            return false;
-        }
 
         /* ⚠ What the peer said it will take, from `SND.UNA`. ⚠ Octets past
          * `SND.UNA + SND.WND` are octets they told us they cannot hold. */
         uint32_t outstanding = block->snd_nxt - block->snd_una;
-        if (outstanding >= block->snd_wnd) {
+        /* ⚠ RFC 5681 §3.1: `IW` is "the size of the sender's congestion window
+         * after the three-way handshake is completed". ⚠ **Applied at the first
+         * send, because `SMSS` needs the device's MTU and the receive path is
+         * not handed one.** */
+        if (!block->cwnd_is_set) {
+            block->cwnd = handshake_initial_congestion_window(effective_send_mss);
+            block->ssthresh = HANDSHAKE_SSTHRESH_AT_THE_START;
+            block->cwnd_is_set = true;
+        }
+
+        /* ⚠ RFC 5681 §2: "a TCP MUST NOT send data with a sequence number higher
+         * than the sum of the highest acknowledged sequence number and **the
+         * minimum of cwnd and rwnd**." ⚠ `rwnd` is theirs, `cwnd` is ours, and
+         * ⚠ **the smaller governs.** */
+        uint32_t governs = block->cwnd < (uint32_t)block->snd_wnd
+                               ? block->cwnd : (uint32_t)block->snd_wnd;
+        if (outstanding >= governs) {
             stayed(outcome, HANDSHAKE_REASON_THEIR_WINDOW_HAD_NO_ROOM,
                    &counts->their_window_had_no_room);
             return false;
         }
-        uint32_t room = (uint32_t)block->snd_wnd - outstanding;
+        uint32_t room = governs - outstanding;
 
         /* ⚠ RFC 9293 `MUST-16`: no segment carries more than the effective send
          * MSS. ⚠ **Three limits and the smallest wins** — what is left, what
