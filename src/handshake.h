@@ -190,6 +190,31 @@ enum handshake_window {
  * ⚠ **Pure**: no fd, no clock, no device (`.claude/rules/c.md`). */
 enum handshake_window handshake_window_for_mtu(unsigned int mtu, uint16_t *window);
 
+/* The Maximum Segment Size this stack advertises, for a device that carries
+ * frames of `mtu` bytes.
+ *
+ * ⚠ RFC 9293 §3.7.1: "TCP endpoints MUST implement both sending and receiving
+ * the MSS Option (MUST-14)."
+ *
+ * ⚠ **The same number as the window, and that is not a coincidence.** ⚠ Both
+ * answer "how much data of theirs fits in one of their frames" — ⚠ the MSS says
+ * it per segment, the `Window` says how many we will take — ⚠ **so they are the
+ * same arithmetic and this returns the same value** (ADR 0029).
+ *
+ * ⚠ **It is derived, never chosen.** ⚠ hidetzu/tcpip-stack#123 Owner Decision:
+ * ⚠ **no constant is placed here as an owner value** — the device's MTU is
+ * measurable since hidetzu/tcpip-stack#115, and ⚠ **a number nobody measured is
+ * a number nobody can defend** (`CLAUDE.md` §6).
+ *
+ * ⚠ RFC 9293 `MUST-67` asks that the value be based on `MMS_R`, "the maximum
+ * message size that can be received"; ⚠ **the MTU less the two headers is that,
+ * for a device that does not reassemble** — and ⚠ **this stack refuses a
+ * fragment outright** (ADR 0010), so nothing larger can arrive whole.
+ *
+ * ⚠ **Pure**: no fd, no clock, no device. */
+enum handshake_window handshake_maximum_segment_size_for_mtu(unsigned int mtu,
+                                                             uint16_t *mss);
+
 enum handshake_decision {
     /* ⚠ The connection moved to a state it was not in. `outcome->state` says
      * which. */
@@ -567,6 +592,14 @@ struct handshake_counts {
      * claims to have come from.** */
     unsigned long from_an_impossible_source;
 
+    /* ⚠ Two facts, counted apart. ⚠ A `SYN` that carried an MSS Option, and one
+     * that did not and got RFC 9293 `MUST-15`'s default of 536 instead.
+     * ⚠ **Merged, a connection that told us nothing would be invisible**, and an
+     * invisible fact looks exactly like one that never happened
+     * (`.claude/rules/c.md`). */
+    unsigned long they_told_us_their_segment_size;
+    unsigned long they_told_us_nothing_so_we_assumed;
+
     /* ⚠ **Connections** the other side reset. ⚠ Apart from every other ending:
      * one was closed properly, one timed out, ⚠ **this one was cut.** */
     unsigned long reset_by_the_other_side;
@@ -704,7 +737,8 @@ struct handshake_outcome {
  * RFC 793 §3.9 asks for a reset or an ack produce a counted reason and nothing
  * on the wire; `docs/SPEC.md` §2 names them. */
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
-                       uint16_t listening_port, uint16_t window, struct moment now,
+                       uint16_t listening_port, uint16_t window,
+                       uint16_t maximum_segment_size, struct moment now,
                        uint8_t time_to_live,
                        const uint8_t *requester_hardware_address,
                        const uint8_t *our_hardware_address,

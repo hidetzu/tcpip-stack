@@ -1091,6 +1091,100 @@ for bits, sequence, acknowledgment in ours[:1]:
 # ⚠ **a device the stack creates itself is always 1500** (measured, 3 runs) —
 # ⚠ so a case that only ever saw 1500 could not tell a derivation from the old
 # constant.
+# ⚠ hidetzu/tcpip-stack#123 on the wire. ⚠ RFC 9293 §3.7.1, `MUST-14`.
+#
+# ⚠ **Both directions, against something we did not write** — the option we send
+# is read off an AF_PACKET socket (ADR 0009), and ⚠ **the option we receive comes
+# from the Linux kernel's own SYN**, which we do not get to choose.
+#
+# ⚠ Measured before the change, same conditions, 2026-08-29: ⚠ **the SYN,ACK
+# carried a Data Offset of 5 and no options at all.**
+inside_the_mss_option_goes_both_ways_with_the_kernel() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    ip tuntap add dev tap0 mode tap
+    ip link set tap0 mtu 1400
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 3000 >"$work/out.txt" 2>&1 &
+    reader=$!
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    kind=$(constant src/tcp.h TCP_OPTION_MAXIMUM_SEGMENT_SIZE)
+    length=$(constant src/tcp.h TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES)
+
+    LC_ALL=C python3 -c '
+import socket, struct, sys, subprocess
+KIND, LENGTH = int(sys.argv[1].rstrip("uU"), 0), int(sys.argv[2].rstrip("uU"), 0)
+
+def options_of(frame):
+    ihl = (frame[14] & 0x0f) * 4
+    at = 14 + ihl
+    offset = (frame[at + 12] >> 4) * 4
+    return frame[at + 20:at + offset], frame[at + 13]
+
+def mss_in(options):
+    i = 0
+    while i < len(options):
+        if options[i] == 0: return None
+        if options[i] == 1: i += 1; continue
+        if i + 1 >= len(options): return None
+        n = options[i + 1]
+        if n < 2: return None
+        if options[i] == KIND and n == LENGTH:
+            return int.from_bytes(options[i + 2:i + 4], "big")
+        i += n
+    return None
+
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.settimeout(3.0)
+subprocess.Popen(["timeout", "2", "bash", "-c", "exec 3<>/dev/tcp/10.0.0.2/80 || true"])
+theirs = ours = None
+while theirs is None or ours is None:
+    frame = wire.recv(2048)
+    if len(frame) < 54 or frame[12:14] != b"\x08\x00" or frame[14 + 9] != 6:
+        continue
+    options, control = options_of(frame)
+    if control & 0x12 == 0x02 and theirs is None:      # a bare SYN: the kernel to us
+        theirs = mss_in(options)
+    elif control & 0x12 == 0x12 and ours is None:      # SYN,ACK: us to the kernel
+        ours = mss_in(options)
+print("kernel", theirs)
+print("ours", ours)
+' "$kind" "$length" >"$work/mss.txt" 2>"$work/mss-err.txt" || true
+
+    kill -INT "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+    ip link del tap0 2>/dev/null
+
+    headers=$(constant src/handshake.h HANDSHAKE_HEADERS_BEFORE_DATA)
+    want=$(( 1400 - ${headers%u} ))
+    got=$(awk '$1 == "ours" { print $2 }' "$work/mss.txt")
+    theirs=$(awk '$1 == "kernel" { print $2 }' "$work/mss.txt")
+
+    if [ "$got" != "$want" ]; then
+        note_failure "our SYN,ACK carried an MSS of '$got' and the device leaves $want"
+    fi
+    # ⚠ The other end is the kernel's, and ⚠ **we assert only that it is there
+    # and is a number** — ⚠ never what it will be right now
+    # (`.claude/rules/testing.md`).
+    if [ -z "$theirs" ] || [ "$theirs" = "None" ]; then
+        note_failure "the kernel's SYN carried no MSS Option, so nothing was judged about reading one"
+    fi
+    # ⚠ And our own report must say it read one.
+    assert_file_contains "$work/out.txt" "1 connection was opened" "the connection opened"
+
+    printf '    our SYN,ACK carried MSS %s at MTU 1400; the kernel'"'"'s SYN carried %s\n' \
+        "$got" "$theirs"
+}
+
 inside_the_window_on_the_wire_follows_the_mtu() {
     ours=10.0.0.2
     our_mac=02:00:00:00:00:02
@@ -2357,6 +2451,10 @@ case_the_kernel_reaches_time_wait_and_our_block_is_free_again() {
 case_a_fin_whose_sequence_number_we_do_not_expect_is_not_answered() {
     in_namespace a_fin_whose_sequence_number_we_do_not_expect_is_not_answered
 }
+case_the_mss_option_goes_both_ways_with_the_kernel() {
+    in_namespace the_mss_option_goes_both_ways_with_the_kernel
+}
+
 case_the_window_on_the_wire_follows_the_mtu() {
     in_namespace the_window_on_the_wire_follows_the_mtu
 }
@@ -2399,7 +2497,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

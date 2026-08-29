@@ -326,8 +326,14 @@ int main(int argc, char **argv)
      * path**, and the guard is asserted against `handshake_window_for_mtu`
      * directly, with no device. */
     uint16_t window_we_promise = 0;
+    /* ⚠ The same number, from the same arithmetic (ADR 0029). ⚠ Derived here
+     * rather than computed twice, ⚠ **and derived from the device rather than
+     * chosen** (hidetzu/tcpip-stack#123 Owner Decision). */
+    uint16_t mss_we_advertise = 0;
     switch (handshake_window_for_mtu(frame_bytes_the_device_carries, &window_we_promise)) {
     case HANDSHAKE_WINDOW_OK:
+        (void)handshake_maximum_segment_size_for_mtu(frame_bytes_the_device_carries,
+                                                     &mss_we_advertise);
         break;
     case HANDSHAKE_WINDOW_THE_MTU_LEAVES_NOTHING:
         report_no_window(stderr, options.device_name,
@@ -576,7 +582,7 @@ int main(int argc, char **argv)
                         uint8_t reply[TAP_FRAME_BUFFER_BYTES];
                         struct handshake_outcome handshake;
                         handshake_receive(&tcp, &id, options.tcp_port, window_we_promise,
-                                          moment_now(),
+                                          mss_we_advertise, moment_now(),
                                           options.time_to_live, header.source,
                                           options.hardware_address, &connections, reply,
                                           sizeof reply, &handshake_counts, &handshake);

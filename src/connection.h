@@ -159,6 +159,26 @@ struct transmission_control_block {
      * RCV.NXT and RCV.WND should not be reduced." */
     uint16_t rcv_wnd;
 
+    /* What we advertised to them, and what they told us.
+     *
+     * ⚠ RFC 9293 §3.7.1 names the second "send MSS" — ⚠ **"the send MSS (that
+     * reflects the available reassembly buffer size at the remote host)"** —
+     * and the first is what our own MSS Option carried.
+     *
+     * ⚠ **`send_mss_was_told_to_us` is separate from the value on purpose.**
+     * ⚠ `MUST-15` says an absent option means a default of 536, ⚠ **so "they
+     * said 536" and "they said nothing" are different facts** and a reader that
+     * could not tell them apart would be guessing (`CLAUDE.md` §1).
+     *
+     * ⚠ **NOTHING READS `send_mss` YET.** ⚠ This stack originates no data, so
+     * ⚠ **there is no segment whose size it could constrain** — and
+     * ⚠ **hidetzu/tcpip-stack#123's Owner Decision is that storing it is NOT
+     * `MUST-14` met.** ⚠ It is met when a consumer exists that uses it as the
+     * effective send MSS (`MUST-16`), and ⚠ **`docs/conformance.md` says so.** */
+    uint16_t mss_we_advertise;
+    uint16_t send_mss;
+    bool send_mss_was_told_to_us;
+
     /* When the answer should go out again, and when we stop waiting for one.
      *
      * ⚠ Both are handed in rather than read (ADR 0018), and ⚠ **both mean
@@ -230,6 +250,14 @@ enum connection_take {
      * approved wording until then. */
     CONNECTION_NO_ROOM
 };
+
+/* RFC 9293 §3.7.1, quoted: "If an MSS Option is not received at connection
+ * setup, TCP implementations MUST assume a default send MSS of 536 (576 - 40)
+ * for IPv4 or 1220 (1280 - 60) for IPv6 (MUST-15)."
+ *
+ * ⚠ **IPv4 only, because nothing here reads or writes IPv6** — and the document
+ * gives its arithmetic, so ⚠ **the number is quoted rather than computed here.** */
+#define CONNECTION_DEFAULT_SEND_MSS 536u
 
 /* Take a block for `id`.
  *
