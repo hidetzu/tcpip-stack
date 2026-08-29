@@ -290,7 +290,7 @@ enum handshake_reason {
      * ⚠ RFC 9293 `MUST-57`: "A TCP implementation MUST silently discard an
      * incoming SYN segment that is addressed to a broadcast or multicast
      * address ... This prevents connection state and replies from being
-     * erroneously created."
+     * erroneously generated."
      *
      * ⚠ **Counted apart from every other reason.** ⚠ "Silently" forbids a reply
      * on the wire, ⚠ **not a line telling the human who is watching** — and

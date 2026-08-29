@@ -16,7 +16,7 @@ and ⚠ **that is different from having no requirements.**
 | Verdict | What it says |
 |---|---|
 | **met** | ⚠ **with the case that asserts it named** — ⚠ a case, never a file (`docs/SPEC.md` §1) |
-| **not met** | ⚠ **with the issue cut for it** |
+| **not met** | ⚠ **with the issue cut for it** — ⚠ **or, where the audit stopped short of cutting one, with the row in `docs/SPEC.md` §2 and the group it belongs to named below.** ⚠ **What it may never be is a "not met" with nothing behind it anywhere** |
 | **does not arise** | ⚠ **the requirement is conditional on something not implemented**, and ⚠ **the condition is quoted** |
 | ⚠ **cannot be judged** | ⚠ **what was read is recorded and nothing is chosen** |
 
@@ -29,6 +29,47 @@ and ⚠ **that is different from having no requirements.**
 `docs/SPEC.md` says why.
 
 ---
+
+---
+
+## ⚠ The seven not yet met, in three groups
+
+⚠ **Seven `MUST`s came back not met at hidetzu/tcpip-stack#96.** ⚠ **The issue's Stop Condition
+said to report the list rather than cut seven issues**, and ⚠ **that is what happened — none was
+cut.** ⚠ **They are not seven independent gaps.** ⚠ Reading them together, they are three, and
+⚠ **the three differ in what has to be decided before anything can be written.**
+
+| Group | The requirements | ⚠ What has to happen first |
+|---|---|---|
+| ⚠ **The source address** | `MUST-63` | ⚠ **One decision, and it is about scope, not structure**: which forms of invalid source are refused. ⚠ **The predicate already exists** (`ipv4_address_is_broadcast_or_multicast`) and is applied to the destination only |
+| ⚠ **The option machinery** | `MUST-4`, `MUST-14` | ⚠ **A design decision, and it has a dependency outside itself**: sending an MSS Option means knowing an MSS, ⚠ **and reading the device's MTU is itself a `docs/SPEC.md` §2 gap.** ⚠ Also the first time a segment we build stops being five fixed words |
+| ⚠ **The retransmission schedule** | `MUST-18`, `MUST-19`, `MUST-20`, `MUST-23` | ⚠ **One gap seen from four sides**, not four gaps: a constant interval, no round-trip measurement, one give-up on a **time** where the document counts **retransmissions**, and that time being three seconds against three minutes. ⚠ **ADR 0019 is the standing decision and it is explicit that both numbers are ours** |
+
+⚠ **The middle and last groups cannot be handed over as they stand** — ⚠ **each would make the AI
+decide what may be claimed**, which `CLAUDE.md` §7-1 puts on the owner. ⚠ **The first can, once its
+one question is answered.**
+
+⚠ **Neither `MUST-19` nor `MUST-23` is a small change wearing a large label.** ⚠ `MUST-23` looks
+like moving one constant from `3000` to `180000`; ⚠ **`docs/SPEC.md` §3 owns what the real tier
+costs, and a check that waits three minutes changes it by an order of magnitude** — ⚠ **which is
+the reason ADR 0019 gives for the value being what it is.**
+
+---
+
+## ⚠ Findings a verdict column cannot carry
+
+⚠ **A verdict says whether the behaviour is there.** ⚠ **It does not say how it got there, or
+whether anything asserts it** — and ⚠ **twice in this audit those were the interesting half.**
+⚠ **Recorded here so that reading down the verdict column does not read as more conformance than
+was earned** (`CLAUDE.md` §1).
+
+| ID | Its verdict | ⚠ What the verdict does not say |
+|---|---|---|
+| `MUST-64` | **met** | ⚠ **Nothing asserts it on purpose.** The option walk is byte-wise and assumes no alignment, ⚠ **so the behaviour is there** — but ⚠ **no case feeds an unaligned option deliberately.** `end_of_option_list_stops_the_walk` and `no_option_is_interpreted` happen to exercise it. ⚠ **Happening to exercise a thing is not asserting it**, and ⚠ **a byte-wise walk could be rewritten word-wise tomorrow with every case still green.** ⚠ **A gap in the checks, not in the code**, and it is `docs/SPEC.md` §2's row |
+| `MAY-4` | **taken** | ⚠ **Taken by accident.** `Identification` is always `0` (ADR 0012), ⚠ **so every retransmission does carry the same one** — ⚠ **but not one line was written to make that so**, and ⚠ **nothing would notice if `Identification` started varying.** ⚠ **An option we happen to satisfy is not an option we chose** |
+
+⚠ **Neither of these is a defect in the stack.** ⚠ **Both are places where a later change could
+take the behaviour away and no check would say so**, which is the only reason they are written down.
 
 ## ISN Selection (hidetzu/tcpip-stack#94)
 
@@ -49,7 +90,7 @@ and ⚠ **that is different from having no requirements.**
 | `MUST-44` | "Ask IP for src address for SYN if necessary" | ⚠ **does not arise** — ⚠ **no `SYN` is ever sent**, and the address is given by `--ipv4` |
 | `MUST-45` | "* Otherwise, use local addr of connection" | ⚠ **met** — every segment we build carries `id->local.address`, which is the connection's. ⚠ `tests/static.sh` `handshake` → `the_answer_is_the_one_the_document_describes` reads the built datagram back and asserts it |
 | `MUST-46` | "MUST NOT ... OPEN to broadcast/multicast IP address" | ⚠ **does not arise** — ⚠ **nothing here performs an active `OPEN`** |
-| `MUST-57` | "A TCP implementation MUST silently discard an incoming SYN segment that is addressed to a broadcast or multicast address ... This prevents connection state and replies from being erroneously created" | ⚠ **met in part** since hidetzu/tcpip-stack#99, ⚠ **and the part is named rather than the whole claimed.** ⚠ **Met**: the limited broadcast `255.255.255.255` and multicast `224.0.0.0/4` — refused before any state is taken or reply built, counted on their own. ⚠ **Not met**: a directed broadcast such as `10.0.0.255`, ⚠ **which cannot be told from a host address without a netmask, and nothing here has one.** ⚠ `tests/static.sh` `handshake` → `a_segment_addressed_to_everyone_is_refused` asserts both halves — ⚠ **including that a directed broadcast IS still answered**, so the gap cannot close by accident. ⚠ `tests/foreign.sh` `a_syn_to_everyone_is_not_answered` on the wire |
+| `MUST-57` | "A TCP implementation MUST silently discard an incoming SYN segment that is addressed to a broadcast or multicast address ... This prevents connection state and replies from being erroneously generated" | ⚠ **met in part** since hidetzu/tcpip-stack#99, ⚠ **and the part is named rather than the whole claimed.** ⚠ **Met**: the limited broadcast `255.255.255.255` and multicast `224.0.0.0/4` — refused before any state is taken or reply built, counted on their own. ⚠ **Not met**: a directed broadcast such as `10.0.0.255`, ⚠ **which cannot be told from a host address without a netmask, and nothing here has one.** ⚠ `tests/static.sh` `handshake` → `a_segment_addressed_to_everyone_is_refused` asserts both halves — ⚠ **including that a directed broadcast IS still answered**, so the gap cannot close by accident. ⚠ `tests/foreign.sh` `a_syn_to_everyone_is_not_answered` on the wire |
 
 ## Closing Connections (hidetzu/tcpip-stack#94)
 

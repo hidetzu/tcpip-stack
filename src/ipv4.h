@@ -159,7 +159,7 @@ enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes
  * ⚠ RFC 9293 `MUST-57`: "A TCP implementation MUST silently discard an incoming
  * SYN segment that is addressed to a broadcast or multicast address." ⚠ The
  * document gives the reason beside it: "This prevents connection state and
- * replies from being erroneously created."
+ * replies from being erroneously generated."
  *
  * ⚠ **Two of the three kinds, and the third is named rather than pretended
  * away** (hidetzu/tcpip-stack#99 Owner Decision):
