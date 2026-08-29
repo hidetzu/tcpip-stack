@@ -104,3 +104,61 @@ and ⚠ **that is different from having no requirements.**
 | `MUST-38` | "Sender SWS-Avoidance Algorithm" | ⚠ **does not arise** — ⚠ **this stack sends no data** |
 | `SHLD-7` | "Nagle algorithm" | ⚠ **does not arise** — ⚠ same |
 | `MUST-17` | "* Application can disable Nagle algorithm" | ⚠ **does not arise** — ⚠ conditional on Nagle, and ⚠ **there is no application** (ADR 0022) |
+
+## TCP Checksums (hidetzu/tcpip-stack#96)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-2` | "The TCP checksum is never optional.  The sender MUST generate it" | ⚠ **met** — every segment is built through `tcp_build_segment`, which writes it. ⚠ `tests/static.sh` `handshake` → `the_answer_is_the_one_the_document_describes` reads the answer back with `tcp_parse_header`, ⚠ **which judges the checksum first**, so reaching OK is the assertion |
+| `MUST-3` | "the receiver MUST check it" | ⚠ **met** — ⚠ **it is an outcome of the parse and not a call a caller can forget** (ADR 0014). ⚠ `tests/static.sh` `tcp_header` → `the_kernels_checksum_is_reproduced`, and `tests/foreign.sh` `a_syn_whose_checksum_does_not_agree_is_not_answered` against the kernel |
+
+## TCP Options (hidetzu/tcpip-stack#96)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-4` | "Support the mandatory option set" | ⚠ **not met** — ⚠ **the set includes the MSS Option** (`MUST-14` below), and none is implemented |
+| `MUST-5` | "A TCP implementation MUST be able to receive a TCP Option in any segment" | ⚠ **met** — the walk runs for any segment whose `Data Offset` is above the fixed header. ⚠ `tests/static.sh` `tcp_header` → `the_kernels_syn_is_read_as_it_holds_it` (the kernel's own SYN carries twenty octets of them) |
+| `MUST-6` | "A TCP implementation MUST (MUST-6) ignore without error any TCP Option it does not implement, assuming that the option has a length field" | ⚠ **met** — ⚠ **not one option is interpreted**; the walk finds where the data begins and reads nothing. ⚠ `tests/static.sh` `tcp_header` → `no_option_is_interpreted` |
+| `MUST-68` | "All TCP Options except End of Option List Option (EOL) and No-Operation (NOP) MUST have length fields, including all future options" | ⚠ **does not arise as a sender** — ⚠ **no option is ever sent.** ⚠ As a receiver it is the assumption `MUST-6` rests on, and the walk relies on it |
+| `MUST-7` | "TCP implementations MUST be prepared to handle an illegal option length (e.g., zero); a suggested procedure is to reset the connection and log the error cause" | ⚠ **met** — the segment is refused as malformed and counted, ⚠ **and the walk terminates**: `tests/static.sh` `tcp_header` → `an_option_list_that_does_not_walk_is_malformed`, ⚠ **whose finishing at all is the proof.** ⚠ **No reset is sent, and the procedure is "suggested" rather than required** — `docs/SPEC.md` §2 names the gap |
+| `MUST-64` | "receivers MUST be prepared to process options even if they do not begin on a word boundary" | ⚠ **met** — the walk is byte-wise and no alignment is assumed. ⚠ **No case feeds an unaligned option on purpose**, and ⚠ **that is a gap in the checks rather than in the code**: `end_of_option_list_stops_the_walk` and `no_option_is_interpreted` happen to exercise it, ⚠ **which is not the same as asserting it** |
+| `MUST-14` | "TCP endpoints MUST implement both sending and receiving the MSS Option" | ⚠ **not met** — ⚠ **no option is implemented at all** (`docs/SPEC.md` §2) |
+| `SHLD-5` (IPv4) | "Send MSS Option unless 536" | ⚠ **not taken** — conditional on sending the option |
+| `SHLD-5` (IPv6) | "Send MSS Option unless 1220" | ⚠ **does not arise** — ⚠ **nothing here reads or writes IPv6** |
+| `MAY-3` | "Send MSS Option always" | ⚠ **not taken** |
+| `MUST-15` (IPv4) | "implementations MUST assume a default send MSS of 536 (576 - 40) for IPv4" | ⚠ **does not arise** — ⚠ **no segment this stack sends carries data**, so there is no send MSS to default |
+| `MUST-15` (IPv6) | "or 1220 (1280 - 60) for IPv6" | ⚠ **does not arise** — no IPv6 |
+| `MUST-16` | "The maximum size of a segment that a TCP endpoint really sends, the 'effective send MSS', MUST be the smaller of the send MSS ... and the MMS_S" | ⚠ **does not arise** — ⚠ same: nothing sends data |
+| `SHLD-6` | "MSS accounts for varying MTU" | ⚠ **does not arise** — ⚠ same, and ⚠ **nothing reads the MTU either** (`docs/SPEC.md` §2) |
+| `MUST-65` | "MSS not sent on non-SYN segments" | ⚠ **met vacuously** — ⚠ **it is never sent on any segment.** ⚠ Said as vacuous rather than claimed as a rule being kept |
+| `MUST-67` | "MSS value based on MMS_R" | ⚠ **does not arise** — conditional on sending it |
+| `MUST-69` | "The content of the header beyond the End of Option List Option MUST be header padding of zeros" | ⚠ **met vacuously** — ⚠ every header this stack builds has `Data Offset` 5, ⚠ **so there is nothing beyond** |
+
+## Retransmissions (hidetzu/tcpip-stack#96)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-19` | "A TCP endpoint MUST implement the basic congestion control algorithms slow start, congestion avoidance, and exponential backoff of RTO to avoid creating congestion collapse conditions" | ⚠ **not met** — ⚠ **none of the three exists.** ⚠ The retransmission interval is a constant second (ADR 0019) |
+| `MUST-18` | "The RTO MUST be computed according to the algorithm in [RFC 6298], including Karn's algorithm for taking RTT samples" | ⚠ **not met** — ⚠ **nothing here measures a round trip**, which `docs/SPEC.md` §2 has named since hidetzu/tcpip-stack#57. ⚠ **It has a label now** |
+| `MAY-4` | "Retransmit with same IP identity" | ⚠ **taken, and by accident** — ⚠ `Identification` is always 0 (ADR 0012), so ⚠ **every retransmission does carry the same one.** ⚠ Said as accidental rather than claimed as a choice |
+
+## Connection Failures (hidetzu/tcpip-stack#96)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-20` (R1) | "The following procedure MUST be used to handle excessive retransmissions of data segments ... give negative advice to IP on R1 retransmissions" | ⚠ **not met** — ⚠ **there is no R1 and nothing is said to IP.** ⚠ There is one give-up moment and no threshold before it |
+| `MUST-20` (R2) | "Close connection on R2 retransmissions" | ⚠ **met in effect and not in shape** — ⚠ the connection IS given up on and released (ADR 0019), ⚠ **but on a time and not on a count of retransmissions**, and ⚠ **there is no R2 to set.** ⚠ Recorded as **not met**, because reading a `MUST` as satisfied by something with the same effect and a different shape is what `CLAUDE.md` §9 has rows about |
+| `MUST-21` | "ALP can set R2" | ⚠ **does not arise** — ⚠ **there is no application** (ADR 0022) |
+| `SHLD-9` | "Inform ALP of R1<=retxs<R2" | ⚠ **does not arise** — same |
+| `SHLD-10` | "Recommended value for R1" | ⚠ **does not arise** — conditional on there being an R1 |
+| `SHLD-11` | "Recommended value for R2" | ⚠ **does not arise** — conditional on there being an R2 |
+| `MUST-22` | "Same mechanism for SYNs" | ⚠ **met** — ⚠ **one schedule covers a connection still opening and one waiting for our close to be acknowledged** (`the_one_waiting`), and hidetzu/tcpip-stack#66 kept them the same rather than giving closing its own |
+| `MUST-23` | "* R2 at least 3 minutes for SYN" | ⚠ **not met** — ⚠ `HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS` is **3000**, ⚠ **three seconds against a required three minutes.** ⚠ ADR 0019 chose it for what a check can afford and ⚠ **recorded that as exactly what it was** — ⚠ it now has a requirement to be measured against |
+
+## Address Validation (hidetzu/tcpip-stack#96)
+
+| ID | Requirement, quoted | Verdict |
+|---|---|---|
+| `MUST-46` | "MUST NOT ... OPEN to broadcast/multicast IP address" | ⚠ **does not arise** — judged at hidetzu/tcpip-stack#94: nothing here performs an active `OPEN` |
+| `MUST-63` | "An incoming SYN with an invalid source address MUST be ignored either by TCP or by the IP layer" | ⚠ **not met** — ⚠ **Measured 2026-08-29**: a `SYN` whose source was `255.255.255.255` ⚠ **opened a connection and was answered.** ⚠ hidetzu/tcpip-stack#99 gave this stack a predicate for exactly that shape of address, ⚠ **and it is applied to the destination only** |
+| `MUST-57` | "Silently discard SYN to bcast/mcast addr" | ⚠ **met in part** — judged at hidetzu/tcpip-stack#99; a directed broadcast is not recognised |
