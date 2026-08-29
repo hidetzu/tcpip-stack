@@ -68,6 +68,72 @@ uint8_t handshake_octet_at(uint32_t offset)
     return (uint8_t)(offset % 251u);
 }
 
+/* ⚠ RFC 6298 §2.2 and §2.3 end the same way: "RTO <- SRTT + max (G, K*RTTVAR)",
+ * ⚠ **then §2.4's floor and §2.5's ceiling, in that order.** ⚠ Written once so
+ * the two callers cannot disagree (`CLAUDE.md` §3). */
+static void set_the_timeout(struct handshake_round_trip *estimate)
+{
+    uint64_t variance = (uint64_t)HANDSHAKE_RTO_K * estimate->variation_nanoseconds;
+    if (variance < HANDSHAKE_CLOCK_GRANULARITY_NANOSECONDS) {
+        /* ⚠ §4: "if the K*RTTVAR term in the RTO calculation equals zero, the
+         * variance term MUST be rounded to G seconds". ⚠ The `max(G, ...)` in
+         * §2.2 and §2.3 says the same thing for every value below G. */
+        variance = HANDSHAKE_CLOCK_GRANULARITY_NANOSECONDS;
+    }
+    uint64_t timeout = estimate->smoothed_nanoseconds + variance;
+
+    if (timeout < HANDSHAKE_RTO_LEAST_NANOSECONDS) {
+        timeout = HANDSHAKE_RTO_LEAST_NANOSECONDS;
+    }
+    if (timeout > HANDSHAKE_RTO_MOST_NANOSECONDS) {
+        timeout = HANDSHAKE_RTO_MOST_NANOSECONDS;
+    }
+    estimate->timeout_nanoseconds = timeout;
+}
+
+void handshake_round_trip_begin(struct handshake_round_trip *estimate)
+{
+    estimate->have_a_sample = false;
+    estimate->smoothed_nanoseconds = 0;
+    estimate->variation_nanoseconds = 0;
+    /* ⚠ §2.1, and ⚠ **not through `set_the_timeout`**: the document gives this
+     * value directly and ⚠ **computing it from two zeroes would reach it by
+     * accident of the floor rather than by the sentence that gives it.** */
+    estimate->timeout_nanoseconds = HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS;
+}
+
+void handshake_round_trip_sample(struct handshake_round_trip *estimate,
+                                 uint64_t r_nanoseconds)
+{
+    if (!estimate->have_a_sample) {
+        /* ⚠ §2.2: "SRTT <- R, RTTVAR <- R/2". */
+        estimate->smoothed_nanoseconds = r_nanoseconds;
+        estimate->variation_nanoseconds = r_nanoseconds / 2u;
+        estimate->have_a_sample = true;
+        set_the_timeout(estimate);
+        return;
+    }
+
+    /* ⚠ §2.3: "RTTVAR <- (1 - beta) * RTTVAR + beta * |SRTT - R'|" and
+     * "SRTT <- (1 - alpha) * SRTT + alpha * R'".
+     *
+     * ⚠ **"The value of SRTT used in the update to RTTVAR is its value BEFORE
+     * updating SRTT itself ... updating RTTVAR and SRTT MUST be computed in the
+     * above order."** ⚠ A `MUST` about an order, ⚠ **and both orders produce a
+     * number** — which is why a check asserts it. */
+    uint64_t smoothed = estimate->smoothed_nanoseconds;
+    uint64_t difference = smoothed > r_nanoseconds ? smoothed - r_nanoseconds
+                                                   : r_nanoseconds - smoothed;
+    estimate->variation_nanoseconds =
+        estimate->variation_nanoseconds -
+        (estimate->variation_nanoseconds >> HANDSHAKE_RTO_BETA_SHIFT) +
+        (difference >> HANDSHAKE_RTO_BETA_SHIFT);
+    estimate->smoothed_nanoseconds =
+        smoothed - (smoothed >> HANDSHAKE_RTO_ALPHA_SHIFT) +
+        (r_nanoseconds >> HANDSHAKE_RTO_ALPHA_SHIFT);
+    set_the_timeout(estimate);
+}
+
 uint32_t handshake_initial_send_sequence(struct moment now)
 {
     /* ⚠ Truncated to 32 bits on purpose: ⚠ **the document's clock IS a 32-bit
@@ -732,11 +798,33 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
             at_or_before(held->snd_una, header->acknowledgment_number) &&
             at_or_before(header->acknowledgment_number, held->snd_nxt)) {
             held->snd_una = header->acknowledgment_number;
+
+            /* ⚠ RFC 6298 §2 and §3, in that order: ⚠ **the sample is taken
+             * before the timer is restarted**, so the timer gets the RTO this
+             * acknowledgment just produced rather than the one before it.
+             *
+             * ⚠ **Refused when it is spoilt** — Karn's. ⚠ Either way the sample
+             * ends, because ⚠ **holding a spoilt one open would make the next
+             * acknowledgment ambiguous too.** */
+            if (held->sampling &&
+                at_or_before(held->sample_covers, header->acknowledgment_number)) {
+                if (!held->sample_is_spoilt) {
+                    handshake_round_trip_sample(
+                        &held->round_trip,
+                        now.nanoseconds - held->sample_sent_at.nanoseconds);
+                    counts->round_trips_we_measured++;
+                } else {
+                    counts->round_trips_we_would_not_use++;
+                }
+                held->sampling = false;
+                held->sample_is_spoilt = false;
+            }
+
             if (held->snd_una == held->snd_nxt) {
                 held->waiting_for_an_ack = false;
             } else {
                 held->send_again_at =
-                    moment_after(now, HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS);
+                    moment_after_nanoseconds(now, held->round_trip.timeout_nanoseconds);
             }
         }
 
@@ -843,6 +931,8 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
      * way. */
     taken->snd_wnd = header->window;
     taken->still_to_send = octets_to_send;
+    /* ⚠ RFC 6298 §2.1: the value before anything has been measured. */
+    handshake_round_trip_begin(&taken->round_trip);
     taken->rcv_wnd = window;
     taken->mss_we_advertise = maximum_segment_size;
 
@@ -1052,6 +1142,10 @@ bool handshake_send_what_is_next(struct connections *connections,
                 block->still_to_send += unacknowledged;
                 counts->data_segments_we_sent_again++;
                 counts->data_octets_we_sent_again += unacknowledged;
+                /* ⚠ RFC 6298 §3, Karn's algorithm: ⚠ **a sample covering
+                 * anything that has just been sent again is ambiguous**, and
+                 * ⚠ **an ambiguity is not a measurement** (`CLAUDE.md` §1). */
+                block->sample_is_spoilt = true;
             }
             /* ⚠ Cleared so one expiry winds back once. ⚠ It is set again below
              * when the first segment goes out (§5.1). */
@@ -1129,7 +1223,20 @@ bool handshake_send_what_is_next(struct connections *connections,
         if (!block->waiting_for_an_ack) {
             block->waiting_for_an_ack = true;
             block->send_again_at =
-                moment_after(now, HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS);
+                moment_after_nanoseconds(now, block->round_trip.timeout_nanoseconds);
+        }
+
+        /* ⚠ RFC 6298 §3: "A TCP implementation MUST take at least one RTT
+         * measurement per RTT." ⚠ One is started when none is running.
+         *
+         * ⚠ **`sample_is_spoilt` is not cleared here.** ⚠ It is cleared only
+         * when a fresh sample starts on a segment that has not been sent
+         * before — which is the branch above, and ⚠ **a wind-back sets it
+         * again before reaching here.** */
+        if (!block->sampling) {
+            block->sampling = true;
+            block->sample_sent_at = now;
+            block->sample_covers = block->snd_nxt;
         }
         outcome->reply = HANDSHAKE_REPLY_THE_DATA_WE_WERE_ASKED_FOR;
         outcome->decision = HANDSHAKE_STAYED;

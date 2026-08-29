@@ -76,6 +76,13 @@ bool moment_is_at_or_after(struct moment a, struct moment b);
 /* The moment `milliseconds` after `from`. */
 struct moment moment_after(struct moment from, uint64_t milliseconds);
 
+/* The same, in the unit `struct moment` actually holds.
+ *
+ * ⚠ Added for RFC 6298's timeout (hidetzu/tcpip-stack#130), ⚠ **which is
+ * computed in nanoseconds so that no rounding rule has to be invented** — and
+ * ⚠ **converting it to milliseconds to schedule it would put one back.** */
+struct moment moment_after_nanoseconds(struct moment from, uint64_t nanoseconds);
+
 /* How long until `deadline`, in milliseconds, for a caller about to wait.
  *
  * ⚠ Never negative: a deadline already past gives 0, ⚠ **because a negative

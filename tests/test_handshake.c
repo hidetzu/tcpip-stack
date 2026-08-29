@@ -2048,6 +2048,259 @@ static bool case_the_window_is_what_one_frame_carries(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#130. ⚠ RFC 6298 §3, Karn's algorithm: "RTT samples MUST
+ * NOT be made using segments that were retransmitted."
+ *
+ * ⚠ **Asserted by retransmitting and showing the estimate did not move** — and
+ * ⚠ **paired with one that was not retransmitted, showing it does** (`verify`
+ * §5). */
+static bool case_no_round_trip_is_measured_from_a_retransmission(void)
+{
+    bool ok = true;
+    uint8_t reply[2048];
+    struct handshake_outcome sent;
+    const uint64_t a_second = 1000ull;   /* milliseconds, for `at()` */
+
+    /* ⚠ Sent once, acknowledged: ⚠ **the sample is taken.** */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        held->still_to_send = 10u;
+        held->snd_wnd = 65535u;
+        if (!handshake_send_what_is_next(&world.connections, 1500u, at(0),
+                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                         reply, sizeof reply, &world.counts, &sent)) {
+            return false;
+        }
+        struct connection_id id = the_connection();
+        struct tcp_header ack = a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->snd_nxt);
+        struct handshake_outcome outcome;
+        handshake_receive(&ack, &id, OUR_PORT, THE_WINDOW, THE_MSS, 0, at(50),
+                          IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC,
+                          &world.connections, world.reply, sizeof world.reply,
+                          &world.counts, &outcome);
+        if (!held->round_trip.have_a_sample ||
+            world.counts.round_trips_we_measured != 1 ||
+            world.counts.round_trips_we_would_not_use != 0) {
+            fprintf(stderr, "  a clean exchange gave %lu measured and %lu refused\n",
+                    world.counts.round_trips_we_measured,
+                    world.counts.round_trips_we_would_not_use);
+            ok = false;
+        }
+        /* ⚠ 50 ms was the round trip; ⚠ **§2.4 floors the RTO at a second**, so
+         * the number to assert is SRTT, not the RTO. */
+        if (held->round_trip.smoothed_nanoseconds != 50ull * 1000000ull) {
+            fprintf(stderr, "  SRTT is %llu ns for a 50 ms round trip\n",
+                    (unsigned long long)held->round_trip.smoothed_nanoseconds);
+            ok = false;
+        }
+    }
+
+    /* ⚠ Sent, sent AGAIN, then acknowledged: ⚠ **the sample is refused**, and
+     * ⚠ **the estimate is exactly what it was before any of it.** */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        held->still_to_send = 10u;
+        held->snd_wnd = 65535u;
+        if (!handshake_send_what_is_next(&world.connections, 1500u, at(0),
+                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                         reply, sizeof reply, &world.counts, &sent)) {
+            return false;
+        }
+        uint64_t before = held->round_trip.timeout_nanoseconds;
+        bool had_one = held->round_trip.have_a_sample;
+
+        /* ⚠ Nobody acknowledged, so it goes out again. */
+        if (!handshake_send_what_is_next(&world.connections, 1500u, at(a_second),
+                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                         reply, sizeof reply, &world.counts, &sent)) {
+            fputs("  nothing was sent again at the deadline\n", stderr);
+            return false;
+        }
+        struct connection_id id = the_connection();
+        struct tcp_header ack = a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->snd_nxt);
+        struct handshake_outcome outcome;
+        handshake_receive(&ack, &id, OUR_PORT, THE_WINDOW, THE_MSS, 0,
+                          at(a_second + 50), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC,
+                          OUR_MAC, &world.connections, world.reply,
+                          sizeof world.reply, &world.counts, &outcome);
+
+        if (world.counts.round_trips_we_measured != 0 ||
+            world.counts.round_trips_we_would_not_use != 1) {
+            fprintf(stderr, "  a retransmitted exchange gave %lu measured and %lu refused\n",
+                    world.counts.round_trips_we_measured,
+                    world.counts.round_trips_we_would_not_use);
+            ok = false;
+        }
+        if (held->round_trip.have_a_sample != had_one ||
+            held->round_trip.timeout_nanoseconds != before) {
+            fprintf(stderr, "  the estimate moved on a retransmitted exchange: "
+                            "%llu -> %llu\n", (unsigned long long)before,
+                    (unsigned long long)held->round_trip.timeout_nanoseconds);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* ⚠ hidetzu/tcpip-stack#130. ⚠ RFC 6298 §2, every step quoted, ⚠ **and the
+ * order of §2.3 asserted because it is a `MUST` and both orders give a number.**
+ *
+ * ⚠ **Pure: no clock, no fd, no device.** */
+static bool case_the_timeout_is_computed_the_way_the_document_says(void)
+{
+    bool ok = true;
+    struct handshake_round_trip e;
+
+    /* ⚠ The document's own numbers, asserted as numbers.
+     *
+     * ⚠ **Added because a mutation walked past everything**: changing `K` from 4
+     * to 1 left every check green, ⚠ **because the arithmetic below names the
+     * constant on both sides and moves with it** (2026-08-29).
+     * ⚠ `.claude/rules/testing.md`: ⚠ **assert against the constant AND against
+     * the value it must not be.** */
+    if (HANDSHAKE_RTO_K != 4u) {
+        fprintf(stderr, "  K is %u and RFC 6298 section 2.2 says \"where K = 4\"\n",
+                (unsigned)HANDSHAKE_RTO_K);
+        ok = false;
+    }
+    if (HANDSHAKE_RTO_ALPHA_SHIFT != 3u || HANDSHAKE_RTO_BETA_SHIFT != 2u) {
+        fputs("  alpha and beta are not 1/8 and 1/4, which is what section 2.3 "
+              "says they SHOULD be\n", stderr);
+        ok = false;
+    }
+    if (HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS != 1000000000ull ||
+        HANDSHAKE_RTO_LEAST_NANOSECONDS != 1000000000ull) {
+        fputs("  section 2.1's initial value or section 2.4's floor is not one "
+              "second\n", stderr);
+        ok = false;
+    }
+
+    /* ⚠ §2.1: "Until a round-trip time (RTT) measurement has been made ..., the
+     * sender SHOULD set RTO <- 1 second". */
+    handshake_round_trip_begin(&e);
+    if (e.have_a_sample || e.timeout_nanoseconds != 1000000000ull ||
+        e.timeout_nanoseconds != HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS) {
+        fprintf(stderr, "  before any sample the timeout is %llu ns, not one second\n",
+                (unsigned long long)e.timeout_nanoseconds);
+        ok = false;
+    }
+
+    /* ⚠ §2.2: "SRTT <- R, RTTVAR <- R/2, RTO <- SRTT + max (G, K*RTTVAR)".
+     * ⚠ R is 8 seconds so the result is ⚠ **above §2.4's floor** — a smaller one
+     * would be floored and ⚠ **the case could not tell the formula from the
+     * floor.** */
+    const uint64_t r = 8000000000ull;
+    handshake_round_trip_sample(&e, r);
+    if (!e.have_a_sample || e.smoothed_nanoseconds != r ||
+        e.variation_nanoseconds != r / 2u) {
+        fprintf(stderr, "  the first sample left SRTT %llu and RTTVAR %llu\n",
+                (unsigned long long)e.smoothed_nanoseconds,
+                (unsigned long long)e.variation_nanoseconds);
+        ok = false;
+    }
+    if (e.timeout_nanoseconds != r + HANDSHAKE_RTO_K * (r / 2u)) {
+        fprintf(stderr, "  the first RTO is %llu, and SRTT + K*RTTVAR is %llu\n",
+                (unsigned long long)e.timeout_nanoseconds,
+                (unsigned long long)(r + HANDSHAKE_RTO_K * (r / 2u)));
+        ok = false;
+    }
+
+    /* ⚠ §2.3, and ⚠ **the order**: "The value of SRTT used in the update to
+     * RTTVAR is its value BEFORE updating SRTT itself ... updating RTTVAR and
+     * SRTT MUST be computed in the above order."
+     *
+     * ⚠ Computed here the document's way and compared. ⚠ **Doing SRTT first
+     * gives a different RTTVAR**, which is what the assertion catches. */
+    {
+        uint64_t before_srtt = e.smoothed_nanoseconds;
+        uint64_t before_rttvar = e.variation_nanoseconds;
+        const uint64_t r2 = 2000000000ull;
+
+        uint64_t difference = before_srtt > r2 ? before_srtt - r2 : r2 - before_srtt;
+        uint64_t want_rttvar = before_rttvar - (before_rttvar >> 2) + (difference >> 2);
+        uint64_t want_srtt = before_srtt - (before_srtt >> 3) + (r2 >> 3);
+
+        handshake_round_trip_sample(&e, r2);
+        if (e.variation_nanoseconds != want_rttvar) {
+            fprintf(stderr, "  RTTVAR is %llu and the document gives %llu — "
+                            "SRTT may have been updated first\n",
+                    (unsigned long long)e.variation_nanoseconds,
+                    (unsigned long long)want_rttvar);
+            ok = false;
+        }
+        if (e.smoothed_nanoseconds != want_srtt) {
+            fprintf(stderr, "  SRTT is %llu and the document gives %llu\n",
+                    (unsigned long long)e.smoothed_nanoseconds,
+                    (unsigned long long)want_srtt);
+            ok = false;
+        }
+        /* ⚠ And the order really is distinguishable: ⚠ **the wrong order would
+         * use the NEW SRTT in the difference**, and that is a different number.
+         * ⚠ Without this the case would pass for a build that happened to agree
+         * by coincidence of the values chosen. */
+        uint64_t wrong_difference = want_srtt > r2 ? want_srtt - r2 : r2 - want_srtt;
+        uint64_t wrong_rttvar = before_rttvar - (before_rttvar >> 2) + (wrong_difference >> 2);
+        if (wrong_rttvar == want_rttvar) {
+            fputs("  the two orders give the same RTTVAR here, so this case "
+                  "cannot tell them apart — choose other samples\n", stderr);
+            ok = false;
+        }
+    }
+
+    /* ⚠ §2.4: "if it is less than 1 second, then the RTO SHOULD be rounded up to
+     * 1 second." ⚠ A microsecond round trip is what a tap gives. */
+    handshake_round_trip_begin(&e);
+    handshake_round_trip_sample(&e, 200000ull);   /* 200 microseconds */
+    if (e.timeout_nanoseconds != HANDSHAKE_RTO_LEAST_NANOSECONDS) {
+        fprintf(stderr, "  a 200 microsecond round trip gave an RTO of %llu\n",
+                (unsigned long long)e.timeout_nanoseconds);
+        ok = false;
+    }
+    /* ⚠ The other half: ⚠ **the floor is a floor and not the answer.** */
+    handshake_round_trip_begin(&e);
+    handshake_round_trip_sample(&e, r);
+    if (e.timeout_nanoseconds <= HANDSHAKE_RTO_LEAST_NANOSECONDS) {
+        fputs("  a large round trip did not lift the RTO off the floor, so the "
+              "floor is doing all the work\n", stderr);
+        ok = false;
+    }
+
+    /* ⚠ §2.5: "A maximum value MAY be placed on RTO provided it is at least 60
+     * seconds." ⚠ Asserted against the constant AND against 60 seconds, ⚠ **so a
+     * ceiling lowered below what the document allows fails.** */
+    if (HANDSHAKE_RTO_MOST_NANOSECONDS < 60000000000ull) {
+        fputs("  the ceiling is below the 60 seconds the document allows\n", stderr);
+        ok = false;
+    }
+    handshake_round_trip_begin(&e);
+    handshake_round_trip_sample(&e, 500000000000ull);   /* 500 seconds */
+    if (e.timeout_nanoseconds != HANDSHAKE_RTO_MOST_NANOSECONDS) {
+        fprintf(stderr, "  a 500 second round trip gave an RTO of %llu\n",
+                (unsigned long long)e.timeout_nanoseconds);
+        ok = false;
+    }
+
+    /* ⚠ §4: "if the K*RTTVAR term ... equals zero, the variance term MUST be
+     * rounded to G seconds." ⚠ A zero round trip is the only way to reach it. */
+    handshake_round_trip_begin(&e);
+    handshake_round_trip_sample(&e, 0);
+    if (e.variation_nanoseconds != 0) {
+        fputs("  a zero round trip left a non-zero RTTVAR\n", stderr);
+        ok = false;
+    }
+    return ok;
+}
+
 /* ⚠ hidetzu/tcpip-stack#129. ⚠ RFC 6298 §5.2: **"When all outstanding data has
  * been acknowledged, turn off the retransmission timer."** ⚠ §5.4: **"Retransmit
  * the earliest segment that has not been acknowledged."**
@@ -2094,7 +2347,7 @@ static bool case_an_acknowledgment_for_data_stops_the_resending(void)
         }
         /* ⚠ Long past the deadline, and ⚠ **still nothing is due.** */
         if (handshake_send_what_is_next(&world.connections, 1500u,
-                                        at(HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS * 10),
+                                        at(HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS / 1000000ull * 10ull),
                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                                         reply, sizeof reply, &world.counts, &sent)) {
             fputs("  something was sent again after everything was acknowledged\n", stderr);
@@ -2131,7 +2384,7 @@ static bool case_an_acknowledgment_for_data_stops_the_resending(void)
         }
         /* ⚠ One millisecond before the deadline: ⚠ **still nothing.** */
         if (handshake_send_what_is_next(&world.connections, 1500u,
-                                        at(HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS - 1u),
+                                        at(HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS / 1000000ull - 1ull),
                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                                         reply, sizeof reply, &world.counts, &sent)) {
             fputs("  it went out again before the deadline\n", stderr);
@@ -2139,7 +2392,7 @@ static bool case_an_acknowledgment_for_data_stops_the_resending(void)
         }
         /* ⚠ At the deadline: ⚠ **it goes.** */
         if (!handshake_send_what_is_next(&world.connections, 1500u,
-                                         at(HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS),
+                                         at(HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS / 1000000ull),
                                          IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                                          reply, sizeof reply, &world.counts, &sent)) {
             fputs("  nothing went out again at the deadline\n", stderr);
@@ -4024,6 +4277,10 @@ static const struct test_case cases[] = {
       case_our_close_is_the_segment_the_document_describes },
     { "every_segment_we_build_carries_the_same_window",
       case_every_segment_we_build_carries_the_same_window },
+    { "no_round_trip_is_measured_from_a_retransmission",
+      case_no_round_trip_is_measured_from_a_retransmission },
+    { "the_timeout_is_computed_the_way_the_document_says",
+      case_the_timeout_is_computed_the_way_the_document_says },
     { "an_acknowledgment_for_data_stops_the_resending",
       case_an_acknowledgment_for_data_stops_the_resending },
     { "nothing_is_sent_past_the_window_they_advertised",

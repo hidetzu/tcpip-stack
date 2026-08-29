@@ -677,6 +677,15 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
             counts->data_octets_we_sent_again == 1 ? "" : "s",
             counts->data_segments_we_sent_again,
             counts->data_segments_we_sent_again == 1 ? "" : "s");
+    /* ⚠ Measured and refused, counted apart: ⚠ **a refused sample is not a
+     * sample that never happened** (RFC 6298 §3, Karn's). */
+    fprintf(out, "%lu round trip%s measured, and %lu %s not used because what "
+                 "%s would have measured was sent more than once\n",
+            counts->round_trips_we_measured,
+            counts->round_trips_we_measured == 1 ? " was" : "s were",
+            counts->round_trips_we_would_not_use,
+            counts->round_trips_we_would_not_use == 1 ? "was" : "were",
+            counts->round_trips_we_would_not_use == 1 ? "it" : "they");
     fprintf(out, "%lu octet%s of ours left in %lu segment%s, and %lu time%s there "
                  "was no room in the window they advertised\n",
             counts->data_octets_we_sent,
