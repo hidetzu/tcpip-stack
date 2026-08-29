@@ -26,37 +26,46 @@
 #include "ipv4.h"
 #include "tcp.h"
 
-/* The initial send sequence number this build chooses.
+/* How fast the initial send sequence number moves, in nanoseconds per step.
  *
- * ⚠ RFC 793's own method is not available here, and that is a decision rather
- * than an oversight:
+ * ⚠ RFC 9293 §3.4, verbatim: "TCP initial sequence numbers are generated from a
+ * number sequence that monotonically increases until it wraps, known loosely as
+ * a 'clock'.  This clock is a 32-bit counter that typically increments at least
+ * once every roughly 4 microseconds, although it is neither assumed to be
+ * realtime nor precise, and need not persist across reboots."
  *
- *   "The generator is bound to a (possibly fictitious) 32 bit clock whose low
- *    order bit is incremented roughly every 4 microseconds."
+ * ⚠ **4000 nanoseconds is "roughly 4 microseconds", said in the unit
+ * `struct moment` carries.** ⚠ The document says "at least once every", so
+ * ⚠ **faster would also satisfy it**; this is the rate it names.
  *
- * ⚠ **There is no clock** — hidetzu/tcpip-stack#42 Owner Decision 2 recorded
- * that as a deliberate gap for the handshake (ADR 0015).
+ * ⚠ **It wraps every 4.77 hours** — 2^32 steps of 4 microseconds — which
+ * ⚠ is the document's own figure: "it cycles approximately every 4.55 hours". */
+#define HANDSHAKE_INITIAL_SEQUENCE_STEP_NANOSECONDS 4000u
+
+/* The initial send sequence number for a connection taken at `now`.
  *
- * ⚠ And the reason the document gives for the method does not arise here:
+ * ⚠ RFC 9293 `MUST-8`: "A TCP implementation MUST use the above type of 'clock'
+ * for clock-driven selection of initial sequence numbers."
  *
- *   "To avoid confusion we must prevent segments from one incarnation of a
- *    connection from being used while the same sequence numbers may still be
- *    present in the network from an earlier incarnation."
+ * ⚠ **It was the constant `0xdeadbeef` until hidetzu/tcpip-stack#98.**
+ * ⚠ ADR 0016 chose that because there was no clock, ⚠ **and named this "the
+ * first thing to revisit when a clock arrives".** ⚠ The clock arrived at
+ * hidetzu/tcpip-stack#56 and this did not change until Appendix B was read.
  *
- * ⚠ **There is room for one connection and nothing frees it**, so ⚠ a run has
- * one incarnation and there is no earlier one to be confused with (ADR 0015).
- * ⚠ The device itself is gone when the fd closes (`docs/SPEC.md` §1).
+ * ⚠ **RFC 9293's `SHLD-1` is deliberately not taken** — "SHOULD generate its
+ * initial sequence numbers with the expression:
+ * `ISN = M + F(localip, localport, remoteip, remoteport, secretkey)`".
+ * ⚠ `F` needs a secret key and a pseudo-random function, ⚠ **and this
+ * repository has neither and no cryptographic dependency**; `CLAUDE.md` §3
+ * forbids introducing one without a reason (Owner Decision, 2026-08-29).
+ * ⚠ **So the number is still guessable by anyone who can read a clock**, and
+ * `docs/SPEC.md` §2 says so rather than letting `MUST-8` look like the whole
+ * answer.
  *
- * ⚠ **None of that makes a fixed number generally safe.** ⚠ A predictable
- * initial sequence number is a known weakness, and ⚠ `docs/SPEC.md` §2 says
- * plainly that this holds only inside a private namespace whose other end is
- * the kernel — ⚠ **and names this as the first thing to revisit when a clock
- * arrives.** ⚠ Nothing here claims RFC 793 asks for it.
- *
- * ⚠ Why not zero: ⚠ **a block nobody filled in is all zeroes**, so a check
- * asserting "the ISS is 0" would pass for one. ⚠ This value cannot be there by
- * accident (hidetzu/tcpip-stack#43 Owner Decision 1). */
-#define HANDSHAKE_INITIAL_SEND_SEQUENCE 0xdeadbeefu
+ * ⚠ **Chosen once per connection and then remembered**: a retransmitted `SYN`
+ * must be answered with the same number, ⚠ **or a peer that did get the first
+ * answer is told a different one** (ADR 0016). */
+uint32_t handshake_initial_send_sequence(struct moment now);
 
 /* How long until the answer goes out again, and how long until we stop.
  *

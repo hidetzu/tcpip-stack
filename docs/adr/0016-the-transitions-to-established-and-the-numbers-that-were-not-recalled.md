@@ -108,6 +108,17 @@ not extending it.
 
 ### ⚠ Owner Decision 1 — the initial send sequence number is `0xdeadbeef`
 
+⚠ **Superseded on 2026-08-29** (hidetzu/tcpip-stack#98). ⚠ **This decision named
+its own end**: "the first thing to revisit when a clock arrives". ⚠ The clock
+arrived at hidetzu/tcpip-stack#56 and ⚠ **this did not change until RFC 9293
+Appendix B was read** — ⚠ `MUST-8` asks for clock-driven selection, and the
+number is the clock now.
+
+⚠ **What did NOT change is the rule below it**: ⚠ **a retransmitted `SYN` is
+answered with the same number**, chosen once when the connection was taken.
+⚠ That was the thing most likely to break, and ⚠ **a check asserts it a minute
+of clock later.**
+
 ⚠ **RFC 793's own method is unavailable:** "The generator is bound to a (possibly
 fictitious) 32 bit clock whose low order bit is incremented roughly every 4
 microseconds." ⚠ **There is no clock**, and hidetzu/tcpip-stack#42 recorded that

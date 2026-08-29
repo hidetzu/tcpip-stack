@@ -20,6 +20,14 @@ _Static_assert(TCP_PROTOCOL_NUMBER == IPV4_PROTOCOL_TCP,
 _Static_assert(HANDSHAKE_WINDOW <= 0xffffu,
                "the window must fit the field RFC 793 gives it");
 
+uint32_t handshake_initial_send_sequence(struct moment now)
+{
+    /* ⚠ Truncated to 32 bits on purpose: ⚠ **the document's clock IS a 32-bit
+     * counter that wraps**, and the sequence space wraps with it. ⚠ Unsigned,
+     * so the narrowing is defined (`.claude/rules/c.md`). */
+    return (uint32_t)(now.nanoseconds / HANDSHAKE_INITIAL_SEQUENCE_STEP_NANOSECONDS);
+}
+
 /* ⚠ `a` is at or before `b` on a sequence space that wraps at 2^32.
  *
  * ⚠ Written with unsigned arithmetic on purpose. ⚠ The usual
@@ -701,7 +709,7 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
      * send is hidetzu/tcpip-stack#44's; this decides what would go in it. */
     taken->irs = header->sequence_number;
     taken->rcv_nxt = header->sequence_number + 1u;
-    taken->iss = HANDSHAKE_INITIAL_SEND_SEQUENCE;
+    taken->iss = handshake_initial_send_sequence(now);
     taken->snd_una = taken->iss;
     taken->snd_nxt = taken->iss + 1u;
     taken->state = CONNECTION_SYN_RECEIVED;
