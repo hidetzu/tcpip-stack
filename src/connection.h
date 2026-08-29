@@ -273,6 +273,20 @@ struct transmission_control_block {
     struct moment answer_due;
     struct moment give_up_at;
 
+    /* How many times the earliest unacknowledged thing has been sent again.
+     *
+     * ⚠ RFC 9293 §3.8.3 (a): "two thresholds R1 and R2 measuring the amount of
+     * retransmission that has occurred for the same segment."
+     *
+     * ⚠ **It counts the SAME thing being sent again**, so it goes back to zero
+     * when something new is acknowledged — ⚠ not when anything at all is sent.
+     *
+     * ⚠ `told_them_about_r1` is separate: ⚠ **R1 is a threshold crossed once**,
+     * and saying it on every retransmission past three would be saying one
+     * event many times (`CLAUDE.md` §6). */
+    unsigned int retransmissions;
+    bool told_them_about_r1;
+
     /* Where an answer has to go on the wire.
      *
      * ⚠ Read out of the frame that asked, and ⚠ **kept because a retransmission

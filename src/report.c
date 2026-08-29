@@ -677,6 +677,14 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
             counts->data_octets_we_sent_again == 1 ? "" : "s",
             counts->data_segments_we_sent_again,
             counts->data_segments_we_sent_again == 1 ? "" : "s");
+    /* ⚠ R1 crossed. ⚠ RFC 9293 §3.8.3 (b) asks for negative advice to the IP
+     * layer there, ⚠ **and there is none here to advise** — so the line says
+     * what happened and ⚠ **claims nothing about a routing layer**
+     * (`CLAUDE.md` §1). */
+    fprintf(out, "%lu connection%s sent the same thing again %u times or more, "
+                 "which is as far as this stack goes before it says so\n",
+            counts->reached_r1, counts->reached_r1 == 1 ? " has" : "s have",
+            (unsigned)HANDSHAKE_R1_RETRANSMISSIONS);
     /* ⚠ Measured and refused, counted apart: ⚠ **a refused sample is not a
      * sample that never happened** (RFC 6298 §3, Karn's). */
     fprintf(out, "%lu round trip%s measured, and %lu %s not used because what "

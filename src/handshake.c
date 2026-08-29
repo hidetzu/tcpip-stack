@@ -134,6 +134,48 @@ void handshake_round_trip_sample(struct handshake_round_trip *estimate,
     set_the_timeout(estimate);
 }
 
+/* ⚠ RFC 6298 §5.5: "The host MUST set RTO <- RTO * 2 (\"back off the timer\").
+ * The maximum value discussed in (2.5) above may be used to provide an upper
+ * bound to this doubling operation."
+ *
+ * ⚠ **The backed-off value stands until a clean sample replaces it.** ⚠ RFC 9293
+ * §3.8.2: backoff includes "keeping the backed-off value until a subsequent
+ * segment with new data has been sent and acknowledged without retransmission."
+ * ⚠ **Karn\'s algorithm is what makes that true here**: a sample covering
+ * anything sent twice is refused, ⚠ **so nothing recomputes the RTO until one
+ * clean round trip is measured** — and RFC 6298 §5 says that is the moment it
+ * may "collapse" back down. */
+static void back_off(struct transmission_control_block *block)
+{
+    uint64_t doubled = block->round_trip.timeout_nanoseconds * 2u;
+    if (doubled > HANDSHAKE_RTO_MOST_NANOSECONDS ||
+        doubled < block->round_trip.timeout_nanoseconds) {
+        doubled = HANDSHAKE_RTO_MOST_NANOSECONDS;
+    }
+    block->round_trip.timeout_nanoseconds = doubled;
+}
+
+/* ⚠ RFC 9293 §3.8.3 (b): "When the number of transmissions of the same segment
+ * reaches or exceeds threshold R1, pass negative advice ... to the IP layer, to
+ * trigger dead-gateway diagnosis."
+ *
+ * ⚠ **There is no IP layer here to advise** — nothing routes and there is no
+ * gateway to diagnose (`docs/SPEC.md` §2). ⚠ **So the threshold is crossed and
+ * SAID, and `MUST-20` (b) stays not met**: ⚠ **a line on a terminal is not
+ * negative advice to a routing layer**, and calling it one would be the shape
+ * `CLAUDE.md` §1 forbids.
+ *
+ * ⚠ **Said once**, because R1 is a threshold crossed once. */
+static bool crossed_r1(struct transmission_control_block *block)
+{
+    if (block->retransmissions < HANDSHAKE_R1_RETRANSMISSIONS ||
+        block->told_them_about_r1) {
+        return false;
+    }
+    block->told_them_about_r1 = true;
+    return true;
+}
+
 uint32_t handshake_initial_send_sequence(struct moment now)
 {
     /* ⚠ Truncated to 32 bits on purpose: ⚠ **the document's clock IS a 32-bit
@@ -450,8 +492,12 @@ static enum where_it_sat read_the_fin(struct transmission_control_block *block,
      * and ⚠ **the ones from the handshake may already have passed.** */
     block->snd_nxt += 1u;
     block->state = CONNECTION_LAST_ACK;
-    block->answer_due = moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
-    block->give_up_at = moment_after(now, HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS);
+    /* ⚠ The same mechanism a `SYN` gets — RFC 9293 `MUST-22`, "Same mechanism
+     * for SYNs" — ⚠ **so it is the computed RTO here too** and not a constant
+     * of its own (hidetzu/tcpip-stack#131). */
+    block->answer_due =
+        moment_after_nanoseconds(now, block->round_trip.timeout_nanoseconds);
+    block->give_up_at = moment_after(now, HANDSHAKE_R2_FOR_DATA_MILLISECONDS);
     /* ⚠ Reported and counted from one place, so the two cannot diverge. */
     outcome->we_would_acknowledge = block->rcv_nxt;
     outcome->the_fin_was_read = true;
@@ -820,6 +866,14 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                 held->sample_is_spoilt = false;
             }
 
+            /* ⚠ The count is of THE SAME segment being sent again, so ⚠ **it
+             * goes back to zero when something new is acknowledged** and not
+             * when anything at all is sent (RFC 9293 §3.8.3 (a)). */
+            {
+                held->retransmissions = 0;
+                held->told_them_about_r1 = false;
+            }
+
             if (held->snd_una == held->snd_nxt) {
                 held->waiting_for_an_ack = false;
             } else {
@@ -975,8 +1029,12 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
      * is from now and is never moved again. */
     memcpy(taken->requester_hardware_address, requester_hardware_address,
            CONNECTION_HARDWARE_ADDRESS_BYTES);
-    taken->answer_due = moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
-    taken->give_up_at = moment_after(now, HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS);
+    /* ⚠ `MUST-23`: R2 for a `SYN` is at least three minutes. ⚠ **This is the
+     * one the document puts a floor under**, and it is the connection's while
+     * it is still opening. */
+    taken->answer_due =
+        moment_after_nanoseconds(now, taken->round_trip.timeout_nanoseconds);
+    taken->give_up_at = moment_after(now, HANDSHAKE_R2_FOR_A_SYN_MILLISECONDS);
 
     if (!build_what_is_due(taken, HANDSHAKE_REPLY_THE_ANSWER, time_to_live, id,
                            requester_hardware_address, our_hardware_address,
@@ -1067,8 +1125,16 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
          * reinitialize the retransmission timer" — ⚠ one step, so the timer moves
          * here. ⚠ From `now` and not from the moment it was due, so ⚠ a caller
          * that woke late does not immediately owe another. */
+        /* ⚠ Backed off first, so the new deadline is the doubled one — ⚠ RFC
+         * 6298 §5.5 then §5.6, in that order. ⚠ `MUST-22`: the same mechanism a
+         * data segment gets. */
+        waiting->retransmissions++;
+        back_off(waiting);
+        if (crossed_r1(waiting)) {
+            counts->reached_r1++;
+        }
         waiting->answer_due =
-            moment_after(now, HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS);
+            moment_after_nanoseconds(now, waiting->round_trip.timeout_nanoseconds);
 
         /* ⚠ Addressed from what the connection remembers: ⚠ **there is no
          * arriving frame to read it from** (hidetzu/tcpip-stack#59). */
@@ -1146,6 +1212,14 @@ bool handshake_send_what_is_next(struct connections *connections,
                  * anything that has just been sent again is ambiguous**, and
                  * ⚠ **an ambiguity is not a measurement** (`CLAUDE.md` §1). */
                 block->sample_is_spoilt = true;
+
+                /* ⚠ RFC 9293 §3.8.3 (a): the count is of "the same segment"
+                 * being sent again. ⚠ §5.5 doubles the timeout with it. */
+                block->retransmissions++;
+                back_off(block);
+                if (crossed_r1(block)) {
+                    counts->reached_r1++;
+                }
             }
             /* ⚠ Cleared so one expiry winds back once. ⚠ It is set again below
              * when the first segment goes out (§5.1). */

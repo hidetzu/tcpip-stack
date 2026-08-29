@@ -900,6 +900,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "0 segments were from an address that can never send anything\n"
         "0 octets of ours went out again in 0 segments because nobody had "
         "acknowledged them\n"
+        "0 connections have sent the same thing again 3 times or more, which is as "
+        "far as this stack goes before it says so\n"
         "0 round trips were measured, and 0 were not used because what they "
         "would have measured was sent more than once\n"
         "0 octets of ours left in 0 segments, and 0 times there was no room in the "
@@ -930,6 +932,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.data_octets_we_sent_again = 1;
     one.round_trips_we_measured = 1;
     one.round_trips_we_would_not_use = 1;
+    one.reached_r1 = 1;
     one.reset_by_the_other_side = 1;
     one.reset_outside_the_window = 1;
     one.urgent_and_nobody_to_tell = 1;
@@ -974,6 +977,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "1 segment was from an address that can never send anything\n"
         "1 octet of ours went out again in 1 segment because nobody had "
         "acknowledged them\n"
+        "1 connection has sent the same thing again 3 times or more, which is as "
+        "far as this stack goes before it says so\n"
         "1 round trip was measured, and 1 was not used because what it "
         "would have measured was sent more than once\n"
         "1 octet of ours left in 1 segment, and 1 time there was no room in the "
@@ -1024,6 +1029,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.data_octets_we_sent_again = 35;
     each.round_trips_we_measured = 36;
     each.round_trips_we_would_not_use = 37;
+    each.reached_r1 = 38;
     each.reset_by_the_other_side = 27;
     each.reset_outside_the_window = 28;
     each.urgent_and_nobody_to_tell = 29;
@@ -1056,6 +1062,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "30 segments were from an address that can never send anything\n"
         "35 octets of ours went out again in 34 segments because nobody had "
         "acknowledged them\n"
+        "38 connections have sent the same thing again 3 times or more, which is as "
+        "far as this stack goes before it says so\n"
         "36 round trips were measured, and 37 were not used because what they "
         "would have measured was sent more than once\n"
         "32 octets of ours left in 31 segments, and 33 times there was no room in "
