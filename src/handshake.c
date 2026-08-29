@@ -821,8 +821,6 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     taken->snd_wnd = header->window;
     taken->still_to_send = octets_to_send;
     taken->rcv_wnd = window;
-    memcpy(taken->their_hardware_address, requester_hardware_address,
-           sizeof taken->their_hardware_address);
     taken->mss_we_advertise = maximum_segment_size;
 
     /* ⚠ RFC 9293 `MUST-15`: "If an MSS Option is not received at connection
@@ -1055,7 +1053,7 @@ bool handshake_send_what_is_next(struct connections *connections,
 
         outcome->reply_bytes =
             build_the_answer(block, HANDSHAKE_REPLY_THE_DATA_WE_WERE_ASKED_FOR,
-                             time_to_live, &block->id, block->their_hardware_address,
+                             time_to_live, &block->id, block->requester_hardware_address,
                              our_hardware_address, data, take, reply, reply_bytes);
         if (outcome->reply_bytes == 0) {
             counts->we_could_not_build_the_reply++;
