@@ -2107,6 +2107,136 @@ static bool case_the_time_to_live_we_send_with_is_the_callers(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#112. ⚠ RFC 9293 `MUST-63`, §3.9.2.3: "An incoming SYN
+ * with an invalid source address MUST be ignored either by TCP or by the IP
+ * layer ... (see Section 3.2.1.3)."
+ *
+ * ⚠ **The mirror of the case below, and deliberately shaped the same**: what is
+ * refused, ⚠ **that an ordinary source is still answered**, and ⚠ **that the
+ * form we cannot recognise is still answered.**
+ *
+ * ⚠ **Met in part, never met** (hidetzu/tcpip-stack#112 Owner Decision 2). */
+static bool case_a_syn_from_an_impossible_source_is_refused(void)
+{
+    static const struct { unsigned char address[4]; const char *what; } from[] = {
+        { { 0, 0, 0, 0 }, "RFC 1122 §3.2.1.3 (a), { 0, 0 }" },
+        { { 0, 1, 2, 3 }, "§3.2.1.3 (b), { 0, <host> }" },
+        { { 127, 0, 0, 1 }, "§3.2.1.3 (g), the loopback address" },
+        { { 127, 255, 255, 254 }, "§3.2.1.3 (g) at the top of 127/8" },
+        { { 255, 255, 255, 255 }, "§3.2.1.3 (c), the limited broadcast" },
+        { { 224, 0, 0, 1 }, "multicast at the bottom of the range" },
+        { { 239, 255, 255, 255 }, "multicast at the top of it" },
+    };
+
+    bool ok = true;
+    for (size_t i = 0; i < sizeof from / sizeof from[0]; i++) {
+        struct world world;
+        a_world(&world);
+        struct connection_id id = the_connection();
+        memcpy(id.remote.address, from[i].address, CONNECTION_ADDRESS_BYTES);
+        struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        struct handshake_outcome outcome;
+        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+                          THEIR_MAC, OUR_MAC, &world.connections, world.reply,
+                          sizeof world.reply, &world.counts, &outcome);
+
+        if (outcome.reason != HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE ||
+            world.counts.from_an_impossible_source != 1) {
+            fprintf(stderr, "  %s came back as reason %d\n", from[i].what,
+                    (int)outcome.reason);
+            ok = false;
+        }
+        /* ⚠ **No state and no reply.** ⚠ `MUST-63` says "ignored", and ⚠ a
+         * connection taken and then dropped would not have been ignored. */
+        if (outcome.reply_bytes != 0 || connections_find(&world.connections, &id) != NULL ||
+            world.counts.opened != 0) {
+            fprintf(stderr, "  %s left %zu octets built or a connection held\n",
+                    from[i].what, outcome.reply_bytes);
+            ok = false;
+        }
+        /* ⚠ Counted apart from the refusal for the DESTINATION. ⚠ **The two
+         * lines in `handshake.c` read `id.local` and `id.remote`, and this is
+         * what would notice them being swapped.** */
+        if (world.counts.addressed_to_everyone != 0) {
+            fprintf(stderr, "  %s moved the count for the destination instead\n",
+                    from[i].what);
+            ok = false;
+        }
+    }
+
+    /* ⚠ The other half: ⚠ **an ordinary source is still answered**, or refusing
+     * these would pass for a stack that refuses everything (`verify` §5). */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_one(&world, THEIR_ISN, &held)) {
+            fputs("  an ordinary source was refused too\n", stderr);
+            ok = false;
+        } else if (world.counts.from_an_impossible_source != 0) {
+            fputs("  an ordinary source was counted as an impossible one\n", stderr);
+            ok = false;
+        }
+    }
+
+    /* ⚠ The boundaries of every range above, ⚠ **each one octet outside it.**
+     * ⚠ Refusing a range is only correct if it stops where the document stops:
+     * ⚠ **`255.255.255.254` in particular, because §3.2.1.3 (c) is `{ -1, -1 }`
+     * and not `255.<anything>`** — reading the first octet alone would refuse a
+     * class E address the section never names. */
+    {
+        static const struct { unsigned char address[4]; const char *what; } still[] = {
+            { { 1, 0, 0, 1 }, "1.0.0.1, one network above 0/8" },
+            { { 126, 255, 255, 255 }, "126.255.255.255, just below 127/8" },
+            { { 128, 0, 0, 1 }, "128.0.0.1, just above it" },
+            { { 223, 255, 255, 255 }, "223.255.255.255, just below class D" },
+            { { 240, 0, 0, 1 }, "240.0.0.1, just above class D" },
+            { { 255, 255, 255, 254 }, "255.255.255.254, NOT the limited broadcast" },
+        };
+        for (size_t i = 0; i < sizeof still / sizeof still[0]; i++) {
+            struct world world;
+            a_world(&world);
+            struct connection_id id = the_connection();
+            memcpy(id.remote.address, still[i].address, CONNECTION_ADDRESS_BYTES);
+            struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+            struct handshake_outcome outcome;
+            handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+                              THEIR_MAC, OUR_MAC, &world.connections, world.reply,
+                              sizeof world.reply, &world.counts, &outcome);
+            if (outcome.reason == HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE ||
+                world.counts.from_an_impossible_source != 0 ||
+                outcome.reply_bytes == 0) {
+                fprintf(stderr, "  %s was refused, and no document says to\n",
+                        still[i].what);
+                ok = false;
+            }
+        }
+    }
+
+    /* ⚠ And the part that is NOT met, pinned so it cannot be claimed by
+     * accident: ⚠ **a directed broadcast source is answered**, because it cannot
+     * be told from a host address without a netmask. ⚠ **The same gap `MUST-57`
+     * has, and this fails if it ever closes silently.** */
+    {
+        struct world world;
+        a_world(&world);
+        struct connection_id id = the_connection();
+        id.remote.address[3] = 255;
+        struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        struct handshake_outcome outcome;
+        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+                          THEIR_MAC, OUR_MAC, &world.connections, world.reply,
+                          sizeof world.reply, &world.counts, &outcome);
+        if (outcome.reason == HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE) {
+            fputs("  a directed broadcast source was refused, which this build "
+                  "cannot do without a netmask — say so and update "
+                  "docs/conformance.md\n", stderr);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 /* ⚠ hidetzu/tcpip-stack#99. ⚠ RFC 9293 `MUST-57`: "A TCP implementation MUST
  * silently discard an incoming SYN segment that is addressed to a broadcast or
  * multicast address ... This prevents connection state and replies from being
@@ -3394,6 +3524,8 @@ static const struct test_case cases[] = {
       case_an_urgent_segment_is_counted_and_said },
     { "a_segment_addressed_to_everyone_is_refused",
       case_a_segment_addressed_to_everyone_is_refused },
+    { "a_syn_from_an_impossible_source_is_refused",
+      case_a_syn_from_an_impossible_source_is_refused },
     { "nothing_is_sent_for_a_connection_that_has_not_seen_a_fin",
       case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin },
     { "what_goes_out_again_for_a_closing_connection_is_our_close",

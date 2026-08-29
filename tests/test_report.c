@@ -828,6 +828,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "it to\n"
         "0 segments were addressed to a broadcast or multicast address, which a "
         "connection is never made to\n"
+        "0 segments were from an address that can never send anything\n"
         "0 were refused for want of room and 0 answers never left the device, which "
         "are ours and not the sender's\n");
     produced_close(&produced);
@@ -846,6 +847,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.answered = 1;
     one.room.refused_for_want_of_room = 1;
     one.addressed_to_everyone = 1;
+    one.from_an_impossible_source = 1;
     one.reset_by_the_other_side = 1;
     one.reset_outside_the_window = 1;
     one.urgent_and_nobody_to_tell = 1;
@@ -887,6 +889,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "it to\n"
         "1 segment was addressed to a broadcast or multicast address, which a "
         "connection is never made to\n"
+        "1 segment was from an address that can never send anything\n"
         "1 was refused for want of room and 1 answer never left the device, which "
         "are ours and not the sender's\n") && ok;
     produced_close(&produced);
@@ -925,6 +928,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.fin_we_could_not_place = 15;
     each.room.refused_for_want_of_room = 16;
     each.addressed_to_everyone = 26;
+    each.from_an_impossible_source = 30;
     each.reset_by_the_other_side = 27;
     each.reset_outside_the_window = 28;
     each.urgent_and_nobody_to_tell = 29;
@@ -954,6 +958,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "hand it to\n"
         "26 segments were addressed to a broadcast or multicast address, which a "
         "connection is never made to\n"
+        "30 segments were from an address that can never send anything\n"
         "16 were refused for want of room and 17 answers never left the device, "
         "which are ours and not the sender's\n") && ok;
     produced_close(&produced);

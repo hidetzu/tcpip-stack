@@ -424,6 +424,19 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
         return;
     }
 
+    /* ⚠ And before anything is looked up or taken, for the same reason: RFC 9293
+     * `MUST-63` says such a `SYN` "MUST be ignored", and ⚠ **a connection taken
+     * and then dropped would not have been ignored.**
+     *
+     * ⚠ `id->remote` is the sender. ⚠ **The refusal above reads `id->local` and
+     * this one reads `id->remote`** — ⚠ they are opposite questions and the two
+     * lines are the only place that could confuse them. */
+    if (!ipv4_address_can_be_a_source(id->remote.address)) {
+        stayed(outcome, HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE,
+               &counts->from_an_impossible_source);
+        return;
+    }
+
     bool carries_syn = (header->control_bits & TCP_CONTROL_SYN) != 0;
     bool carries_ack = (header->control_bits & TCP_CONTROL_ACK) != 0;
 
