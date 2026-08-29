@@ -2,7 +2,8 @@
 
 Date: 2026-08-29
 Status: accepted
-Issue: hidetzu/tcpip-stack#70
+Raised in: hidetzu/tcpip-stack#70 (a pull request, not an issue — ⚠ **the question
+never had one, and this ADR is where it is settled**)
 
 ## Context
 
@@ -22,6 +23,11 @@ turned out to contain a known error — `CLOSE-WAIT` entering `CLOSING` rather t
 RFC 1122 §4.2.2.20 (a) corrected in 1989 and RFC 9293 §3.10.4 carries. ⚠ **Only that one correction
 was taken**, and hidetzu/tcpip-stack#70 recorded the wider question rather than deciding it in
 passing.
+
+⚠ **hidetzu/tcpip-stack#70 is a pull request.** ⚠ **The question never had an issue of its own**, and
+it was carried in that PR's text, in a comment on hidetzu/tcpip-stack#66, and in several completion
+reports that called it "still open". ⚠ **Referring to it as an issue was wrong**, and ⚠ **this ADR
+is where it is settled** — not a `Closes` line on anything.
 
 ### ⚠ Why it is not a matter of taste
 
