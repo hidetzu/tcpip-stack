@@ -898,6 +898,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "0 segments were addressed to a broadcast or multicast address, which a "
         "connection is never made to\n"
         "0 segments were from an address that can never send anything\n"
+        "0 octets of ours went out again in 0 segments because nobody had "
+        "acknowledged them\n"
         "0 octets of ours left in 0 segments, and 0 times there was no room in the "
         "window they advertised\n"
         "0 were refused for want of room and 0 answers never left the device, which "
@@ -922,6 +924,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.data_segments_we_sent = 1;
     one.data_octets_we_sent = 1;
     one.their_window_had_no_room = 1;
+    one.data_segments_we_sent_again = 1;
+    one.data_octets_we_sent_again = 1;
     one.reset_by_the_other_side = 1;
     one.reset_outside_the_window = 1;
     one.urgent_and_nobody_to_tell = 1;
@@ -964,6 +968,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "1 segment was addressed to a broadcast or multicast address, which a "
         "connection is never made to\n"
         "1 segment was from an address that can never send anything\n"
+        "1 octet of ours went out again in 1 segment because nobody had "
+        "acknowledged them\n"
         "1 octet of ours left in 1 segment, and 1 time there was no room in the "
         "window they advertised\n"
         "1 was refused for want of room and 1 answer never left the device, which "
@@ -1008,6 +1014,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.data_segments_we_sent = 31;
     each.data_octets_we_sent = 32;
     each.their_window_had_no_room = 33;
+    each.data_segments_we_sent_again = 34;
+    each.data_octets_we_sent_again = 35;
     each.reset_by_the_other_side = 27;
     each.reset_outside_the_window = 28;
     each.urgent_and_nobody_to_tell = 29;
@@ -1038,6 +1046,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "26 segments were addressed to a broadcast or multicast address, which a "
         "connection is never made to\n"
         "30 segments were from an address that can never send anything\n"
+        "35 octets of ours went out again in 34 segments because nobody had "
+        "acknowledged them\n"
         "32 octets of ours left in 31 segments, and 33 times there was no room in "
         "the window they advertised\n"
         "16 were refused for want of room and 17 answers never left the device, "

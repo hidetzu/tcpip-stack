@@ -717,6 +717,29 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
             return;
         }
 
+        /* ⚠ RFC 9293 §3.3.1's `SND.UNA`, advanced by an acknowledgment that
+         * covers data of ours.
+         *
+         * ⚠ **Inside `(SND.UNA, SND.NXT]` and nowhere else**: one below is a
+         * duplicate and says nothing new, ⚠ **one above acknowledges something
+         * we never sent** and is not ours to believe
+         * (`.claude/rules/c.md`: everything here is untrusted input).
+         *
+         * ⚠ RFC 6298 §5.2: "When all outstanding data has been acknowledged,
+         * turn off the retransmission timer." ⚠ §5.3: "When an ACK is received
+         * that acknowledges new data, restart the retransmission timer." */
+        if (carries_ack && held->snd_una != header->acknowledgment_number &&
+            at_or_before(held->snd_una, header->acknowledgment_number) &&
+            at_or_before(header->acknowledgment_number, held->snd_nxt)) {
+            held->snd_una = header->acknowledgment_number;
+            if (held->snd_una == held->snd_nxt) {
+                held->waiting_for_an_ack = false;
+            } else {
+                held->send_again_at =
+                    moment_after(now, HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS);
+            }
+        }
+
         if (held->state == CONNECTION_ESTABLISHED && header->data_bytes != 0) {
             enum where_it_sat the_data = take_the_data(held, header, outcome, counts);
             if (the_data == IT_WAS_ACCEPTED) {
@@ -987,7 +1010,7 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
 }
 
 bool handshake_send_what_is_next(struct connections *connections,
-                                 unsigned int mtu,
+                                 unsigned int mtu, struct moment now,
                                  uint8_t time_to_live,
                                  const uint8_t *our_hardware_address,
                                  uint8_t *reply, size_t reply_bytes,
@@ -998,13 +1021,46 @@ bool handshake_send_what_is_next(struct connections *connections,
 
     for (size_t i = 0; i < CONNECTIONS_AT_ONCE; i++) {
         struct transmission_control_block *block = &connections->block[i];
+        /* ⚠ A block with nothing left to send is NOT skipped here: ⚠ **it may
+         * still be waiting for an acknowledgment of what already went**, and
+         * that is exactly the case retransmission exists for. ⚠ The skip is
+         * below, after the deadline has been read. */
         if (!block->in_use || block->state != CONNECTION_ESTABLISHED ||
-            block->still_to_send == 0u) {
+            (block->still_to_send == 0u && !block->waiting_for_an_ack)) {
             continue;
         }
 
         outcome->id = block->id;
         outcome->state = block->state;
+
+        /* ⚠ RFC 6298 §5.4: "Retransmit the earliest segment that has not been
+         * acknowledged by the TCP receiver."
+         *
+         * ⚠ **Winding `SND.NXT` back to `SND.UNA` IS that**, because the octets
+         * are a pattern: everything from `SND.UNA` onward is reproduced exactly
+         * (ADR 0030). ⚠ **A stack with a real send buffer would have to hold the
+         * segments; this one recomputes them**, and `docs/SPEC.md` §2 says so.
+         *
+         * ⚠ **It sends the earliest again and everything after it** — ⚠ that is
+         * more than §5.4 asks for and ⚠ **it is said rather than claimed as the
+         * document's**: with no `SND.WND` change and no fast retransmit, the
+         * rest would follow anyway. */
+        if (block->waiting_for_an_ack && moment_is_at_or_after(now, block->send_again_at)) {
+            uint32_t unacknowledged = block->snd_nxt - block->snd_una;
+            if (unacknowledged != 0u) {
+                block->snd_nxt = block->snd_una;
+                block->still_to_send += unacknowledged;
+                counts->data_segments_we_sent_again++;
+                counts->data_octets_we_sent_again += unacknowledged;
+            }
+            /* ⚠ Cleared so one expiry winds back once. ⚠ It is set again below
+             * when the first segment goes out (§5.1). */
+            block->waiting_for_an_ack = false;
+        }
+
+        if (block->still_to_send == 0u) {
+            continue;
+        }
 
         /* ⚠ RFC 9293 `MUST-16`, per connection: ⚠ **the smaller of what THEY
          * told us and what one of OUR frames carries.** ⚠ `send_mss` is theirs
@@ -1064,6 +1120,17 @@ bool handshake_send_what_is_next(struct connections *connections,
         block->still_to_send -= take;
         counts->data_segments_we_sent++;
         counts->data_octets_we_sent += take;
+
+        /* ⚠ RFC 6298 §5.1: "Every time a packet containing data is sent
+         * (including a retransmission), if the timer is not running, start it
+         * running." ⚠ **Not restarted when it already is** — that would push the
+         * deadline out on every segment of a burst and ⚠ **the earliest
+         * unacknowledged one would never come due.** */
+        if (!block->waiting_for_an_ack) {
+            block->waiting_for_an_ack = true;
+            block->send_again_at =
+                moment_after(now, HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS);
+        }
         outcome->reply = HANDSHAKE_REPLY_THE_DATA_WE_WERE_ASKED_FOR;
         outcome->decision = HANDSHAKE_STAYED;
         outcome->reason = HANDSHAKE_REASON_WE_SENT_WHAT_WE_WERE_ASKED_TO;
@@ -1077,15 +1144,25 @@ bool handshake_next_moment(const struct connections *connections, struct moment 
 {
     for (size_t i = 0; i < CONNECTIONS_AT_ONCE; i++) {
         const struct transmission_control_block *block = &connections->block[i];
-        if (!block->in_use || block->state != CONNECTION_SYN_RECEIVED) {
+        if (!block->in_use) {
             continue;
         }
-        /* ⚠ The earlier of the two, ⚠ compared the way moments must be so it
-         * works across the wrap (`src/moment.h`). */
-        *due = moment_is_at_or_after(block->give_up_at, block->answer_due)
-                   ? block->answer_due
-                   : block->give_up_at;
-        return true;
+        if (block->state == CONNECTION_SYN_RECEIVED) {
+            /* ⚠ The earlier of the two, ⚠ compared the way moments must be so it
+             * works across the wrap (`src/moment.h`). */
+            *due = moment_is_at_or_after(block->give_up_at, block->answer_due)
+                       ? block->answer_due
+                       : block->give_up_at;
+            return true;
+        }
+        /* ⚠ Data of ours nobody has acknowledged (hidetzu/tcpip-stack#129).
+         * ⚠ **Without this the caller would wait without a limit and the
+         * deadline would pass unnoticed** — ⚠ a timer nothing wakes for is not a
+         * timer. */
+        if (block->waiting_for_an_ack) {
+            *due = block->send_again_at;
+            return true;
+        }
     }
     return false;
 }

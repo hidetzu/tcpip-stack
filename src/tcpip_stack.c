@@ -427,7 +427,7 @@ int main(int argc, char **argv)
             struct handshake_outcome sent;
             while (handshake_send_what_is_next(&connections,
                                                frame_bytes_the_device_carries,
-                                               options.time_to_live,
+                                               moment_now(), options.time_to_live,
                                                options.hardware_address,
                                                sending, sizeof sending,
                                                &handshake_counts, &sent)) {
@@ -495,6 +495,20 @@ int main(int argc, char **argv)
                     }
                 }
                 fflush(stdout);
+                continue;
+            }
+            /* ⚠ A wait that our OWN timer ended is not "nothing arrived"
+             * (hidetzu/tcpip-stack#129). ⚠ `handshake_what_is_due` answers only
+             * for a handshake nobody confirmed and a close nobody acknowledged;
+             * ⚠ **data of ours nobody acknowledged is a third thing**, and the
+             * drain at the top of the loop is what acts on it.
+             *
+             * ⚠ **Measured before this line existed**: with one data segment
+             * dropped, the deadline woke the wait, nothing was due by the old
+             * reckoning, ⚠ **and the program reported a read timeout and left
+             * with 0 of 3000 octets delivered.** ⚠ That is `CLAUDE.md` §1's
+             * "not captured ≠ not sent", in the loop rather than in a report. */
+            if (the_timer.set && moment_is_at_or_after(moment_now(), the_timer.at)) {
                 continue;
             }
             report_timeout(stderr, options.device_name, options.timeout_ms, frames_read);
