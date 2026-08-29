@@ -31,6 +31,22 @@
  * headers into the layer that writes prose (`.claude/rules/layers.md`). */
 #define TAP_DEVICE_NAME_MAX 15
 
+/* What to carry on with when the device could not be asked how large a frame it
+ * carries.
+ *
+ * ⚠ **This is a value chosen here. It is not a measurement, and nothing prints
+ * it as though it were** (`CLAUDE.md` §6, and `report_mtu_could_not_be_read`
+ * says so on screen).
+ *
+ * ⚠ 1500 because that is what a tap comes up with when nothing sets it —
+ * measured, `unshare -Urn`, 3 runs, every run 1500 — ⚠ **so it is the likeliest
+ * right answer for a device we could not ask, and still only a guess.**
+ *
+ * ⚠ **Why carry on at all**: one auxiliary thing missing must not take the whole
+ * stack down (`.claude/rules/c.md`), and ⚠ **the alternative was considered and
+ * refused** (hidetzu/tcpip-stack#115 Owner Decision 1). */
+#define TAP_FRAME_BYTES_WHEN_UNKNOWN 1500u
+
 /* Which step failed. ⚠ An enum never reaches a human (`CLAUDE.md` §4). */
 enum tap_step {
     TAP_STEP_NONE = 0,
@@ -39,7 +55,12 @@ enum tap_step {
     TAP_STEP_ATTACH, /* ioctl(TUNSETIFF) */
     TAP_STEP_WAIT,   /* poll(2) */
     TAP_STEP_READ,   /* read(2) */
-    TAP_STEP_WRITE   /* write(2) */
+    TAP_STEP_WRITE,  /* write(2) */
+
+    /* ⚠ Asking the device how large a frame it carries. ⚠ Two syscalls can
+     * fail here and they are one step on purpose: ⚠ **a caller's next move
+     * is the same either way** — the number could not be obtained. */
+    TAP_STEP_MTU     /* socket(2) or ioctl(SIOCGIFMTU) */
 };
 
 struct tap_failure {
@@ -128,5 +149,66 @@ ssize_t tap_read_frame(int fd, uint8_t *buffer, size_t buffer_bytes,
  * (`.claude/rules/c.md`: an uncounted drop is invisible). */
 ssize_t tap_write_frame(int fd, const uint8_t *frame, size_t frame_bytes,
                         struct tap_failure *failure);
+
+/* Ask the device how large a frame it carries.
+ *
+ * ⚠ **`ask`, not the other verb.** ⚠ Two reasons and both matter: ⚠ this is an
+ * `ioctl` question and not a read of octets, ⚠ **and the spelling this function
+ * first had was the shape of the name this program used to carry** —
+ * `tests/static.sh` `the_old_program_name_is_gone` fired on it and ⚠ **it was
+ * right to.** ⚠ **The check was not widened to let a second one through**
+ * (`.claude/rules/testing.md`: never widen a check until it stops complaining),
+ * ⚠ and ⚠ **it fired a second time on the comment that explained the first** —
+ * ⚠ that case does not strip comments, ⚠ **and a check that reads prose about
+ * itself is exactly what `CLAUDE.md` §5 warns of.**
+ *
+ * On success returns 0 and writes the MTU to *mtu. ⚠ On failure returns -1,
+ * *mtu is untouched, and *failure says which syscall and which errno.
+ *
+ * ⚠ **"could not be obtained" is not "it is 1500"** (`CLAUDE.md` §1). ⚠ This
+ * function never substitutes a value, and ⚠ **a caller that carries on with one
+ * says so to the human** (hidetzu/tcpip-stack#115 Owner Decision 1).
+ *
+ * ⚠ **Why a second fd.** ⚠ Measured 2026-08-29, Arch Linux 7.0.2-arch1-1,
+ * `unshare -Urn` as uid 1000, 3 runs, every run identical:
+ *
+ *     SIOCGIFMTU on the TUN fd                    ⚠ EINVAL
+ *     SIOCGIFMTU on an AF_INET SOCK_DGRAM socket  ⚠ succeeds, unprivileged
+ *
+ * ⚠ **So there is no way to read the MTU without one**, and an `AF_INET` socket
+ * in this layer is an owner decision, not a convenience
+ * (hidetzu/tcpip-stack#115 Owner Decision 3).
+ *
+ * ⚠ **Owner of the socket: this function.** ⚠ It is opened, used and closed
+ * before returning; ⚠ **nothing of it escapes** (`.claude/rules/c.md`).
+ *
+ * ⚠ **Setup time, never per packet** (`CLAUDE.md` §3). ⚠ `tests/static.sh`
+ * `the_mtu_is_read_in_one_place` is what holds that.
+ *
+ * ⚠ **The failing path is not exercised by any check.** ⚠ **Measured, not
+ * assumed**: deleting the whole `else` branch at the call site — so a failed
+ * read would print the constant as though the device had reported it —
+ * ⚠ **left every check green** (2026-08-29). ⚠ **That is the checks not
+ * asserting it, and not a mutation with no effect** (`.claude/rules/testing.md`
+ * asks which, and this is the first).
+ *
+ * ⚠ The SENTENCES are asserted — `tests/static.sh` `report_lines` →
+ * `the_mtu_lines_say_which_it_was`, both shapes, and ⚠ **dropping the clause
+ * that says the number was chosen here fails it.** ⚠ **What is not asserted is
+ * that the branch is taken**: no harness here can make the read fail, because
+ * the device exists by the time it is asked — the fd above created it — and
+ * ⚠ **contriving a failure would be testing the contrivance.**
+ *
+ * ⚠ `docs/SPEC.md` §2 names the gap.
+ *
+ * ⚠ **What a tap will actually take**, measured under the conditions above,
+ * 3 runs, every run identical — ⚠ **a property of a tap on this kernel and not
+ * of TCP:**
+ *
+ *     smallest   68        ⚠ 46 and below are refused by the kernel
+ *     largest    65521     ⚠ 65535 and above are refused
+ */
+int tap_ask_mtu(const char *device_name, unsigned int *mtu,
+                 struct tap_failure *failure);
 
 #endif /* TAP_H */

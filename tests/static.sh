@@ -327,6 +327,49 @@ case_moment() {
 # ⚠ It stays because that quote is one edit away from naming the call, and
 # ⚠ **a comment quoting it would then be read as a second reader.** ⚠ That is a
 # reason to keep it, ⚠ **not a claim that it is asserted.**
+# ⚠ hidetzu/tcpip-stack#115 AC 1. ⚠ The MTU is read ONCE, AT SETUP — never on a
+# path a packet takes (`CLAUDE.md` §3: push work to setup time, not to per-packet
+# time).
+#
+# ⚠ Shaped like `the_clock_is_read_in_one_place`, and ⚠ **the comments are
+# stripped first**: this file's own words describe what it looks for, and a check
+# that reads its own description finds itself (`CLAUDE.md` §5).
+case_the_mtu_is_read_in_one_place() {
+    askers=0
+    for source in src/*.c src/*.h; do
+        sed 's|/\*|\n/*\n|g; s|\*/|\n*/\n|g' "$source" |
+            sed '/^\/\*$/,/^\*\/$/d' >"$work/no-comments"
+
+        if grep -qE 'SIOCGIFMTU' "$work/no-comments"; then
+            askers=$((askers + 1))
+            if [ "$source" != "src/tap.c" ]; then
+                note_failure "$source queries the MTU, and only src/tap.c may"
+            fi
+        fi
+    done
+
+    # ⚠ The other half (`verify` §5): finding none would mean the search is not
+    # looking for the thing it names.
+    if [ "$askers" -eq 0 ]; then
+        note_failure "no file in src/ queries the MTU, so this case is not looking for the thing it names"
+        return
+    fi
+
+    # ⚠ And the caller side: ⚠ **tap_ask_mtu is called once, and from the
+    # program's setup — not from anything the read loop reaches.**
+    callers=$(grep -c 'tap_ask_mtu[[:space:]]*(' src/tcpip_stack.c || true)
+    if [ "$callers" -ne 1 ]; then
+        note_failure "src/tcpip_stack.c calls tap_ask_mtu $callers times, and setup calls it once"
+    fi
+    for source in src/handshake.c src/echo_responder.c src/arp_responder.c src/ipv4.c src/tcp.c; do
+        if grep -qE 'tap_ask_mtu|SIOCGIFMTU' "$source"; then
+            note_failure "$source is on the path a packet takes and it queries the MTU"
+        fi
+    done
+
+    printf '    the MTU is queried in 1 file and called once, at setup\n'
+}
+
 case_the_clock_is_read_in_one_place() {
     readers=0
     for source in src/*.c src/*.h; do
@@ -639,5 +682,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case moment ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_clock_is_read_in_one_place the_old_program_name_is_gone a_lowercase_keyword_is_not_called_a_requirement spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case moment ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_clock_is_read_in_one_place the_mtu_is_read_in_one_place the_old_program_name_is_gone a_lowercase_keyword_is_not_called_a_requirement spec_names_checks_that_exist" "$@"
 run_selected_cases

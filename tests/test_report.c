@@ -496,6 +496,50 @@ static bool case_the_ethernet_summary_prints_its_zeros(void)
 
 /* ⚠ The line that opens every run, and ⚠ it had no case at all until
  * hidetzu/tcpip-stack#50 — for the whole life of the program. */
+/* ⚠ hidetzu/tcpip-stack#115. ⚠ Two lines and they are different answers:
+ * ⚠ **what the device said, and that it could not be asked** (`CLAUDE.md` §1).
+ *
+ * ⚠ The failing line must never read as a measurement — ⚠ **it says the number
+ * carried on with was chosen here.** */
+static bool case_the_mtu_lines_say_which_it_was(void)
+{
+    struct produced produced;
+    produced_open(&produced);
+    report_mtu(produced.out, "tap0", 1500);
+    bool ok = matches("what the device said", &produced,
+        "tap0 carries frames of up to 1500 bytes\n");
+    produced_close(&produced);
+
+    /* ⚠ Not 1500: a second value, so a line printing a constant where the
+     * argument belongs cannot pass (`verify` §5). */
+    produced_open(&produced);
+    report_mtu(produced.out, "tap9", 1400);
+    ok = matches("a second device and a second size", &produced,
+        "tap9 carries frames of up to 1400 bytes\n") && ok;
+    produced_close(&produced);
+
+    struct tap_failure could_not_ask = { TAP_STEP_MTU, ENODEV };
+    produced_open(&produced);
+    report_mtu_could_not_be_read(produced.out, "tap0", &could_not_ask, 1500);
+    ok = matches("could not be asked", &produced,
+        "could not ask tap0 how large a frame it carries: No such device\n"
+        "  Carrying on with 1500 bytes, which is a value chosen here and not one "
+        "this device reported.\n") && ok;
+    produced_close(&produced);
+
+    /* ⚠ The syscalls succeeded and the answer was not a size. ⚠ There is no
+     * errno to name, and the line must not print `Success`. */
+    struct tap_failure not_a_size = { TAP_STEP_MTU, 0 };
+    produced_open(&produced);
+    report_mtu_could_not_be_read(produced.out, "tap0", &not_a_size, 1500);
+    ok = matches("no errno to name", &produced,
+        "could not ask tap0 how large a frame it carries: the answer was not a size.\n"
+        "  Carrying on with 1500 bytes, which is a value chosen here and not one "
+        "this device reported.\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
 static bool case_the_listening_line(void)
 {
     struct produced produced;
@@ -1066,6 +1110,7 @@ static const struct test_case cases[] = {
     { "the_echo_summary_counts_every_reason_apart",
       case_the_echo_summary_counts_every_reason_apart },
     { "the_listening_line", case_the_listening_line },
+    { "the_mtu_lines_say_which_it_was", case_the_mtu_lines_say_which_it_was },
     { "every_option_problem_has_its_own_sentence",
       case_every_option_problem_has_its_own_sentence },
     { "failing_to_arrange_a_clean_stop_names_its_errno",

@@ -298,6 +298,24 @@ int main(int argc, char **argv)
     }
 
     report_listening(stdout, options.device_name);
+
+    /* ⚠ Setup time, once, and never again (`CLAUDE.md` §3). ⚠ The device exists
+     * by now — the fd above created it — so this is the first moment it can be
+     * asked.
+     *
+     * ⚠ **A device that cannot say how large a frame it carries does not stop
+     * the stack** (hidetzu/tcpip-stack#115 Owner Decision 1, and
+     * `.claude/rules/c.md`: one missing auxiliary thing must not take the whole
+     * stack down). ⚠ **What it does do is say so**, and say that the number
+     * carried on with is ours. */
+    unsigned int frame_bytes_the_device_carries = TAP_FRAME_BYTES_WHEN_UNKNOWN;
+    struct tap_failure asking = { TAP_STEP_NONE, 0 };
+    if (tap_ask_mtu(options.device_name, &frame_bytes_the_device_carries, &asking) == 0) {
+        report_mtu(stdout, options.device_name, frame_bytes_the_device_carries);
+    } else {
+        report_mtu_could_not_be_read(stdout, options.device_name, &asking,
+                                     frame_bytes_the_device_carries);
+    }
     fflush(stdout);
 
     /* ⚠ Owner of this buffer: main. It lives as long as the loop and nothing

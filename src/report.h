@@ -21,6 +21,32 @@
 
 void report_listening(FILE *out, const char *device_name);
 
+/* What the device said when it was asked how large a frame it carries.
+ *
+ * ⚠ **Its own line, and the `listening on ...` line above is untouched.** ⚠ That
+ * sentence is an owner decision (hidetzu/tcpip-stack#2) and the checks assert it
+ * byte for byte; ⚠ **adding to it would change a decision this issue was not
+ * given** (hidetzu/tcpip-stack#115).
+ *
+ * ⚠ **"bytes", not "MTU"**: the reader is told what it means, not what it is
+ * called (`CLAUDE.md` §4). */
+void report_mtu(FILE *out, const char *device_name, unsigned int mtu);
+
+/* ⚠ The device could not be asked, ⚠ **which is not the same as a small
+ * device** (`CLAUDE.md` §1).
+ *
+ * ⚠ Says what happened, what was done instead, and ⚠ **that the number now in
+ * use was chosen here rather than reported by the device** — ⚠ so nothing on
+ * screen can be mistaken for a measurement (hidetzu/tcpip-stack#115 Owner
+ * Decision 1: the stack carries on, and it says so).
+ *
+ * ⚠ `failure->errnum` is 0 when there was no errno to name — the syscalls
+ * succeeded and the answer was not a size. ⚠ The line says that rather than
+ * printing `Success`. */
+void report_mtu_could_not_be_read(FILE *out, const char *device_name,
+                                  const struct tap_failure *failure,
+                                  unsigned int carrying_on_with);
+
 /* `filled_buffer` is true when the read returned exactly as many bytes as the
  * buffer holds. ⚠ The length is then unknown, and the line says so rather than
  * printing it as if it were measured (`CLAUDE.md` §1). */

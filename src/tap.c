@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 /* ⚠ Two places name the same limit. This is the mechanical cross-check that
@@ -136,4 +137,49 @@ ssize_t tap_write_frame(int fd, const uint8_t *frame, size_t frame_bytes,
         return -1;
     }
     return written;
+}
+
+int tap_ask_mtu(const char *device_name, unsigned int *mtu,
+                 struct tap_failure *failure)
+{
+    set_failure(failure, TAP_STEP_NONE, 0);
+
+    /* ⚠ Checked before it is copied into a fixed-size field, the same way
+     * tap_attach does. */
+    size_t name_length = strlen(device_name);
+    if (name_length == 0 || name_length > TAP_DEVICE_NAME_MAX) {
+        set_failure(failure, TAP_STEP_NAME, 0);
+        return -1;
+    }
+
+    /* ⚠ The TUN fd cannot answer this — measured, EINVAL (see tap.h). ⚠ The
+     * socket is this function's and does not outlive it. */
+    int asking = socket(AF_INET, SOCK_DGRAM, 0);
+    if (asking < 0) {
+        set_failure(failure, TAP_STEP_MTU, errno);
+        return -1;
+    }
+
+    struct ifreq request;
+    memset(&request, 0, sizeof request);
+    memcpy(request.ifr_name, device_name, name_length + 1);
+
+    if (ioctl(asking, SIOCGIFMTU, &request) < 0) {
+        int asking_errno = errno;
+        close(asking);
+        set_failure(failure, TAP_STEP_MTU, asking_errno);
+        return -1;
+    }
+    close(asking);
+
+    /* ⚠ The kernel's field is a signed int. ⚠ A negative value has never been
+     * observed here and nothing proves it cannot arrive, so it is refused
+     * rather than cast into a large unsigned number (`CLAUDE.md` §1). */
+    if (request.ifr_mtu < 0) {
+        set_failure(failure, TAP_STEP_MTU, 0);
+        return -1;
+    }
+
+    *mtu = (unsigned int)request.ifr_mtu;
+    return 0;
 }
