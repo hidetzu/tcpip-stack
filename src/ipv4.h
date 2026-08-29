@@ -154,6 +154,29 @@ enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes
 #define IPV4_TIME_TO_LIVE_WE_SEND 64u
 #define IPV4_IDENTIFICATION_WE_SEND 0u
 
+/* ⚠ Is this address one a connection must never be made to?
+ *
+ * ⚠ RFC 9293 `MUST-57`: "A TCP implementation MUST silently discard an incoming
+ * SYN segment that is addressed to a broadcast or multicast address." ⚠ The
+ * document gives the reason beside it: "This prevents connection state and
+ * replies from being erroneously created."
+ *
+ * ⚠ **Two of the three kinds, and the third is named rather than pretended
+ * away** (hidetzu/tcpip-stack#99 Owner Decision):
+ *
+ *     255.255.255.255     ⚠ the limited broadcast — recognisable from the
+ *                         address alone
+ *     224.0.0.0/4         ⚠ multicast — RFC 791 §3.2: "the first four bits
+ *                         being 1110"
+ *     10.0.0.255 etc.     ⚠ **a directed broadcast, and this returns false for
+ *                         it** — ⚠ **it cannot be told from a host address
+ *                         without a netmask, and nothing here has one.**
+ *
+ * ⚠ **So `MUST-57` is met in part**, and `docs/conformance.md` says which part.
+ * ⚠ Claiming it met on the strength of the two that are easy would be the
+ * shape `CLAUDE.md` §1 forbids. */
+bool ipv4_address_is_broadcast_or_multicast(const uint8_t *address);
+
 /* Why a datagram was not built. ⚠ An enum never reaches a human. */
 enum ipv4_build {
     IPV4_BUILD_OK = 0,

@@ -2097,6 +2097,88 @@ static bool case_the_time_to_live_we_send_with_is_the_callers(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#99. ⚠ RFC 9293 `MUST-57`: "A TCP implementation MUST
+ * silently discard an incoming SYN segment that is addressed to a broadcast or
+ * multicast address ... This prevents connection state and replies from being
+ * erroneously created."
+ *
+ * ⚠ **Met in part, and the part is asserted here.** ⚠ A directed broadcast
+ * cannot be told from a host address without a netmask, ⚠ **and nothing here has
+ * one** — `docs/conformance.md` says which part is met. */
+static bool case_a_segment_addressed_to_everyone_is_refused(void)
+{
+    static const struct { unsigned char address[4]; const char *what; } to[] = {
+        { { 255, 255, 255, 255 }, "the limited broadcast" },
+        { { 224, 0, 0, 1 }, "a multicast address at the bottom of the range" },
+        { { 239, 255, 255, 255 }, "a multicast address at the top of it" },
+    };
+
+    bool ok = true;
+    for (size_t i = 0; i < sizeof to / sizeof to[0]; i++) {
+        struct world world;
+        a_world(&world);
+        struct connection_id id = the_connection();
+        memcpy(id.local.address, to[i].address, CONNECTION_ADDRESS_BYTES);
+        struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        struct handshake_outcome outcome;
+        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+                          THEIR_MAC, OUR_MAC, &world.connections, world.reply,
+                          sizeof world.reply, &world.counts, &outcome);
+
+        if (outcome.reason != HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE ||
+            world.counts.addressed_to_everyone != 1) {
+            fprintf(stderr, "  %s came back as reason %d\n", to[i].what,
+                    (int)outcome.reason);
+            ok = false;
+        }
+        /* ⚠ **No state and no reply** — the two things the document's reason
+         * names. */
+        if (outcome.reply_bytes != 0 || connections_find(&world.connections, &id) != NULL ||
+            world.counts.opened != 0) {
+            fprintf(stderr, "  %s left %zu octets built or a connection held\n",
+                    to[i].what, outcome.reply_bytes);
+            ok = false;
+        }
+    }
+
+    /* ⚠ The other half: ⚠ **an ordinary address is still answered**, or
+     * refusing these would pass for a stack that refuses everything. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_one(&world, THEIR_ISN, &held)) {
+            fputs("  an ordinary address was refused too\n", stderr);
+            ok = false;
+        } else if (world.counts.addressed_to_everyone != 0) {
+            fputs("  an ordinary address was counted as a broadcast\n", stderr);
+            ok = false;
+        }
+    }
+
+    /* ⚠ And the part that is NOT met, pinned so it cannot be claimed by
+     * accident: ⚠ **a directed broadcast is answered**, because it cannot be
+     * told from a host address here. ⚠ **This case fails if that ever changes
+     * silently** — the change would have to say so. */
+    {
+        struct world world;
+        a_world(&world);
+        struct connection_id id = the_connection();
+        id.local.address[3] = 255;
+        struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        struct handshake_outcome outcome;
+        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+                          THEIR_MAC, OUR_MAC, &world.connections, world.reply,
+                          sizeof world.reply, &world.counts, &outcome);
+        if (outcome.reason == HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE) {
+            fputs("  a directed broadcast was refused, which this build cannot do "
+                  "without a netmask — say so and update docs/conformance.md\n", stderr);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 /* ⚠ AC 5. ⚠ **Nothing is sent for a connection that has not seen a FIN**, so
  * this change cannot pass for a stack that sends on everything. */
 static bool case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin(void)
@@ -3043,6 +3125,8 @@ static const struct test_case cases[] = {
       case_a_duplicate_and_a_segment_ahead_are_told_apart_at_the_wrap },
     { "the_time_to_live_we_send_with_is_the_callers",
       case_the_time_to_live_we_send_with_is_the_callers },
+    { "a_segment_addressed_to_everyone_is_refused",
+      case_a_segment_addressed_to_everyone_is_refused },
     { "nothing_is_sent_for_a_connection_that_has_not_seen_a_fin",
       case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin },
     { "what_goes_out_again_for_a_closing_connection_is_our_close",

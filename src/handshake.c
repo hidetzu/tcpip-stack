@@ -407,6 +407,15 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     outcome->id = *id;
     outcome->state = CONNECTION_LISTEN;
 
+    /* ⚠ Before anything is looked up or taken. ⚠ RFC 9293 `MUST-57`'s reason is
+     * "This prevents connection state and replies from being erroneously
+     * created", so ⚠ **this has to come before either could happen.** */
+    if (ipv4_address_is_broadcast_or_multicast(id->local.address)) {
+        stayed(outcome, HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE,
+               &counts->addressed_to_everyone);
+        return;
+    }
+
     bool carries_syn = (header->control_bits & TCP_CONTROL_SYN) != 0;
     bool carries_ack = (header->control_bits & TCP_CONTROL_ACK) != 0;
 

@@ -670,6 +670,9 @@ static bool case_a_handshake_outcome_says_what_moved_and_why(void)
         { HANDSHAKE_REASON_NO_CONNECTION_HELD,
           "  no answer: nothing here is expecting a segment from 10.0.0.1:50568\n" },
         /* ⚠ Ours, and it says so. */
+        { HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE,
+          "  no answer: that was addressed to a broadcast or multicast address,\n"
+          "    and a connection is never made to one\n" },
         { HANDSHAKE_REASON_NO_ROOM,
           "  no answer: we are already holding a connection, and this build has\n"
           "    room for one. That is ours, not the sender's\n" },
@@ -811,6 +814,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "the other side closed 0 connections. 0 FINs arrived that we had read "
         "already, 0 began past what we were waiting for, and 0 named a connection we "
         "hold nothing for\n"
+        "0 segments were addressed to a broadcast or multicast address, which a "
+        "connection is never made to\n"
         "0 were refused for want of room and 0 answers never left the device, which "
         "are ours and not the sender's\n");
     produced_close(&produced);
@@ -828,6 +833,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.answered_again = 1;
     one.answered = 1;
     one.room.refused_for_want_of_room = 1;
+    one.addressed_to_everyone = 1;
     one.data_acknowledged = 1;
     one.told_them_where_we_are = 1;
     one.octets_taken_and_discarded = 1;
@@ -861,6 +867,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "the other side closed 1 connection. 1 FIN arrived that we had read already, "
         "1 began past what we were waiting for, and 1 named a connection we hold "
         "nothing for\n"
+        "1 segment was addressed to a broadcast or multicast address, which a "
+        "connection is never made to\n"
         "1 was refused for want of room and 1 answer never left the device, which "
         "are ours and not the sender's\n") && ok;
     produced_close(&produced);
@@ -898,6 +906,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.fin_that_begins_too_far_ahead = 24;
     each.fin_we_could_not_place = 15;
     each.room.refused_for_want_of_room = 16;
+    each.addressed_to_everyone = 26;
     each.we_could_not_build_the_reply = 17;
 
     produced_open(&produced);
@@ -919,6 +928,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "the other side closed 13 connections. 14 FINs arrived that we had read "
         "already, 24 began past what we were waiting for, and 15 named a connection "
         "we hold nothing for\n"
+        "26 segments were addressed to a broadcast or multicast address, which a "
+        "connection is never made to\n"
         "16 were refused for want of room and 17 answers never left the device, "
         "which are ours and not the sender's\n") && ok;
     produced_close(&produced);

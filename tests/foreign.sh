@@ -1871,6 +1871,77 @@ for protocol, name in ((tcp, "tcp"), (icmp, "icmp")):
     printf '    the default is %s\n' "${default%u}"
 }
 
+# ⚠ hidetzu/tcpip-stack#99. ⚠ RFC 9293 `MUST-57` on the wire, ⚠ **and the part
+# that is not met asserted beside it.**
+#
+# ⚠ Measured before the change, same conditions, 2026-08-29: with
+# `--ipv4 10.0.0.255` a `SYN` to `10.0.0.255` opened a connection and was
+# answered. ⚠ **That one still does** — a directed broadcast cannot be told from
+# a host address without a netmask, ⚠ **and this case pins it so the gap cannot
+# close by accident.**
+inside_a_syn_to_everyone_is_not_answered() {
+    our_mac=02:00:00:00:00:02
+    for ours in 255.255.255.255 224.0.0.1 10.0.0.2; do
+        "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+            --timeout 1500 >"$work/out-$ours.txt" 2>&1 &
+        reader=$!
+        if ! wait_for_interface tap0; then
+            note_failure "tap0 never appeared while the stack was attached for $ours"
+            kill "$reader" 2>/dev/null
+            wait "$reader" 2>/dev/null
+            return
+        fi
+        sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+        ip addr add 10.0.0.1/24 dev tap0
+        ip link set tap0 up
+
+        LC_ALL=C python3 -c '
+import socket, struct, sys
+def sum_of(o):
+    t = 0
+    for i in range(0, len(o) - 1, 2): t += (o[i] << 8) | o[i + 1]
+    if len(o) % 2: t += o[-1] << 8
+    while t >> 16: t = (t & 0xffff) + (t >> 16)
+    return (~t) & 0xffff
+OURS = bytes.fromhex(sys.argv[1].replace(":", ""))
+source = socket.inet_aton("10.0.0.99")
+destination = socket.inet_aton(sys.argv[2])
+segment = struct.pack("!HHIIBBHHH", 41000, 80, 1000, 0, 5 << 4, 0x02, 64240, 0, 0)
+pseudo = source + destination + bytes([0, 6, 0, len(segment)])
+segment = segment[:16] + struct.pack("!H", sum_of(pseudo + segment)) + segment[18:]
+header = struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(segment), 1, 0, 64, 6, 0) \
+    + source + destination
+header = header[:10] + struct.pack("!H", sum_of(header)) + header[12:]
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.send(OURS + b"\x02\xaa\xaa\xaa\xaa\xaa" + b"\x08\x00" + header + segment)
+' "$our_mac" "$ours" >"$work/sent.txt" 2>&1
+        sleep 0.6
+        kill -INT "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        ip link del tap0 2>/dev/null
+    done
+
+    # ⚠ The two the address alone can name: refused, and ⚠ **no connection
+    # opened**, which is the reason the document gives.
+    for ours in 255.255.255.255 224.0.0.1; do
+        assert_file_contains "$work/out-$ours.txt" \
+            "1 segment was addressed to a broadcast or multicast address" \
+            "a SYN to $ours is refused and counted"
+        assert_file_contains "$work/out-$ours.txt" "0 connections were opened and 0 answered" \
+            "no connection state was created for $ours"
+    done
+    # ⚠ The other half: ⚠ **an ordinary address is still answered.**
+    assert_file_contains "$work/out-10.0.0.2.txt" "1 connection was opened and 1 answered" \
+        "an ordinary address is still answered"
+    assert_file_contains "$work/out-10.0.0.2.txt" \
+        "0 segments were addressed to a broadcast or multicast address" \
+        "an ordinary address is not counted as a broadcast"
+
+    printf '    a SYN to 255.255.255.255 and to 224.0.0.1 opened nothing; one to\n'
+    printf '    10.0.0.2 opened a connection. ⚠ A directed broadcast is not covered\n'
+}
+
 # ⚠ The half that stops the case above passing for a stack that never looked at
 # a checksum (hidetzu/tcpip-stack#44 AC 2, and `CLAUDE.md` §1).
 #
@@ -2003,6 +2074,9 @@ case_a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it() {
 case_the_time_to_live_we_were_given_reaches_the_wire() {
     in_namespace the_time_to_live_we_were_given_reaches_the_wire
 }
+case_a_syn_to_everyone_is_not_answered() {
+    in_namespace a_syn_to_everyone_is_not_answered
+}
 case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
     in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
 }
@@ -2013,7 +2087,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)
