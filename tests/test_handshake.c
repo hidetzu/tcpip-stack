@@ -2110,7 +2110,7 @@ static bool case_the_time_to_live_we_send_with_is_the_callers(void)
 /* ⚠ hidetzu/tcpip-stack#99. ⚠ RFC 9293 `MUST-57`: "A TCP implementation MUST
  * silently discard an incoming SYN segment that is addressed to a broadcast or
  * multicast address ... This prevents connection state and replies from being
- * erroneously created."
+ * erroneously generated."
  *
  * ⚠ **Met in part, and the part is asserted here.** ⚠ A directed broadcast
  * cannot be told from a host address without a netmask, ⚠ **and nothing here has
