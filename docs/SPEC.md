@@ -109,7 +109,7 @@ they are different things and the difference is stated, not implied.
 
 ## ⚠ 2-1. Which document binds
 
-⚠ **RFC 9293 (STD 7) is the normative baseline for TCP** (ADR 0024, hidetzu/tcpip-stack#70).
+⚠ **RFC 9293 (STD 7) is the normative baseline for TCP** (ADR 0024). ⚠ The question was raised in hidetzu/tcpip-stack#70, ⚠ **which is a pull request and not an issue** — it never had one, and ADR 0024 is where it is settled.
 ⚠ **RFC 793 is informative** — historical explanation and design intent. ⚠ What RFC 9293 leaves to
 other RFCs is added ⚠ **one function at a time, when that function is implemented.**
 
