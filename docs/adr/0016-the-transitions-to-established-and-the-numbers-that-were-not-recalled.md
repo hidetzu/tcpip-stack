@@ -69,6 +69,27 @@ carries the sequence number the first one did — `IRS`, which is below `RCV.NXT
 an ack would have been sent; ⚠ **nothing is sent here**, and `docs/SPEC.md` §2
 names that gap.
 
+⚠ **Re-read against RFC 9293 on 2026-08-29** (ADR 0024, hidetzu/tcpip-stack#87).
+⚠ **The reading still holds and is still ours**: RFC 9293 §3.10.7.4's Table 6
+gives the same acceptability test, and a bare `SYN` at `IRS` against
+`RCV.NXT = IRS+1` fails it, ⚠ **so the fourth step is not reached.** ⚠ The
+document does not say in as many words that a retransmission is not that error;
+⚠ **the step is ours to place, and it is placed the same way.**
+
+⚠ **The step it lands in changed, and it changed what we owe.** ⚠ RFC 793 said
+"an ack would have been sent"; ⚠ **RFC 9293 §3.10.7.4 says it outright**: "If an
+incoming segment is not acceptable, an acknowledgment should be sent in reply
+(unless the RST bit is set, if so drop the segment and return):
+`<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>`."
+
+⚠ **hidetzu/tcpip-stack#80 sends that acknowledgment for refused data and a
+refused `FIN`, and NOT for a retransmitted SYN.** ⚠ **That is a contradiction,
+not a gap that was named** — hidetzu/tcpip-stack#89 owns it.
+
+⚠ **The other reading in this ADR is untouched**: `SND.UNA =< SEG.ACK =< SND.NXT`
+is the document's own sentence in both, and accepting both ends is reading it,
+not extending it.
+
 ## Decision
 
 ### ⚠ Owner Decision 1 — the initial send sequence number is `0xdeadbeef`

@@ -143,6 +143,23 @@ sentence quoted so far was read from RFC 793 and is what RFC 793 says.
   reading one out of RFC 793** — several of this repository's decisions rest on RFC 793 stating
   something without telling a receiver what to do.
 
+## ⚠ Re-read against RFC 9293 on 2026-08-29
+
+⚠ ADR 0024 made RFC 9293 the baseline, and hidetzu/tcpip-stack#87 re-read this ADR.
+
+⚠ **Owner Decision 1 is still ours, and for the same reason.** ⚠ RFC 9293 §3.10.4
+keeps the user: the `CLOSE` call is what moves `CLOSE-WAIT` on, and §3.6 keeps
+`CLOSE-WAIT`'s definition as waiting for a request "from the local user".
+⚠ **There is still no user here**, so ⚠ **what happens instead is still a
+decision and not a reading.**
+
+⚠ **`TIME-WAIT` is still not ours**: RFC 9293 §3.6 puts it on the side that
+closed first, exactly as RFC 793's figures did.
+
+⚠ **The one thing that stopped being ours is the contradiction itself** —
+`CLOSE-WAIT` → `LAST-ACK` — ⚠ **which RFC 9293 §3.10.4 simply states.** ⚠ The
+section below already records that.
+
 ## Consequences
 
 - ⚠ **`CONNECTION_CLOSE_WAIT` exists and `LAST-ACK` does not.** ⚠ A state with no transition into it

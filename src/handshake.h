@@ -65,14 +65,20 @@
  * Time. ⚠ **Nothing here measures a round trip**, so ⚠ **this stack does not do
  * what the document asks**, and `docs/SPEC.md` §2 names that gap.
  *
- * ⚠ 1000 is the document's own example lower bound — "LBOUND is a lower bound on
- * the timeout (e.g., 1 second)". ⚠ **Going below it would mean going under the
- * only floor the document offers, and the reason would have been that a check is
+ * ⚠ 1000 was RFC 793's own example lower bound — "LBOUND is a lower bound on the
+ * timeout (e.g., 1 second)" — and ⚠ **going below it would have meant going
+ * under the only floor that document offered, for the reason that a check is
  * cheaper that way** (hidetzu/tcpip-stack#57 Owner Decision 1).
  *
- * ⚠ 3000 is ours and has no grounds in the document. ⚠ Its example upper bound is
- * a minute; ⚠ **a check that waits a minute would change what the real tier
- * costs by an order of magnitude** (`docs/SPEC.md` §3 holds what it costs).
+ * ⚠ **RFC 9293 is the baseline now (ADR 0024) and contains no such sentence** —
+ * ⚠ measured, no `LBOUND` and no "e.g., 1 second". ⚠ It defers the algorithm to
+ * RFC 6298, which ⚠ **ADR 0024 clause 3 does not pull in** because nothing here
+ * measures a round trip. ⚠ **So 1000 is ours too now**
+ * (hidetzu/tcpip-stack#87), and neither number is presented as a reading.
+ *
+ * ⚠ 3000 is ours and has no grounds in either document. ⚠ RFC 793's example upper
+ * bound is a minute; ⚠ **a check that waits a minute would change what the real
+ * tier costs by an order of magnitude** (`docs/SPEC.md` §3 holds what it costs).
  * ⚠ **Chosen for what a check can afford, and recorded as that** (ADR 0019).
  *
  * ⚠ So the answer goes out again twice — after a second and after two — and
