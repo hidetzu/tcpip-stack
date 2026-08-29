@@ -135,7 +135,7 @@ static void write_16(uint8_t *at, uint16_t value)
 
 enum ipv4_build ipv4_build_datagram(const uint8_t *source_address,
                                     const uint8_t *destination_address,
-                                    uint8_t protocol,
+                                    uint8_t protocol, uint8_t time_to_live,
                                     const uint8_t *payload, size_t payload_bytes,
                                     uint8_t *datagram, size_t datagram_bytes,
                                     size_t *built_bytes)
@@ -168,7 +168,7 @@ enum ipv4_build ipv4_build_datagram(const uint8_t *source_address,
     /* ⚠ All three flag bits clear and Fragment Offset 0, in the one field they
      * share. ⚠ Don't Fragment clear is Owner Decision 2, not a reading. */
     write_16(datagram + FLAGS_AND_OFFSET_OFFSET, 0);
-    datagram[TIME_TO_LIVE_OFFSET] = (uint8_t)IPV4_TIME_TO_LIVE_WE_SEND;
+    datagram[TIME_TO_LIVE_OFFSET] = time_to_live;
     datagram[PROTOCOL_OFFSET] = protocol;
     memcpy(datagram + SOURCE_ADDRESS_OFFSET, source_address, IPV4_ADDRESS_BYTES);
     memcpy(datagram + DESTINATION_ADDRESS_OFFSET, destination_address, IPV4_ADDRESS_BYTES);

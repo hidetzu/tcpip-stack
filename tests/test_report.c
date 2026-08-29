@@ -939,6 +939,8 @@ static bool case_every_option_problem_has_its_own_sentence(void)
         { OPTION_PROTOCOL_ADDRESS,
           "--ipv4 takes four octets from 0 to 255, as 10.0.0.2.\n" },
         { OPTION_TCP_PORT, "--tcp-port takes a whole number from 1 to 65535.\n" },
+        { OPTION_TIME_TO_LIVE,
+          "--ttl takes a whole number from 1 to 255.\n" },
         { OPTION_COUNT, "--count takes a whole number of frames, 0 or more.\n" },
         { OPTION_TIMEOUT,
           "--timeout takes a whole number of milliseconds, 0 or more.\n" },

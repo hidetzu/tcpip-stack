@@ -100,7 +100,7 @@ and ⚠ **that is different from having no requirements.**
 
 | ID | Requirement, quoted | Verdict |
 |---|---|---|
-| `MUST-49` | "Time to Live (TTL): The TTL value used to send TCP segments MUST be configurable" | ⚠ **not met** — hidetzu/tcpip-stack#103. ⚠ `ipv4_build_datagram` writes 64, ⚠ **written once and not reachable from any option.** ⚠ `docs/SPEC.md` §1 records the value; ⚠ **it did not record that it cannot be changed** |
+| `MUST-49` | "Time to Live (TTL): The TTL value used to send TCP segments MUST be configurable" | ⚠ **met** since hidetzu/tcpip-stack#103 — `--ttl`, 1 to 255, default 64. ⚠ `tests/static.sh` `handshake` → `the_time_to_live_we_send_with_is_the_callers` reads the built header back at four values; ⚠ `tests/foreign.sh` `the_time_to_live_we_were_given_reaches_the_wire` reads it off the wire ⚠ **at 42, which is not the default** — otherwise neither could tell a setting from a constant. ⚠ **The ICMP echo reply shares the value** (Owner Decision), which ⚠ **claims slightly more than this requirement asks** |
 | `MUST-38` | "Sender SWS-Avoidance Algorithm" | ⚠ **does not arise** — ⚠ **this stack sends no data** |
 | `SHLD-7` | "Nagle algorithm" | ⚠ **does not arise** — ⚠ same |
 | `MUST-17` | "* Application can disable Nagle algorithm" | ⚠ **does not arise** — ⚠ conditional on Nagle, and ⚠ **there is no application** (ADR 0022) |

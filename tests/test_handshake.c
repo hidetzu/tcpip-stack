@@ -91,7 +91,7 @@ static struct handshake_outcome receive(struct world *world,
 {
     struct connection_id id = the_connection();
     struct handshake_outcome outcome;
-    handshake_receive(header, &id, OUR_PORT, world->now, THEIR_MAC, OUR_MAC, &world->connections,
+    handshake_receive(header, &id, OUR_PORT, world->now, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world->connections,
                       world->reply, sizeof world->reply, &world->counts, &outcome);
     return outcome;
 }
@@ -291,7 +291,7 @@ static bool case_the_window_still_works_where_the_sequence_space_wraps(void)
             a_segment(TCP_CONTROL_ACK, THEIR_ISN + 1u, around_the_wrap[i].ack);
         unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&ack, &id, OUR_PORT, at(0), THEIR_MAC, OUR_MAC, &connections, reply,
+        handshake_receive(&ack, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                           sizeof reply, &counts, &outcome);
 
         bool established = outcome.decision == HANDSHAKE_MOVED &&
@@ -553,7 +553,7 @@ static bool case_an_answer_that_would_not_fit_is_counted_as_ours(void)
         struct connection_id id = the_connection();
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, at(0), THEIR_MAC, OUR_MAC, &connections, reply,
+        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                           room, &counts, &outcome);
 
         if (outcome.decision != HANDSHAKE_STAYED ||
@@ -589,7 +589,7 @@ static bool case_an_answer_that_would_not_fit_is_counted_as_ours(void)
     struct connection_id id = the_connection();
     struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
     struct handshake_outcome outcome;
-    handshake_receive(&syn, &id, OUR_PORT, at(0), THEIR_MAC, OUR_MAC, &connections, reply,
+    handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                       needed, &counts, &outcome);
     if (outcome.decision != HANDSHAKE_MOVED || outcome.reply_bytes != needed) {
         fprintf(stderr, "  exactly %zu octets of room was declined, reason %d\n", needed,
@@ -1024,7 +1024,7 @@ static bool case_an_acknowledgment_that_would_not_fit_is_counted_as_ours(void)
     struct tcp_header data =
         carrying(a_segment(TCP_CONTROL_ACK, was, held->iss + 1u), 1);
     struct handshake_outcome outcome;
-    handshake_receive(&data, &id, OUR_PORT, at(0), THEIR_MAC, OUR_MAC, &world.connections,
+    handshake_receive(&data, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world.connections,
                       no_room, sizeof no_room, &world.counts, &outcome);
 
     if (outcome.reason != HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY ||
@@ -2052,6 +2052,51 @@ static bool case_a_duplicate_and_a_segment_ahead_are_told_apart_at_the_wrap(void
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#103. ⚠ **The `Time to Live` we send with is the
+ * caller's**, not a constant reachable from nothing.
+ *
+ * ⚠ RFC 9293 `MUST-49`: "The TTL value used to send TCP segments MUST be
+ * configurable."
+ *
+ * ⚠ **Asserted at a value that is not the default**, ⚠ **or the check could not
+ * tell a setting from a constant** — and at the default too, so ⚠ **a build that
+ * ignored the parameter and a build that ignored the default both show.** */
+static bool case_the_time_to_live_we_send_with_is_the_callers(void)
+{
+    static const uint8_t values[] = { 1u, 42u, IPV4_TIME_TO_LIVE_WE_SEND, 255u };
+    bool ok = true;
+
+    for (size_t i = 0; i < sizeof values / sizeof values[0]; i++) {
+        struct world world;
+        a_world(&world);
+        struct connection_id id = the_connection();
+        struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        struct handshake_outcome outcome;
+        handshake_receive(&syn, &id, OUR_PORT, at(0), values[i], THEIR_MAC, OUR_MAC,
+                          &world.connections, world.reply, sizeof world.reply,
+                          &world.counts, &outcome);
+        if (outcome.reply_bytes == 0) {
+            fprintf(stderr, "  nothing was built at a time to live of %u\n", values[i]);
+            ok = false;
+            continue;
+        }
+        struct ipv4_header internet;
+        if (ipv4_parse_header(world.reply + ETHERNET_HEADER_BYTES,
+                              outcome.reply_bytes - ETHERNET_HEADER_BYTES,
+                              &internet) != IPV4_PARSE_OK) {
+            fprintf(stderr, "  the header built at %u did not read back\n", values[i]);
+            ok = false;
+            continue;
+        }
+        if (internet.time_to_live != values[i]) {
+            fprintf(stderr, "  asked for a time to live of %u and the datagram carries %u\n",
+                    values[i], internet.time_to_live);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 /* ⚠ AC 5. ⚠ **Nothing is sent for a connection that has not seen a FIN**, so
  * this change cannot pass for a stack that sends on everything. */
 static bool case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin(void)
@@ -2108,7 +2153,7 @@ static bool case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin(void)
         struct handshake_outcome outcome;
         enum handshake_due due =
             handshake_what_is_due(&world.connections,
-                                  at(HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS * 10), OUR_MAC,
+                                  at(HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS * 10), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                                   world.reply, sizeof world.reply, &world.counts, &outcome);
         if (due != HANDSHAKE_NOTHING_DUE || outcome.reply_bytes != 0) {
             fprintf(stderr, "  an open connection was due %d with %zu octets\n",
@@ -2139,7 +2184,7 @@ static bool case_what_goes_out_again_for_a_closing_connection_is_our_close(void)
     bool ok = true;
     struct handshake_outcome outcome;
     enum handshake_due due =
-        handshake_what_is_due(&world.connections, at(HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS),
+        handshake_what_is_due(&world.connections, at(HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS), IPV4_TIME_TO_LIVE_WE_SEND,
                               OUR_MAC, world.reply, sizeof world.reply,
                               &world.counts, &outcome);
     if (due != HANDSHAKE_ANSWER_AGAIN ||
@@ -2197,7 +2242,7 @@ static bool case_the_closing_timers_run_from_when_our_close_went_out(void)
     bool ok = true;
     struct handshake_outcome outcome;
 #define DUE_AT(milliseconds)                                                       \
-    handshake_what_is_due(&world.connections, at(milliseconds), OUR_MAC,           \
+    handshake_what_is_due(&world.connections, at(milliseconds), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,           \
                           world.reply, sizeof world.reply, &world.counts, &outcome)
 
     /* ⚠ The handshake's give-up moment passes and ⚠ **nothing happens**: the
@@ -2339,7 +2384,7 @@ static bool case_nobody_acknowledging_our_close_is_its_own_ending(void)
     struct handshake_outcome outcome;
     enum handshake_due due =
         handshake_what_is_due(&world.connections,
-                              at(HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS), OUR_MAC,
+                              at(HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                               world.reply, sizeof world.reply, &world.counts, &outcome);
     if (due != HANDSHAKE_GIVE_UP ||
         outcome.reason != HANDSHAKE_REASON_NOBODY_ACKNOWLEDGED_OUR_FIN) {
@@ -2370,7 +2415,7 @@ static bool case_nobody_acknowledging_our_close_is_its_own_ending(void)
     }
     struct handshake_outcome other;
     if (handshake_what_is_due(&opening.connections,
-                              at(HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS), OUR_MAC,
+                              at(HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                               opening.reply, sizeof opening.reply, &opening.counts,
                               &other) != HANDSHAKE_GIVE_UP ||
         other.reason != HANDSHAKE_REASON_NOBODY_CONFIRMED_IT ||
@@ -2405,7 +2450,7 @@ static bool case_a_close_that_would_not_fit_is_counted_as_ours(void)
     struct tcp_header fin =
         a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, their_fin, held->iss + 1u);
     struct handshake_outcome outcome;
-    handshake_receive(&fin, &id, OUR_PORT, at(0), THEIR_MAC, OUR_MAC, &world.connections,
+    handshake_receive(&fin, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world.connections,
                       no_room, sizeof no_room, &world.counts, &outcome);
 
     if (outcome.reason != HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY ||
@@ -2508,7 +2553,7 @@ static bool case_each_reason_moves_only_its_own_count(void)
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, at(0), THEIR_MAC, OUR_MAC, &connections, reply,
+        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                           sizeof reply, &counts, &outcome);
         if (outcome.reason != HANDSHAKE_REASON_NO_ROOM ||
             counts.room.refused_for_want_of_room != 1 || counts.opened != 0) {
@@ -2528,7 +2573,7 @@ static bool case_each_reason_moves_only_its_own_count(void)
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT + 1, at(0), THEIR_MAC, OUR_MAC, &connections,
+        handshake_receive(&syn, &id, OUR_PORT + 1, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections,
                           reply, sizeof reply, &counts, &outcome);
         if (outcome.reason != HANDSHAKE_REASON_NO_CONNECTION_HELD ||
             counts.opened != 0) {
@@ -2555,7 +2600,7 @@ static bool case_a_block_taken_again_holds_none_of_the_last_connections_numbers(
     struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
     unsigned char reply[256];
     struct handshake_outcome outcome;
-    handshake_receive(&syn, &first, OUR_PORT, at(0), THEIR_MAC, OUR_MAC, &connections, reply,
+    handshake_receive(&syn, &first, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                       sizeof reply, &counts, &outcome);
 
     struct transmission_control_block *block = connections_find(&connections, &first);
@@ -2611,7 +2656,9 @@ static bool case_the_answer_is_due_a_second_after_each_send(void)
 #define DUE_AT(milliseconds, expected, what)                                       \
     do {                                                                           \
         enum handshake_due got = handshake_what_is_due(&world.connections,          \
-                                                       at(milliseconds), OUR_MAC,  \
+                                                       at(milliseconds),           \
+                                                       IPV4_TIME_TO_LIVE_WE_SEND,  \
+                                                       OUR_MAC,                    \
                                                        world.reply,                \
                                                        sizeof world.reply,         \
                                                        &world.counts, &outcome);   \
@@ -2657,7 +2704,7 @@ static bool case_a_connection_nobody_confirms_is_given_up_on(void)
     bool ok = true;
 
     /* ⚠ One millisecond before: still waiting, not given up on. */
-    if (handshake_what_is_due(&world.connections, at(2999), OUR_MAC, world.reply,
+    if (handshake_what_is_due(&world.connections, at(2999), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome)
         == HANDSHAKE_GIVE_UP) {
         fputs("  it was given up on a millisecond early\n", stderr);
@@ -2666,7 +2713,7 @@ static bool case_a_connection_nobody_confirms_is_given_up_on(void)
 
     /* ⚠ Exactly at three seconds. ⚠ Both timers are due here, and ⚠ **giving up
      * wins** — the other order would send an answer nobody waits for. */
-    if (handshake_what_is_due(&world.connections, at(3000), OUR_MAC, world.reply,
+    if (handshake_what_is_due(&world.connections, at(3000), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome)
         != HANDSHAKE_GIVE_UP) {
         fputs("  it was not given up on at three seconds\n", stderr);
@@ -2686,7 +2733,7 @@ static bool case_a_connection_nobody_confirms_is_given_up_on(void)
         ok = false;
     }
     /* ⚠ And nothing is due any more. */
-    if (handshake_what_is_due(&world.connections, at(9999), OUR_MAC, world.reply,
+    if (handshake_what_is_due(&world.connections, at(9999), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome)
         != HANDSHAKE_NOTHING_DUE) {
         fputs("  something was still due after giving up\n", stderr);
@@ -2720,7 +2767,7 @@ static bool case_a_confirmed_connection_is_due_nothing(void)
     bool ok = true;
     static const uint64_t much_later[] = { 1000, 2000, 3000, 60000 };
     for (size_t i = 0; i < sizeof much_later / sizeof much_later[0]; i++) {
-        if (handshake_what_is_due(&world.connections, at(much_later[i]), OUR_MAC, world.reply,
+        if (handshake_what_is_due(&world.connections, at(much_later[i]), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                   sizeof world.reply, &world.counts, &outcome) != HANDSHAKE_NOTHING_DUE) {
             fprintf(stderr, "  something was due %llu ms after it was confirmed\n",
                     (unsigned long long)much_later[i]);
@@ -2755,7 +2802,7 @@ static bool case_a_clock_that_does_not_move_neither_spins_nor_stops(void)
     bool ok = true;
 
     /* ⚠ Due once at exactly a second. */
-    if (handshake_what_is_due(&world.connections, at(1000), OUR_MAC, world.reply,
+    if (handshake_what_is_due(&world.connections, at(1000), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome)
         != HANDSHAKE_ANSWER_AGAIN) {
         fputs("  nothing was due at a second\n", stderr);
@@ -2765,7 +2812,7 @@ static bool case_a_clock_that_does_not_move_neither_spins_nor_stops(void)
      * ⚠ A caller in a loop would otherwise send for ever without the clock
      * moving — a busy loop, not a wait. */
     for (int again = 0; again < 5; again++) {
-        if (handshake_what_is_due(&world.connections, at(1000), OUR_MAC, world.reply,
+        if (handshake_what_is_due(&world.connections, at(1000), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome)
             != HANDSHAKE_NOTHING_DUE) {
             fprintf(stderr, "  it was due again at the same moment, ask %d\n", again + 1);
@@ -2775,7 +2822,7 @@ static bool case_a_clock_that_does_not_move_neither_spins_nor_stops(void)
     }
     /* ⚠ The other half: once the clock does move, it becomes due again. ⚠ Without
      * this the loop above would pass for a schedule that never fires twice. */
-    if (handshake_what_is_due(&world.connections, at(2000), OUR_MAC, world.reply,
+    if (handshake_what_is_due(&world.connections, at(2000), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome)
         != HANDSHAKE_ANSWER_AGAIN) {
         fputs("  it never became due again once the clock moved\n", stderr);
@@ -2817,7 +2864,7 @@ static bool case_the_next_moment_is_the_earlier_of_the_two(void)
 
     /* ⚠ After the last answer, the give-up moment is the earlier one. */
     struct handshake_outcome outcome;
-    handshake_what_is_due(&world.connections, at(2500), OUR_MAC, world.reply,
+    handshake_what_is_due(&world.connections, at(2500), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome);
     if (!handshake_next_moment(&world.connections, &due)) {
         fputs("  it stopped naming a moment while still waiting\n", stderr);
@@ -2861,7 +2908,7 @@ static bool case_the_answer_that_goes_out_again_is_the_same_answer(void)
         struct handshake_outcome outcome;
         enum handshake_due due =
             handshake_what_is_due(&world.connections, at((uint64_t)again * 1000u),
-                                  OUR_MAC, world.reply, sizeof world.reply,
+                                  IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply, sizeof world.reply,
                                   &world.counts, &outcome);
         if (due != HANDSHAKE_ANSWER_AGAIN) {
             fprintf(stderr, "  answer %d was not due\n", again);
@@ -2916,7 +2963,7 @@ static bool case_them_asking_again_is_not_us_answering_again(void)
 
     /* Us: the timer. */
     struct handshake_outcome ours;
-    handshake_what_is_due(&world.connections, at(1000), OUR_MAC, world.reply,
+    handshake_what_is_due(&world.connections, at(1000), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                           sizeof world.reply, &world.counts, &ours);
     if (ours.reason != HANDSHAKE_REASON_THE_ANSWER_WENT_OUT_AGAIN) {
         fprintf(stderr, "  our own timer came back with reason %d\n", (int)ours.reason);
@@ -2994,6 +3041,8 @@ static const struct test_case cases[] = {
       case_a_segment_the_window_covers_is_taken_whole },
     { "a_duplicate_and_a_segment_ahead_are_told_apart_at_the_wrap",
       case_a_duplicate_and_a_segment_ahead_are_told_apart_at_the_wrap },
+    { "the_time_to_live_we_send_with_is_the_callers",
+      case_the_time_to_live_we_send_with_is_the_callers },
     { "nothing_is_sent_for_a_connection_that_has_not_seen_a_fin",
       case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin },
     { "what_goes_out_again_for_a_closing_connection_is_our_close",

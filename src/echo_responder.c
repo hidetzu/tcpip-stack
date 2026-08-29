@@ -14,6 +14,7 @@ static void decided(struct echo_outcome *outcome, enum echo_reason reason,
 }
 
 void echo_respond(const uint8_t *datagram, size_t datagram_bytes,
+                  uint8_t time_to_live,
                   const uint8_t *requester_hardware_address,
                   const uint8_t *our_hardware_address,
                   const uint8_t *our_protocol_address,
@@ -111,7 +112,7 @@ void echo_respond(const uint8_t *datagram, size_t datagram_bytes,
 
     size_t datagram_reply_bytes = 0;
     if (ipv4_build_datagram(our_protocol_address, outcome->header.source_address,
-                            IPV4_PROTOCOL_ICMP,
+                            IPV4_PROTOCOL_ICMP, time_to_live,
                             reply + ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES,
                             message_reply_bytes, reply + ETHERNET_HEADER_BYTES,
                             reply_bytes - ETHERNET_HEADER_BYTES,
