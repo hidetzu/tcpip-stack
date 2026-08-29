@@ -161,17 +161,6 @@ struct transmission_control_block {
      * limitation is recorded** (`docs/SPEC.md` §2), ⚠ **not discovered later.** */
     uint32_t still_to_send;
 
-    /* ⚠ Who to address a segment to when nothing has just arrived from them.
-     *
-     * ⚠ Every reply before hidetzu/tcpip-stack#126 answered a frame that was in
-     * hand, so ⚠ **the hardware address came off that frame.** ⚠ Data of ours
-     * goes out unprompted, so ⚠ **there is no frame to take it from** and it is
-     * remembered when the connection is taken.
-     *
-     * ⚠ **Not an ARP cache** (`docs/SPEC.md` §2): it is one address, held for
-     * one connection, and ⚠ **nothing resolves anything.** */
-    uint8_t their_hardware_address[6];
-
     /* RFC 793's own receive-sequence names, same rules:
      *
      *   "Set RCV.NXT to SEG.SEQ+1, IRS is set to SEG.SEQ"
@@ -230,7 +219,13 @@ struct transmission_control_block {
     /* Where an answer has to go on the wire.
      *
      * ⚠ Read out of the frame that asked, and ⚠ **kept because a retransmission
-     * has no frame to read it from** (hidetzu/tcpip-stack#59).
+     * has no frame to read it from** (hidetzu/tcpip-stack#59), ⚠ **and because
+     * data of ours goes out unprompted** (hidetzu/tcpip-stack#126).
+     *
+     * ⚠ hidetzu/tcpip-stack#126 added a SECOND field for the second reason
+     * before noticing this one. ⚠ **Two fields holding the same address is two
+     * copies of one decision** (`CLAUDE.md` §3), ⚠ **and they would have
+     * diverged the first time either was written from a different place.**
      *
      * ⚠ This is not a neighbour cache, and `docs/SPEC.md` §2 says which:
      * ⚠ **it is one field of one connection, it cannot be looked up by address,
