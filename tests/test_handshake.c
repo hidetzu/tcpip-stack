@@ -866,7 +866,7 @@ static bool case_nothing_is_acknowledged_for_data_the_window_did_not_cover(void)
  * ⚠ Verbatim, RFC 9293 §3.10.7.4: "If an incoming segment is not acceptable, an
  * acknowledgment should be sent in reply ... <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>."
  * ⚠ **Lowercase "should", so not a BCP 14 requirement** (§2) — ⚠ the grounds for
- * doing it are the measurement in `tests/foreign.sh`
+ * doing it are the measurement in `tests/interop.sh`
  * `a_peer_whose_acknowledgment_was_lost_recovers`, not the sentence."
  *
  * ⚠ All four ways to be refused, and ⚠ **the numbers are asserted, not just the
@@ -1133,7 +1133,7 @@ static bool case_data_outside_the_window_is_refused_and_nothing_moves(void)
  * what we asked for.**
  *
  * ⚠ **A peer that honours our window does not send such a segment** — measured
- * 2026-08-29, it sends what the window allows and waits (`tests/foreign.sh`
+ * 2026-08-29, it sends what the window allows and waits (`tests/interop.sh`
  * `the_peers_send_queue_drains_once_we_acknowledge`). ⚠ The case stays, and it
  * is not weaker for it: ⚠ **it tests the contract, not one peer's habits**
  * (`.claude/rules/testing.md`), and ⚠ **a peer that sends past what we asked

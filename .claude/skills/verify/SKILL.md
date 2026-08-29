@@ -24,18 +24,20 @@ Verify   <- here
 ## 0. ⚠ Current state of this file
 
 ⚠ **Three entry points exist**, and they are the ones §1 lists:
-`make check-static`, `make check-real`, `make check-foreign`.
+`make check-static`, `make check-isolated`, `make check-interop`.
 ⚠ **`make check` runs all three, in that order.**
 
 ⚠ **Each runner announces its own counts.** ⚠ **Copy the announced number into the report** (§7).
 ⚠ **Never write a count into a document** (`docs/SPEC.md` says why).
 
-### ⚠ The tier names are still provisional (⚠ **open, deliberately**)
+### ⚠ The tier names were decided at hidetzu/tcpip-stack#116 (2026-08-29)
+
+⚠ **Kept, not deleted: this is why the names are what they are.**
 
 ⚠ **`static` / `real` / `foreign` were named before a single test existed**, and
-⚠ **`real` is the weak one**: it says how true the test is, not what it needs.
+⚠ **`real` was the weak one**: it said how true the test is, not what it needs.
 
-⚠ **Two questions were being conflated. They have now been measured, and the second one has a
+⚠ **Two questions were being conflated. They were measured, and the second came back with a
 different answer from the one the names assumed** (`docs/SPEC.md` §3, 2026-08-26):
 
 ```text
@@ -51,14 +53,22 @@ talk to the kernel stack               no                       a user namespace
 
 ⚠ **So "runs without going outside" and "runs without a privilege the developer lacks" are both
 `no` for all three tiers**, and neither axis separates them. ⚠ **What separates them is who the
-other end is**: nothing is running at all (`static`), the device and us and no one else (`real`),
-or the Linux kernel (`foreign`).
+other end is**, and ⚠ **the names say that now:**
 
-⚠ **`static` / `isolated` / `interop` may still be the better names.** ⚠ **This is not being changed
-here.** ⚠ **The measurement that was being waited for now exists**, and the decision is the owner's
-to take (hidetzu/tcpip-stack#2 left it deliberately out of scope).
+```text
+static    ⚠ nothing is running at all
+isolated  ⚠ the device and us, and no one else       (was `real`)
+interop   ⚠ the Linux kernel, which we did not write (was `foreign`)
+```
 
-⚠ **Where unprivileged user namespaces are disabled, `real` and `foreign` run zero cases.**
+⚠ **`make check-real` and `make check-foreign` still exist and FAIL**, saying what the tier is
+called now. ⚠ **They are not aliases** — an alias that quietly ran the new target would keep the
+old name alive for ever (ADR 0026).
+
+⚠ **Past ADRs, issue bodies and completion reports keep the words they were written with**
+(`CLAUDE.md` §4: never rename in bulk). ⚠ **ADR 0026 carries the table of what was called what.**
+
+⚠ **Where unprivileged user namespaces are disabled, `isolated` and `interop` run zero cases.**
 ⚠ **That is `NOT-VERIFIED`, never a pass** (§4, §6). ⚠ **Both runners say so and stop.**
 
 ---
@@ -67,11 +77,11 @@ to take (hidetzu/tcpip-stack#2 left it deliberately out of scope).
 
 ⚠ **Every tier must exist.** ⚠ **They fail for different reasons, and the difference is the point.**
 
-| Tier (⚠ name provisional) | What it sees | External network? | A privilege the developer lacks? | Measured cost |
+| Tier | What it sees | External network? | A privilege the developer lacks? | Measured cost |
 |---|---|---|---|---|
 | **static** `make check-static` | What can be known by reading: build with `-Werror`, an ASan/UBSan build, and the Report layer against a captured frame | ⚠ **no** | ⚠ **no** | ⚠ `docs/SPEC.md` §3 |
-| **real** `make check-real` | ⚠ **A TAP device brought up in a namespace, with actual packets through it.** No other participant | ⚠ **no** | ⚠ **no** — `unshare -Urn` | ⚠ `docs/SPEC.md` §3 |
-| **foreign** `make check-foreign` | ⚠ **The other end is the Linux kernel**, which is not something we wrote | ⚠ **no** | ⚠ **no** — `unshare -Urn` | ⚠ `docs/SPEC.md` §3 |
+| **isolated** `make check-isolated` | ⚠ **A TAP device brought up in a namespace, with actual packets through it.** No other participant | ⚠ **no** | ⚠ **no** — `unshare -Urn` | ⚠ `docs/SPEC.md` §3 |
+| **interop** `make check-interop` | ⚠ **The other end is the Linux kernel**, which is not something we wrote | ⚠ **no** | ⚠ **no** — `unshare -Urn` | ⚠ `docs/SPEC.md` §3 |
 
 ⚠ **The costs live in `docs/SPEC.md` §3 and only there.** ⚠ **A measured number written in two
 places goes stale in one of them** (`CLAUDE.md` §6), and `SPEC.md` §3 is the file that owns
@@ -81,7 +91,7 @@ measurements, with their date and conditions.
 whose result depends on somebody else's uptime cannot assert our correctness (§4).
 
 ⚠ **A clean build proves nothing about the wire.**
-⚠ **Expect the real tier to catch most of the actual defects** — but ⚠ **that expectation is
+⚠ **Expect the isolated tier to catch most of the actual defects** — but ⚠ **that expectation is
 inherited from another project, and is not yet a measurement here.** ⚠ **Replace this sentence
 with a measurement once there is one.**
 
@@ -104,8 +114,8 @@ report which subset it ran, on its first line of output
 
 ```bash
 make check-static CHECK_ARGS="--list"                    # the case names
-make check-real   CHECK_ARGS="--count"                   # ⚠ counts without building anything
-make check-foreign CHECK_ARGS="--case an_arp_request_the_kernel_generated_is_read_intact"
+make check-isolated   CHECK_ARGS="--count"                   # ⚠ counts without building anything
+make check-interop CHECK_ARGS="--case an_arp_request_the_kernel_generated_is_read_intact"
 ```
 
 ⚠ **The runner announces what it ran and how many.** ⚠ **Never write the count into a document**
@@ -113,7 +123,7 @@ make check-foreign CHECK_ARGS="--case an_arp_request_the_kernel_generated_is_rea
 
 ### ⚠ Am I measuring what I think I am measuring?
 
-⚠ **Before trusting a real-tier result, confirm the binary under test is the one just built,
+⚠ **Before trusting an isolated-tier result, confirm the binary under test is the one just built,
 and the device under test is the one just created.**
 ⚠ **A stale binary or a leftover interface from a previous run measures the previous run.**
 
@@ -125,7 +135,7 @@ and the device under test is the one just created.**
 
 ```
 1. static
-2. real, restricted to what was touched
+2. isolated, restricted to what was touched
 ```
 
 ⚠ **Green here is not "it passed."** ⚠ Cases were skipped. Say which.
@@ -147,8 +157,8 @@ and the device under test is the one just created.**
 | How it failed | ⚠ Is it our defect? |
 |---|---|
 | static failed | ⚠ **ours.** It never went outside |
-| real failed | ⚠ **ours.** ⚠ **Nothing external is involved** — that is why this tier exists |
-| foreign failed | ⚠ **maybe not ours.** ⚠ **Record what actually came back before deciding** |
+| isolated failed | ⚠ **ours.** ⚠ **Nothing external is involved** — that is why this tier exists |
+| interop failed | ⚠ **maybe not ours.** ⚠ **Record what actually came back before deciding** |
 | the environment could not be built (namespace, privileges, tooling) | ⚠ **unrelated to the change.** ⚠ **Zero tests ran.** Say so and retry once |
 
 ⚠ **Sometimes the check is the thing that is wrong.** Fix the check, and
@@ -189,7 +199,7 @@ Running before `git add` and calling it green is a real way to be wrong.
 does not run on a PR from a fork.**
 
 ⚠ **In this repository, CI runs `static` and only `static`** (ADR 0004 says why, with the
-measurement). ⚠ **A green tick on a PR is one tier of three.** ⚠ **`real` and `foreign` still have to
+measurement). ⚠ **A green tick on a PR is one tier of three.** ⚠ **`isolated` and `interop` still have to
 be run before the PR, and the report says where they ran.**
 
 ⚠ **When a tier did not run, that is `NOT-VERIFIED`, not `PASS`.**

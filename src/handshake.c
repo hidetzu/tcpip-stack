@@ -365,7 +365,7 @@ static bool build_what_is_due(const struct transmission_control_block *block,
  * ⚠ **The grounds for doing it are measured, not textual**: with our
  * acknowledgment for data dropped on purpose, the peer's `Send-Q` sticks at 5,
  * and ⚠ **this is what lets it reach 0 once the loss stops**
- * (hidetzu/tcpip-stack#80, `tests/foreign.sh`
+ * (hidetzu/tcpip-stack#80, `tests/interop.sh`
  * `a_peer_whose_acknowledgment_was_lost_recovers`).
  *
  * ⚠ **It accepts nothing.** ⚠ The segment was dropped; this says where we are,

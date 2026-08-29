@@ -163,7 +163,7 @@ there are no npm dependencies). The product itself is C.
 ### Data actually moves
 
 ⚠ **Met, on 2026-08-29.** ⚠ **`send()` from the Linux kernel completes and its `Send-Q` reaches 0**,
-and ⚠ **the connection then closes properly in the same run** (`tests/foreign.sh`
+and ⚠ **the connection then closes properly in the same run** (`tests/interop.sh`
 `a_connection_carries_data_and_then_closes_properly`, 3000 octets). ⚠ **The kernel does not release
 a buffer until the octets in it have been acknowledged with numbers it accepts**, so ⚠ **that is its
 judgement on our acknowledgment numbers, not ours.**
@@ -174,12 +174,14 @@ octet to, and ⚠ **saying so out loud is the whole of what "data moves" means h
 ⚠ **The same lesson as the ping, the handshake and the close applies:** a stack that acknowledged
 every arriving segment with a number ahead of what it took would drain the peer's queue too.
 ⚠ **A segment carrying 1600 octets against a window of 1460 is acknowledged for exactly 1460 — not
-one octet more** (`tests/foreign.sh` `an_acknowledgment_never_covers_an_octet_we_did_not_take`).
+one octet more** (`tests/interop.sh` `an_acknowledgment_never_covers_an_octet_we_did_not_take`).
 ⚠ The Linux kernel honours the window and will not build that segment, ⚠ **so the check builds it by
 hand.**
 
-⚠ **What it cost, and it is worth saying where:** the foreign tier is 24157 / 24167 / 24167 ms at
-thirteen cases, up from 8747 ms at six. ⚠ **The cost is not the case count and it is not the
+⚠ **What it cost, and it is worth saying where:** the interop tier **was** 24157 / 24167 / 24167 ms
+at thirteen cases when this milestone closed, up from 8747 ms at six. ⚠ **It is 38771 / 38880 /
+38919 ms at nineteen now** (2026-08-29) — ⚠ **two numbers from two different trees, and each says
+which** (`CLAUDE.md` §6). ⚠ **The cost is not the case count and it is not the
 namespace** — ⚠ **the two cases added here take 100 and 103 ms between them**, and a whole
 connection with 3000 octets through it is one of them. ⚠ **It is the cases that wait on real time**:
 a schedule running out, a `close()` completing, a crafted connection driven a step at a time.
@@ -188,7 +190,7 @@ a schedule running out, a `close()` completing, a crafted connection driven a st
 ### The connection can be closed
 
 ⚠ **Met, on 2026-08-29.** ⚠ **`close()` from the Linux kernel completes against this stack and the
-kernel enters `TIME-WAIT`** (`tests/foreign.sh`
+kernel enters `TIME-WAIT`** (`tests/interop.sh`
 `the_kernel_reaches_time_wait_and_our_block_is_free_again`). ⚠ **That state is entered only once it
 has had our `FIN` and acknowledged it**, so ⚠ **reaching it is somebody else's judgement on our
 sequence numbers, not ours.**
@@ -205,9 +207,9 @@ one thing.**
 ⚠ **The same lesson as the ping and the handshake applies:** a stack that closed back on any `FIN`
 at all would reach `TIME-WAIT` too. ⚠ **A `FIN` 500 past the window we promised draws no close from
 us and is counted apart, and the same `FIN` at the sequence number we are waiting for, in the same
-run, draws one** (`tests/foreign.sh` `a_fin_whose_sequence_number_we_do_not_expect_is_not_answered`).
+run, draws one** (`tests/interop.sh` `a_fin_whose_sequence_number_we_do_not_expect_is_not_answered`).
 
-⚠ **What it cost:** ⚠ **the foreign tier went from 8747 ms at six cases to 20517 ms at ten**, and
+⚠ **What it cost:** ⚠ **the interop tier went from 8747 ms at six cases to 20517 ms at ten**, and
 ⚠ **the growth is not the case count** — the four cases added over this milestone all wait on real
 time. ⚠ [`docs/SPEC.md`](docs/SPEC.md) §3 owns those numbers, with the runs listed.
 
@@ -215,7 +217,7 @@ time. ⚠ [`docs/SPEC.md`](docs/SPEC.md) §3 owns those numbers, with the runs l
 
 ⚠ **Met, on 2026-08-29.** ⚠ **A connection nobody confirms is answered again on
 the wire — twice, a second apart — and then given up on**, counted by an
-`AF_PACKET` socket rather than by our own output (`tests/real.sh`
+`AF_PACKET` socket rather than by our own output (`tests/isolated.sh`
 `the_answer_really_goes_out_again`).
 
 ⚠ **The State layer still reads no clock.** It is handed a moment, which is what
@@ -230,7 +232,7 @@ used instead, which is the document's own example lower bound.
 ### The kernel's own `connect()` succeeds
 
 ⚠ **Met, on 2026-08-28.** ⚠ **`connect()` from the Linux kernel completes against this stack and
-`ss -tn` reports the connection established** (`tests/foreign.sh`
+`ss -tn` reports the connection established** (`tests/interop.sh`
 `the_kernel_opens_a_connection_to_us`). The kernel checks the TCP checksum over a pseudo-header and
 the acknowledgment number before it completes one, so ⚠ **that verdict is not ours.**
 
@@ -275,7 +277,7 @@ verified against something we did not write.
 
 ⚠ **Met, on 2026-08-28.** ⚠ **`ping` reports 0% packet loss**, and the verdict is not ours: the
 Linux kernel checks the internet header checksum and the ICMP checksum before it accepts a reply
-(`tests/foreign.sh` `ping_reports_no_loss_against_our_own_stack`).
+(`tests/interop.sh` `ping_reports_no_loss_against_our_own_stack`).
 
 ⚠ **And that alone would not prove we validated anything.** ⚠ **A stack that answers a ping while
 computing the checksum wrong still answers the ping**, so a second check carries the other half:

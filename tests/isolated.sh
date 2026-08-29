@@ -860,15 +860,15 @@ fi
 
 # ⚠ --count and --list are answered before anything is built, so counting stays
 # cheap (`.claude/skills/verify/SKILL.md` §1).
-select_cases real "$ALL_CASES" "$@"
+select_cases isolated "$ALL_CASES" "$@"
 
 $MAKE -s build build-harness || exit 2
 
 # ⚠ If the namespace cannot be built, zero cases ran. That is NOT-VERIFIED, and
 # it is not a statement about this change (`verify` §4).
 if ! unshare -Urn true 2>/dev/null; then
-    printf 'real: the check environment could not be built here: unshare -Urn was refused.\n' >&2
-    printf 'real: 0 cases ran. Nothing was checked, and nothing was disproved either.\n' >&2
+    printf 'isolated: the check environment could not be built here: unshare -Urn was refused.\n' >&2
+    printf 'isolated: 0 cases ran. Nothing was checked, and nothing was disproved either.\n' >&2
     exit 2
 fi
 

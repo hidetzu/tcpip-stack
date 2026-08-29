@@ -2161,7 +2161,7 @@ print("back-for-data-after-it", len(ours(1.2)))
 # ⚠ The segment is built here and handed to the kernel on a raw socket, so ⚠ the
 # kernel routes it out tap0 and our stack reads it exactly as it reads anything
 # else. ⚠ Why not write the frame onto the device directly: ⚠ **two processes
-# cannot hold one TAP device**, which `tests/real.sh`
+# cannot hold one TAP device**, which `tests/isolated.sh`
 # `a_second_attach_to_the_same_device_is_refused` asserts.
 #
 # ⚠ Both halves are sent in one run: the same segment with the right checksum and
@@ -2320,13 +2320,13 @@ fi
 
 # ⚠ --count and --list are answered before anything is built, so counting stays
 # cheap (`.claude/skills/verify/SKILL.md` §1).
-select_cases foreign "$ALL_CASES" "$@"
+select_cases interop "$ALL_CASES" "$@"
 
 $MAKE -s build || exit 2
 
 if ! unshare -Urn true 2>/dev/null; then
-    printf 'foreign: the check environment could not be built here: unshare -Urn was refused.\n' >&2
-    printf 'foreign: 0 cases ran. Nothing was checked, and nothing was disproved either.\n' >&2
+    printf 'interop: the check environment could not be built here: unshare -Urn was refused.\n' >&2
+    printf 'interop: 0 cases ran. Nothing was checked, and nothing was disproved either.\n' >&2
     exit 2
 fi
 
