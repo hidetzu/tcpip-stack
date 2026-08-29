@@ -196,17 +196,27 @@ enum tcp_parse tcp_parse_header(const uint8_t *segment, size_t segment_bytes,
         return TCP_PARSE_MALFORMED;
     }
 
-    /* ⚠ **Nothing is decided from `Reserved`, and that is the document's rule
-     * and not ours.**
+    /* ⚠ **Nothing is decided from `Reserved`**, and ⚠ **the grounds are two
+     * things, not one** (hidetzu/tcpip-stack#92 corrected this comment).
      *
-     * ⚠ RFC 9293 §3.1, verbatim: "Must be zero in generated segments and must
-     * be ignored in received segments if the corresponding future features are
-     * not implemented by the sending or receiving host."
+     * ⚠ **The layout is the document's, and is not a keyword matter at all**:
+     * RFC 9293 §3.1 defines `Reserved` as four bits and lists eight control
+     * bits. ⚠ **This build was reading the header wrong**, and a definition is
+     * not a `MUST`.
+     *
+     * ⚠ **Ignoring a set bit is prose, not a requirement.** RFC 9293 §3.1
+     * verbatim: "Must be zero in generated segments and must be ignored in
+     * received segments if the corresponding future features are not
+     * implemented by the sending or receiving host." ⚠ **Both are lowercase**,
+     * ⚠ **there is no labelled keyword in that passage**, and §2 binds the
+     * keywords "when, and only when, they appear in all capitals". ⚠ This
+     * comment first called it "the document's rule and not ours" — ⚠ **the same
+     * overstatement `CLAUDE.md` §9 has a row for.**
+     *
+     * ⚠ **So the grounds for ignoring it are measured, not textual** (below).
      *
      * ⚠ Until hidetzu/tcpip-stack#86 a set bit made the segment malformed, from
-     * RFC 793's "Must be zero" — ⚠ **a conclusion recorded as ours** (ADR 0013),
-     * because RFC 793 does not tell a receiver what to do. ⚠ **RFC 9293 does**,
-     * and ADR 0024 made it the baseline.
+     * RFC 793's "Must be zero" — ⚠ **a conclusion recorded as ours** (ADR 0013).
      *
      * ⚠ **Measured 2026-08-29**: with the refusal in place and
      * `net.ipv4.tcp_ecn=1`, the Linux kernel's first SYN carries `CWR|ECE|SYN`

@@ -538,6 +538,17 @@ spec_row_cases=0
 
 # ⚠ The "names a file but no case" rule can only be judged once the whole row has
 # been read, so it is checked when the row ends.
+# ⚠ `CLAUDE.md` §9's wall for reading a lowercase keyword as a requirement.
+# ⚠ The script says why, and what it cannot stop.
+case_a_lowercase_keyword_is_not_called_a_requirement() {
+    if ! python3 tests/lowercase_keyword.py . >"$work/lowercase.txt" 2>&1; then
+        note_failure "a quotation carrying a lowercase should or must is introduced as something the document requires"
+        sed 's/^/      /' "$work/lowercase.txt" >&2
+        return
+    fi
+    cat "$work/lowercase.txt"
+}
+
 finish_spec_row() {
     [ -n "$spec_row_now" ] || return 0
     if [ "$spec_row_entry_points" -gt 0 ] && [ "$spec_row_cases" -eq 0 ]; then
@@ -628,5 +639,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case moment ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_clock_is_read_in_one_place the_old_program_name_is_gone spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case moment ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_clock_is_read_in_one_place the_old_program_name_is_gone a_lowercase_keyword_is_not_called_a_requirement spec_names_checks_that_exist" "$@"
 run_selected_cases

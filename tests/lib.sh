@@ -84,6 +84,17 @@ select_cases() {
 run_selected_cases() {
     for name in $selected_cases; do
         current_case_ok=1
+        # ⚠ A name in the list with no function behind it used to print `ok`.
+        # ⚠ **A case that cannot fail is not a case** (`.claude/rules/testing.md`),
+        # and ⚠ **a case that does not exist is the extreme of that** — ⚠ it was
+        # found by adding a name and forgetting the function
+        # (hidetzu/tcpip-stack#92).
+        if ! command -v "case_$name" >/dev/null 2>&1; then
+            printf '  %-52s FAILED\n' "$name"
+            printf '    no function named case_%s exists, so nothing ran\n' "$name" >&2
+            case_failures=$((case_failures + 1))
+            continue
+        fi
         "case_$name"
         if [ "$current_case_ok" -eq 1 ]; then
             printf '  %-52s ok\n' "$name"

@@ -11,7 +11,7 @@
 |---|---|
 | [`layers.md`](layers.md) | What question this project answers, and the Wire / Parse / State / Report split |
 | [`c.md`](c.md) | Responsibility, memory, errors, naming in C |
-| [`testing.md`](testing.md) | What to confirm, in what order of priority |
+| [`testing.md`](testing.md) | What to confirm, in what order of priority; ⚠ **what to do when a check's subject moves**, and ⚠ **when a mutation is not one** |
 | [`git.md`](git.md) | Operations that are forbidden without being told |
 
 ⚠ **`MUST` = required, `SHOULD` = default, `MAY` = optional.**

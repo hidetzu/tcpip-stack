@@ -167,12 +167,17 @@ struct tcp_header {
      * ⚠ RFC 9293 §3.1, verbatim: "A set of control bits reserved for future
      * use.  Must be zero in generated segments and must be ignored in received
      * segments if the corresponding future features are not implemented by the
-     * sending or receiving host."
+     * sending or receiving host." ⚠ **Both keywords are lowercase and the
+     * passage carries no labelled one**, so ⚠ **it describes rather than
+     * requires** (§2, and `CLAUDE.md` §9).
      *
-     * ⚠ Until hidetzu/tcpip-stack#86 this was six bits and a set one made the
-     * segment malformed — ⚠ **our reading of RFC 793's "Must be zero", recorded
-     * as ours** (ADR 0013). ⚠ RFC 793 is silent about what a receiver does;
-     * ⚠ **RFC 9293 is not**, and ADR 0024 made it the baseline.
+     * ⚠ **Four bits is a different kind of claim**: it is the field's
+     * definition, ⚠ **and this build was reading six.**
+     *
+     * ⚠ Until hidetzu/tcpip-stack#86 a set one made the segment malformed —
+     * ⚠ **our reading of RFC 793's "Must be zero", recorded as ours**
+     * (ADR 0013). ⚠ **The grounds for ignoring it now are measured**: an
+     * ECN-capable peer's first SYN was thrown away.
      *
      * ⚠ **Carried so a caller can see it**, and ⚠ nothing here reads it. */
     uint8_t reserved;
