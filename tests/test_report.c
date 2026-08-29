@@ -900,6 +900,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "0 segments were from an address that can never send anything\n"
         "0 octets of ours went out again in 0 segments because nobody had "
         "acknowledged them\n"
+        "0 round trips were measured, and 0 were not used because what they "
+        "would have measured was sent more than once\n"
         "0 octets of ours left in 0 segments, and 0 times there was no room in the "
         "window they advertised\n"
         "0 were refused for want of room and 0 answers never left the device, which "
@@ -926,6 +928,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.their_window_had_no_room = 1;
     one.data_segments_we_sent_again = 1;
     one.data_octets_we_sent_again = 1;
+    one.round_trips_we_measured = 1;
+    one.round_trips_we_would_not_use = 1;
     one.reset_by_the_other_side = 1;
     one.reset_outside_the_window = 1;
     one.urgent_and_nobody_to_tell = 1;
@@ -970,6 +974,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "1 segment was from an address that can never send anything\n"
         "1 octet of ours went out again in 1 segment because nobody had "
         "acknowledged them\n"
+        "1 round trip was measured, and 1 was not used because what it "
+        "would have measured was sent more than once\n"
         "1 octet of ours left in 1 segment, and 1 time there was no room in the "
         "window they advertised\n"
         "1 was refused for want of room and 1 answer never left the device, which "
@@ -1016,6 +1022,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.their_window_had_no_room = 33;
     each.data_segments_we_sent_again = 34;
     each.data_octets_we_sent_again = 35;
+    each.round_trips_we_measured = 36;
+    each.round_trips_we_would_not_use = 37;
     each.reset_by_the_other_side = 27;
     each.reset_outside_the_window = 28;
     each.urgent_and_nobody_to_tell = 29;
@@ -1048,6 +1056,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "30 segments were from an address that can never send anything\n"
         "35 octets of ours went out again in 34 segments because nobody had "
         "acknowledged them\n"
+        "36 round trips were measured, and 37 were not used because what they "
+        "would have measured was sent more than once\n"
         "32 octets of ours left in 31 segments, and 33 times there was no room in "
         "the window they advertised\n"
         "16 were refused for want of room and 17 answers never left the device, "

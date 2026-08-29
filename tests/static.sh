@@ -334,6 +334,40 @@ case_moment() {
 # ⚠ Shaped like `the_clock_is_read_in_one_place`, and ⚠ **the comments are
 # stripped first**: this file's own words describe what it looks for, and a check
 # that reads its own description finds itself (`CLAUDE.md` §5).
+# ⚠ hidetzu/tcpip-stack#130 AC 8. ⚠ The fixed interval that stood in for a
+# retransmission timeout is GONE, ⚠ **and the check is what stops it coming
+# back** — a constant is easy to reintroduce and hard to notice.
+#
+# ⚠ Owner Decision, hidetzu/tcpip-stack#129: it was on loan until #130.
+# ⚠ **#130 is here, so the loan is over.**
+case_the_borrowed_interval_is_gone() {
+    gone="HANDSHAKE_SEND_DATA_AGAIN""_AFTER_MILLISECONDS"
+    if grep -rn --exclude-dir=.git --exclude-dir=build --exclude-dir=adr \
+        -e "$gone" . >"$work/loan.txt" 2>/dev/null; then
+        note_failure "the interval that stood in for an RTO is back"
+        sed 's/^/      /' "$work/loan.txt" >&2
+        return
+    fi
+
+    # ⚠ The other half (`verify` §5): ⚠ **what replaced it must be there**, or
+    # this case would pass for a tree with no timeout at all.
+    for named in HANDSHAKE_RTO_K HANDSHAKE_RTO_ALPHA_SHIFT HANDSHAKE_RTO_BETA_SHIFT \
+                 HANDSHAKE_RTO_LEAST_NANOSECONDS HANDSHAKE_RTO_MOST_NANOSECONDS \
+                 HANDSHAKE_CLOCK_GRANULARITY_NANOSECONDS; do
+        if ! grep -q "$named" src/handshake.h; then
+            note_failure "$named is not in src/handshake.h, so RFC 6298 section 2 is not there either"
+        fi
+    done
+
+    # ⚠ And the timer must actually USE the computed value: ⚠ a constant left
+    # unread would satisfy the two halves above and change nothing.
+    if ! grep -q "round_trip.timeout_nanoseconds" src/handshake.c; then
+        note_failure "src/handshake.c never reads the computed timeout"
+    fi
+
+    printf '    the borrowed interval is gone and the computed one is read\n'
+}
+
 case_the_mtu_is_read_in_one_place() {
     askers=0
     for source in src/*.c src/*.h; do
@@ -682,5 +716,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case moment ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_clock_is_read_in_one_place the_mtu_is_read_in_one_place the_old_program_name_is_gone a_lowercase_keyword_is_not_called_a_requirement spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case moment ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_clock_is_read_in_one_place the_mtu_is_read_in_one_place the_borrowed_interval_is_gone the_old_program_name_is_gone a_lowercase_keyword_is_not_called_a_requirement spec_names_checks_that_exist" "$@"
 run_selected_cases

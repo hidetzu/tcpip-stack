@@ -55,6 +55,21 @@ struct connection_id {
     struct socket remote;
 };
 
+/* What one connection knows about how long the other side takes to answer.
+ *
+ * ⚠ RFC 6298 §2: "a TCP sender maintains two state variables, SRTT (smoothed
+ * round-trip time) and RTTVAR (round-trip time variation)." ⚠ **Both names
+ * borrowed exactly** (`.claude/rules/layers.md`).
+ *
+ * ⚠ `have_a_sample` is separate from the values: ⚠ **§2.2 and §2.3 are different
+ * computations and which one applies is not derivable from a number.** */
+struct handshake_round_trip {
+    bool have_a_sample;
+    uint64_t smoothed_nanoseconds;   /* SRTT */
+    uint64_t variation_nanoseconds;  /* RTTVAR */
+    uint64_t timeout_nanoseconds;    /* RTO */
+};
+
 /* What we know about one connection.
  *
  * ⚠ It holds its identity and nothing else yet. ⚠ The state RFC 793 names and
@@ -169,10 +184,39 @@ struct transmission_control_block {
      * ⚠ §5.2: "When all outstanding data has been acknowledged, turn off the
      * retransmission timer." ⚠ **Those two are what `waiting_for_an_ack` is.**
      *
-     * ⚠ **The interval is NOT an RTO** (hidetzu/tcpip-stack#129 Owner Decision):
-     * ⚠ see `HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS`. */
+     * ⚠ Until hidetzu/tcpip-stack#130 the interval was a fixed second and
+     * ⚠ **was not an RTO**; ⚠ **it is `round_trip.timeout_nanoseconds` now**,
+     * computed per RFC 6298 §2. */
     bool waiting_for_an_ack;
     struct moment send_again_at;
+
+    /* What this connection has measured about how long the other side takes.
+     *
+     * ⚠ RFC 6298 §2's `SRTT`, `RTTVAR` and `RTO`, ⚠ **per connection because
+     * that is what they are about.** */
+    struct handshake_round_trip round_trip;
+
+    /* One round trip being measured, and whether it may still be used.
+     *
+     * ⚠ RFC 6298 §3, Karn's algorithm: "RTT samples **MUST NOT** be made using
+     * segments that were retransmitted (and thus for which it is ambiguous
+     * whether the reply was for the first instance of the packet or a later
+     * instance)."
+     *
+     * ⚠ `sample_is_spoilt` is what makes that true: ⚠ **set the moment anything
+     * is sent again**, and ⚠ **a spoilt sample is thrown away rather than
+     * used.** ⚠ **Without it the estimate would fold in a round trip that may
+     * have been the first send or may have been the second**, and
+     * ⚠ **an estimate built from an ambiguity is not a measurement**
+     * (`CLAUDE.md` §1).
+     *
+     * ⚠ §3: "A TCP implementation MUST take at least one RTT measurement per
+     * RTT (unless that is not possible per Karn's algorithm)." ⚠ **One is
+     * started whenever none is running and data goes out.** */
+    bool sampling;
+    bool sample_is_spoilt;
+    struct moment sample_sent_at;
+    uint32_t sample_covers;
 
     /* RFC 793's own receive-sequence names, same rules:
      *

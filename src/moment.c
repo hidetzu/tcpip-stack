@@ -35,6 +35,13 @@ bool moment_is_at_or_after(struct moment a, struct moment b)
     return (uint64_t)(a.nanoseconds - b.nanoseconds) < HALF_THE_SPACE;
 }
 
+struct moment moment_after_nanoseconds(struct moment from, uint64_t nanoseconds)
+{
+    struct moment later;
+    later.nanoseconds = from.nanoseconds + nanoseconds;
+    return later;
+}
+
 struct moment moment_after(struct moment from, uint64_t milliseconds)
 {
     struct moment then;

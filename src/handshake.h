@@ -95,29 +95,82 @@ uint32_t handshake_initial_send_sequence(struct moment now);
 #define HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS 1000u
 #define HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS 3000u
 
-/* How long to wait for an acknowledgment before sending the earliest
- * unacknowledged octet again.
+/* RFC 6298's constants, and ⚠ **every one of them is the document's.**
  *
- * ⚠ **THIS IS NOT AN RTO, AND IT IS NOT RFC 6298 CONFORMANT.** ⚠ Owner Decision,
- * hidetzu/tcpip-stack#129, verbatim: 「固定1秒は #130 までの temporary interval
- * としてのみ許可し、RFC 6298 準拠や RTO とは呼ばないでください」
+ * ⚠ **Nanoseconds throughout**, matching `struct moment`. ⚠ That is not a
+ * convenience: ⚠ **it is what removes the question of rounding.** ⚠ RFC 6298
+ * gives no rule for integer arithmetic, and ⚠ **dividing nanoseconds by 8 and by
+ * 4 truncates below a nanosecond**, which is under the granularity of the clock
+ * this stack reads (see `HANDSHAKE_CLOCK_GRANULARITY_NANOSECONDS`). ⚠ **So no
+ * rule had to be invented, and none was.** */
+
+/* ⚠ §2.2 and §2.3: "RTO <- SRTT + max (G, K*RTTVAR) where K = 4". */
+#define HANDSHAKE_RTO_K 4u
+
+/* ⚠ §2.3: "The above SHOULD be computed using alpha=1/8 and beta=1/4".
+ * ⚠ **Written as the shift each one is**, because that is how they are applied
+ * and ⚠ a fraction would need a rounding rule the document does not give. */
+#define HANDSHAKE_RTO_ALPHA_SHIFT 3u  /* alpha = 1/8  */
+#define HANDSHAKE_RTO_BETA_SHIFT  2u  /* beta  = 1/4  */
+
+/* ⚠ §2.1: "Until a round-trip time (RTT) measurement has been made ..., the
+ * sender SHOULD set RTO <- 1 second". ⚠ **This is where the 1 second that used
+ * to be a fixed interval belongs**, and ⚠ **it is an initial value here, not an
+ * interval** (hidetzu/tcpip-stack#130). */
+#define HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS 1000000000ull
+
+/* ⚠ §2.4: "Whenever RTO is computed, if it is less than 1 second, then the RTO
+ * SHOULD be rounded up to 1 second."
  *
- * ⚠ **It is a fixed interval and it never changes.** ⚠ RFC 6298 has a 1 second
- * twice and ⚠ **neither is a fixed interval**: §2.1 makes it the value used
- * *until* a round trip has been measured, and §2.4 makes it a *floor*.
- * ⚠ **This number is neither of those things** — ⚠ it is what was here already,
- * borrowed so that hidetzu/tcpip-stack#129 can be about remembering and
- * resending rather than about arithmetic.
+ * ⚠ **On a tap this floor decides every RTO there is.** ⚠ Round trips here are
+ * microseconds; ⚠ **so the number stays 1000 ms and its grounds change
+ * completely** — from a constant nobody could defend to a computation the
+ * document gives, floored by a sentence the document gives. ⚠ A check that only
+ * ever saw a tap could not tell those apart, ⚠ **so the checks feed round trips
+ * large enough to lift it off the floor.** */
+#define HANDSHAKE_RTO_LEAST_NANOSECONDS 1000000000ull
+
+/* ⚠ §2.5: "A maximum value MAY be placed on RTO provided it is at least 60
+ * seconds." ⚠ **Taken, at exactly the least the document allows** — ⚠ a larger
+ * one would be ours to defend and there is nothing to defend it with. */
+#define HANDSHAKE_RTO_MOST_NANOSECONDS 60000000000ull
+
+/* The clock's granularity, `G` in RFC 6298 §4.
  *
- * ⚠ **`MUST-18` is not met and this does not move it.** ⚠ hidetzu/tcpip-stack#130
- * replaces this constant with a computed RTO, and ⚠ **this comment goes with
- * it.**
+ * ⚠ **Measured, not assumed** (hidetzu/tcpip-stack#130 AC 7). Arch Linux
+ * 7.0.2-arch1-1, x86_64, `CLOCK_MONOTONIC`, 2026-08-29, three runs of 200000
+ * back-to-back reads each: ⚠ **the smallest non-zero step observed was 10, 10
+ * and 20 nanoseconds.** ⚠ `clock_getres` claims 1 ns, ⚠ **which is a different
+ * question and is not what this records.**
  *
- * ⚠ **Its own name, not `ANSWER_AGAIN`'s**: ⚠ the two happen to be equal today
- * and ⚠ **they are answers to different questions** — one is about a handshake
- * nobody confirmed, the other about data nobody acknowledged. ⚠ Sharing the
- * constant would make #130 move both (`CLAUDE.md` §3). */
-#define HANDSHAKE_SEND_DATA_AGAIN_AFTER_MILLISECONDS 1000u
+ * ⚠ **The largest of the three is taken**, because ⚠ §4 uses `G` as a floor on
+ * the variance term and ⚠ **a floor that is too small does nothing while one
+ * that is too large would inflate every RTO.**
+ *
+ * ⚠ **It never decides anything here**: `max(G, K*RTTVAR)` with G at 20 ns is
+ * `K*RTTVAR` for any round trip worth measuring. ⚠ **Carried because the
+ * document's formula has it**, and ⚠ **a formula written without a term it has
+ * is not that formula.** */
+#define HANDSHAKE_CLOCK_GRANULARITY_NANOSECONDS 20ull
+
+/* ⚠ `struct handshake_round_trip` is in `connection.h`, ⚠ **because it is TCB
+ * state and the TCB is defined there** (`.claude/rules/layers.md`). ⚠ The
+ * functions that move it are here, with the constants they use. */
+/* ⚠ RFC 6298 §2.1, before anything has been measured. */
+void handshake_round_trip_begin(struct handshake_round_trip *estimate);
+
+/* ⚠ RFC 6298 §2.2 on the first sample and §2.3 on every later one, ⚠ **then §2.4
+ * and §2.5 on the result, in that order.**
+ *
+ * ⚠ **`r_nanoseconds` must not come from a segment that was retransmitted** —
+ * ⚠ Karn's algorithm, §3: "RTT samples MUST NOT be made using segments that were
+ * retransmitted". ⚠ **This function cannot know that and does not check**; the
+ * caller is what refuses the sample (`.claude/rules/c.md`: one function does
+ * mainly one thing).
+ *
+ * ⚠ **Pure**: no fd, no clock, no device. */
+void handshake_round_trip_sample(struct handshake_round_trip *estimate,
+                                 uint64_t r_nanoseconds);
 
 /* The overhead one frame gives up before a single octet of data: an internet
  * header and a TCP header, both without options.
@@ -687,6 +740,14 @@ struct handshake_counts {
      * (`CLAUDE.md` §6). */
     unsigned long data_segments_we_sent_again;
     unsigned long data_octets_we_sent_again;
+
+    /* ⚠ Round trips folded into the estimate, and ⚠ **ones refused because
+     * Karn's algorithm forbids them.** ⚠ Counted apart: ⚠ **a refused sample is
+     * not a sample that never happened**, and a stack whose samples were all
+     * refused would look identical to one that measured nothing
+     * (`CLAUDE.md` §1). */
+    unsigned long round_trips_we_measured;
+    unsigned long round_trips_we_would_not_use;
 
     /* ⚠ **Connections** the other side reset. ⚠ Apart from every other ending:
      * one was closed properly, one timed out, ⚠ **this one was cut.** */
