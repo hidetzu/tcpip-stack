@@ -1,4 +1,4 @@
-# 0037 — v0.1 has no application and no routing layer, and that is a decision
+# 0037 — v0.1.0 has no application and no routing layer, and that is a decision
 
 Date: 2026-08-29
 Status: accepted
@@ -10,6 +10,11 @@ Status: accepted
 > A user-space TCP/IP protocol core for Linux, interoperated against the Linux kernel and built as an
 > experiment in AI-assisted systems engineering. v0.1 deliberately has no application-facing TCP API
 > and no routing-layer consumer.
+
+⚠ **Quoted exactly as it was written, including `v0.1`.** ⚠ **The tag and the documents say `v0.1.0`**
+— ⚠ the owner asked for the `x.y.z` form the same day and ⚠ **the version string moved with it.**
+⚠ **The quotation did not**, ⚠ **because a quotation that is not the words that were used is not a
+quotation** (`CLAUDE.md` §9 has a row for changing one, earned on an RFC sentence).
 
 ⚠ **Appendix B is read end to end — 119 of 119 — and nine requirements are not met.**
 ⚠ **Every one of them hangs from one of those two absences:**
@@ -57,7 +62,7 @@ skipped**, and ⚠ **naming it in the first sentence is where it stops being ski
   scope row, ⚠ **because that is the file that owns what may not be claimed.**
 - ⚠ **The nine are grouped under one row rather than nine.** ⚠ A reader meeting them one at a time
   would read nine gaps; ⚠ **there are two.**
-- ⚠ **This ADR has an expiry written into it.** ⚠ **If v0.2 gives this core a user, the nine come
+- ⚠ **This ADR has an expiry written into it.** ⚠ **If a later version gives this core a user, the nine come
   back one at a time and each is re-judged on its own** — ⚠ **not waved through because the scope
   changed.**
 
@@ -76,4 +81,4 @@ the rest, and ⚠ **they are not excused by this decision:**
 - ⚠ **The failed MTU read's branch has no check**, and ⚠ **`MUST-64`'s byte-wise walk is not asserted
   on purpose.**
 
-⚠ **These are what a reader of "v0.1" should be told, and `docs/SPEC.md` §2 tells them.**
+⚠ **These are what a reader of "v0.1.0" should be told, and `docs/SPEC.md` §2 tells them.**

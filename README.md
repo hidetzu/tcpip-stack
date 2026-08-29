@@ -1,7 +1,7 @@
 # tcpip-stack
 
 A user-space TCP/IP protocol core for Linux, interoperated against the Linux kernel and built as an
-experiment in AI-assisted systems engineering. **v0.1 deliberately has no application-facing TCP API
+experiment in AI-assisted systems engineering. **v0.1.0 deliberately has no application-facing TCP API
 and no routing-layer consumer.**
 
 **What runs today: `tcpip-stack`.** It creates and attaches to a TAP device in the current network
