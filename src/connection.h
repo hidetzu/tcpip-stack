@@ -144,6 +144,21 @@ struct transmission_control_block {
     uint32_t irs;
     uint32_t rcv_nxt;
 
+    /* ⚠ RFC 9293 §3.3.1 names this among the TCB's receive-sequence variables:
+     * "RCV.WND - receive window". ⚠ **Borrowed exactly**
+     * (`.claude/rules/layers.md`).
+     *
+     * ⚠ **It lives here because the document puts it here**, not because it
+     * varies per connection — ⚠ every block in this build is given the same
+     * number, derived once from the device's MTU
+     * (hidetzu/tcpip-stack#119, ADR 0028).
+     *
+     * ⚠ **It never shrinks**, and that is provable rather than convenient: every
+     * octet is discarded as it is taken, so ⚠ **the window is always this many
+     * from `rcv_nxt`**, and `rcv_nxt` only advances. RFC 793: "The total of
+     * RCV.NXT and RCV.WND should not be reduced." */
+    uint16_t rcv_wnd;
+
     /* When the answer should go out again, and when we stop waiting for one.
      *
      * ⚠ Both are handed in rather than read (ADR 0018), and ⚠ **both mean

@@ -22,6 +22,13 @@ git restore .              ⚠ and `git restore <path>`
   mutation, and ⚠ **once it was a check that noticed rather than the person.**
 - MUST: ⚠ **To undo a change you made on purpose, copy the file aside first and copy it back.**
   ⚠ Every mutation that did so cost nothing.
+- MUST: ⚠ **When a run makes several mutations, copy every file aside BEFORE the first one.**
+  ⚠ **Not after one goes wrong.** ⚠ **Grounds: it happened a fourth time on 2026-08-29**
+  (`CLAUDE.md` §9), ⚠ **in a session where the rule and the row had both been read** — the three
+  mutations that had a saved copy cost nothing, and ⚠ **the one improvised at the end took a whole
+  file's work.**
+- MUST: ⚠ **`git status` no longer listing a file you were editing is the tell.** ⚠ It is the only
+  one there is, ⚠ **and it is easy to miss because nothing fails.**
 
 - MUST: ⚠ **When one is genuinely needed, say what will be lost, first.**
 - MUST: ⚠ **Never discard or overwrite someone's uncommitted work.**

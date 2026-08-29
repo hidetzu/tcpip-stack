@@ -95,30 +95,62 @@ uint32_t handshake_initial_send_sequence(struct moment now);
 #define HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS 1000u
 #define HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS 3000u
 
-/* How many octets the answer's Window promises, and ⚠ **it is a promise.**
+/* The overhead one frame gives up before a single octet of data: an internet
+ * header and a TCP header, both without options.
  *
- * ⚠ RFC 793: "Window: 16 bits - The number of data octets beginning with the
- * one indicated in the acknowledgment field which the sender of this segment is
+ * ⚠ Both are twenty octets because ⚠ **this stack sends neither kind of option**
+ * (ADR 0012, ADR 0013). ⚠ **The day it sends one, this number is wrong** and
+ * `the_window_is_what_one_frame_carries` is what says so. */
+#define HANDSHAKE_HEADERS_BEFORE_DATA 40u
+
+/* Why a window could not be derived. ⚠ An enum never reaches a human. */
+enum handshake_window {
+    HANDSHAKE_WINDOW_OK = 0,
+
+    /* ⚠ The MTU does not leave one octet after the two headers.
+     *
+     * ⚠ **Measured not to occur on a tap**, Arch Linux 7.0.2-arch1-1,
+     * `unshare -Urn`, 3 runs, every run identical, 2026-08-29: ⚠ **the kernel
+     * refuses an MTU below 68, and 68 leaves 28.** ⚠ **So this is a guard and
+     * not a path** — ⚠ asserted against the function directly, with no device,
+     * because ⚠ **contriving a device to reach it would be testing the
+     * contrivance.** */
+    HANDSHAKE_WINDOW_THE_MTU_LEAVES_NOTHING,
+
+    /* ⚠ What is left will not fit the sixteen bits RFC 793 gives the field.
+     *
+     * ⚠ **Refused, never truncated**: the promise a peer reads must be the
+     * promise we made (`CLAUDE.md` §1). ⚠ Until hidetzu/tcpip-stack#119 a
+     * `_Static_assert` did this job, ⚠ **and it could, because the window was a
+     * constant.** ⚠ **It is a device's answer now**, so the same job is done at
+     * the moment the answer arrives.
+     *
+     * ⚠ **Also measured not to occur on a tap**: the largest MTU one accepts is
+     * 65521, which leaves 65481. */
+    HANDSHAKE_WINDOW_WOULD_NOT_FIT_THE_FIELD
+};
+
+/* How many octets to promise, for a device that carries frames of `mtu` bytes.
+ *
+ * ⚠ **The number this stack advertises as its `Window`, and ⚠ it is a promise.**
+ *
+ * ⚠ RFC 793: "Window: 16 bits - The number of data octets beginning with the one
+ * indicated in the acknowledgment field which the sender of this segment is
  * willing to accept."
  *
- * ⚠ **1460 is what one frame can carry at the MTU the checks use**: 1500 less
- * a twenty-octet internet header and a twenty-octet TCP header. ⚠ **The claim
- * the number makes is "a whole segment's worth"** (hidetzu/tcpip-stack#75 Owner
- * Decision 1).
- *
- * ⚠ **The MTU is not ours.** ⚠ It is whatever the device was brought up with,
- * and `src/tap.h` records that the checks use the default of 1500. ⚠ **If that
- * changed, this number would be a claim about a frame size that no longer
- * exists** — ⚠ nothing here reads the device's MTU, and `docs/SPEC.md` §2 names
- * that rather than leaving it silent.
+ * ⚠ **What it claims is "a whole segment's worth"** (hidetzu/tcpip-stack#75
+ * Owner Decision 1). ⚠ Until hidetzu/tcpip-stack#119 that claim was carried by
+ * the constant `1460` with a sentence beside it saying `1500 - 20 - 20`;
+ * ⚠ **the arithmetic is performed now, on the MTU the device actually reported**
+ * (ADR 0027, ADR 0028).
  *
  * ⚠ **What backs it is not a buffer**: this stack takes delivery and discards
  * (hidetzu/tcpip-stack#64 Owner Decision 2), so ⚠ **there is no size at which
- * taking becomes impossible** — ⚠ which is exactly why the number had to be
- * chosen for what it claims rather than for what fits.
+ * taking becomes impossible** — ⚠ which is why the number is chosen for what it
+ * claims rather than for what fits.
  *
- * ⚠ **Measured before it was chosen**, 3000 octets handed to `sendall`, same
- * conditions as `docs/SPEC.md` §3, 2026-08-29:
+ * ⚠ **Measured before the shape was chosen**, 3000 octets handed to `sendall`,
+ * same conditions as `docs/SPEC.md` §3, 2026-08-29:
  *
  *     window   segments   octets each   Send-Q reached 0
  *     1        2400       1             ⚠ no, not in 3 seconds
@@ -127,22 +159,19 @@ uint32_t handshake_initial_send_sequence(struct moment now);
  *     1460     6          388 .. 536    yes
  *     65535    6          320 .. 536    yes
  *
- * ⚠ **1460 and 65535 behave the same**: past a point ⚠ **the segment size is
- * the peer's MSS and congestion window deciding, not our window** — so a larger
- * promise would buy nothing and would say something we cannot tie to anything.
+ * ⚠ **1460 and 65535 behave the same**: past a point ⚠ **the segment size is the
+ * peer's MSS and congestion window deciding, not our window.**
  *
- * ⚠ **It never shrinks, and that is provable rather than convenient.** RFC 793:
- * "The total of RCV.NXT and RCV.WND should not be reduced." ⚠ Every octet is
- * discarded as it is taken, so ⚠ **the window is always this many from
- * `RCV.NXT`**, and `RCV.NXT` only advances. ⚠ hidetzu/tcpip-stack#75's second
- * Human Decision did not arise for that reason.
+ * ⚠ **It never shrinks**: every octet is discarded as it is taken, so the window
+ * is always this many from `RCV.NXT`, and `RCV.NXT` only advances. RFC 793: "The
+ * total of RCV.NXT and RCV.WND should not be reduced."
  *
- * ⚠ Until hidetzu/tcpip-stack#64 this was 0, and 0 was equally the truth then:
- * ⚠ **nothing accepted a single octet.** ⚠ It became 1 because that is the
- * smallest that lets a `FIN` through, ⚠ **measured** — with a window of 0 a
- * `close()` produces no `FIN` at all. ⚠ **The number has moved twice and each
- * time what backs it moved first.** */
-#define HANDSHAKE_WINDOW 1460u
+ * ⚠ **The number has moved three times and each time what backs it moved
+ * first**: 0 while nothing accepted an octet, 1 once one was taken, 1460 once
+ * each was acknowledged, ⚠ **and now whatever the device reports.**
+ *
+ * ⚠ **Pure**: no fd, no clock, no device (`.claude/rules/c.md`). */
+enum handshake_window handshake_window_for_mtu(unsigned int mtu, uint16_t *window);
 
 enum handshake_decision {
     /* ⚠ The connection moved to a state it was not in. `outcome->state` says
@@ -629,7 +658,8 @@ struct handshake_outcome {
  *                      <CTL=SYN,ACK>"
  *     Sequence Number  ISS
  *     Acknowledgment   RCV.NXT
- *     Window           ⚠ `HANDSHAKE_WINDOW`, and ⚠ **it is a promise this
+ *     Window           ⚠ `RCV.WND`, what one frame carries on this device,
+ *                      and ⚠ **it is a promise this
  *                      stack keeps in taking**: `take_the_data` accepts that
  *                      many octets and discards them
  *                      (hidetzu/tcpip-stack#64 Owner Decisions 1 and 2)
@@ -657,7 +687,7 @@ struct handshake_outcome {
  * RFC 793 §3.9 asks for a reset or an ack produce a counted reason and nothing
  * on the wire; `docs/SPEC.md` §2 names them. */
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
-                       uint16_t listening_port, struct moment now,
+                       uint16_t listening_port, uint16_t window, struct moment now,
                        uint8_t time_to_live,
                        const uint8_t *requester_hardware_address,
                        const uint8_t *our_hardware_address,

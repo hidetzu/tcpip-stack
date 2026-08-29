@@ -16,9 +16,23 @@ _Static_assert(TCP_PROTOCOL_NUMBER == IPV4_PROTOCOL_TCP,
 
 /* ⚠ The window goes into a sixteen-bit field and into `outcome->octets_taken`,
  * which is sixteen bits too. ⚠ A larger promise would be truncated on the way
- * out, and ⚠ **the number a peer read would not be the number we chose.** */
-_Static_assert(HANDSHAKE_WINDOW <= 0xffffu,
-               "the window must fit the field RFC 793 gives it");
+ * out, and ⚠ **the number a peer read would not be the number we chose.**
+ *
+ * ⚠ Until hidetzu/tcpip-stack#119 a `_Static_assert` held this, ⚠ **and it could,
+ * because the window was a constant.** ⚠ **It is a device's answer now**, so the
+ * same job is done where the answer arrives — `handshake_window_for_mtu`. */
+enum handshake_window handshake_window_for_mtu(unsigned int mtu, uint16_t *window)
+{
+    if (mtu <= HANDSHAKE_HEADERS_BEFORE_DATA) {
+        return HANDSHAKE_WINDOW_THE_MTU_LEAVES_NOTHING;
+    }
+    unsigned int room = mtu - HANDSHAKE_HEADERS_BEFORE_DATA;
+    if (room > 0xffffu) {
+        return HANDSHAKE_WINDOW_WOULD_NOT_FIT_THE_FIELD;
+    }
+    *window = (uint16_t)room;
+    return HANDSHAKE_WINDOW_OK;
+}
 
 uint32_t handshake_initial_send_sequence(struct moment now)
 {
@@ -122,7 +136,7 @@ static size_t build_the_answer(const struct transmission_control_block *block,
     }
     /* ⚠ A promise of exactly this many octets, and ⚠ `take_the_data` is what
      * backs it (hidetzu/tcpip-stack#64 Owner Decision 1). */
-    fields.window = HANDSHAKE_WINDOW;
+    fields.window = block->rcv_wnd;
 
     uint8_t *segment = reply + ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES;
     size_t segment_bytes = 0;
@@ -227,7 +241,7 @@ static enum where_it_sat take_the_data(struct transmission_control_block *block,
     }
 
     size_t still_to_come = header->data_bytes - behind_us;
-    size_t take = still_to_come < HANDSHAKE_WINDOW ? still_to_come : HANDSHAKE_WINDOW;
+    size_t take = still_to_come < block->rcv_wnd ? still_to_come : block->rcv_wnd;
 
     block->rcv_nxt += (uint32_t)take;
     /* ⚠ Every move of `RCV.NXT` and the number reported for it are written
@@ -402,7 +416,7 @@ static enum handshake_reply what_is_owed(const struct transmission_control_block
 }
 
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
-                       uint16_t listening_port, struct moment now,
+                       uint16_t listening_port, uint16_t window, struct moment now,
                        uint8_t time_to_live,
                        const uint8_t *requester_hardware_address,
                        const uint8_t *our_hardware_address,
@@ -460,7 +474,7 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
          * unacceptable segment ⚠ **"(unless the RST bit is set, if so drop the
          * segment and return)"**. */
         if ((header->control_bits & TCP_CONTROL_RST) != 0) {
-            uint32_t past_the_window = held->rcv_nxt + HANDSHAKE_WINDOW;
+            uint32_t past_the_window = held->rcv_nxt + held->rcv_wnd;
             bool inside = at_or_before(held->rcv_nxt, header->sequence_number) &&
                           !at_or_before(past_the_window, header->sequence_number);
             if (inside) {
@@ -712,6 +726,17 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
         outcome->reason = HANDSHAKE_REASON_NO_ROOM;
         return;
     }
+
+    /* ⚠ RFC 9293 §3.3.1 puts `RCV.WND` in the TCB, so it is written here, where
+     * the block becomes this connection's. ⚠ **Every block in this build is
+     * given the same number** — it is the device's, not the connection's — and
+     * ⚠ **the document's shape is followed anyway** (`.claude/rules/layers.md`).
+     *
+     * ⚠ Written on every arrival and not only on the first, because
+     * ⚠ **`connections_take` hands back the block that already holds this id**
+     * when the peer retransmits its `SYN`, and ⚠ the value is the same either
+     * way. */
+    taken->rcv_wnd = window;
 
     /* ⚠ RFC 793, verbatim: "Set RCV.NXT to SEG.SEQ+1, IRS is set to SEG.SEQ ...
      * ISS should be selected and a SYN segment sent of the form:

@@ -19,6 +19,23 @@
 static const unsigned char THEIR_MAC[6] = { 0x02, 0x11, 0x11, 0x11, 0x11, 0x11 };
 static const unsigned char OUR_MAC[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x02 };
 
+/* The window every case here promises.
+ *
+ * ⚠ **Derived, not written.** ⚠ Until hidetzu/tcpip-stack#119 the cases named
+ * `HANDSHAKE_WINDOW`, which was `1460u`; ⚠ **the window is a device's answer
+ * now**, so the cases name the derivation and the MTU the checks use.
+ * ⚠ **A literal 1460 here would be a second copy of a decision**
+ * (`.claude/rules/testing.md`: name the constant the code names). */
+static uint16_t the_window(void)
+{
+    uint16_t window = 0;
+    if (handshake_window_for_mtu(1500u, &window) != HANDSHAKE_WINDOW_OK) {
+        return 0;
+    }
+    return window;
+}
+#define THE_WINDOW (the_window())
+
 #define OUR_PORT 80
 #define THEIR_PORT 50568
 #define THEIR_ISN 0x831b6b20u
@@ -91,7 +108,7 @@ static struct handshake_outcome receive(struct world *world,
 {
     struct connection_id id = the_connection();
     struct handshake_outcome outcome;
-    handshake_receive(header, &id, OUR_PORT, world->now, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world->connections,
+    handshake_receive(header, &id, OUR_PORT, THE_WINDOW, world->now, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world->connections,
                       world->reply, sizeof world->reply, &world->counts, &outcome);
     return outcome;
 }
@@ -301,7 +318,7 @@ static bool case_the_window_still_works_where_the_sequence_space_wraps(void)
             a_segment(TCP_CONTROL_ACK, THEIR_ISN + 1u, around_the_wrap[i].ack);
         unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&ack, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
+        handshake_receive(&ack, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                           sizeof reply, &counts, &outcome);
 
         bool established = outcome.decision == HANDSHAKE_MOVED &&
@@ -471,9 +488,9 @@ static bool case_the_answer_is_the_one_the_document_describes(void)
      * value before #64 and a window of 0 makes a FIN impossible** — measured,
      * `src/handshake.h`. ⚠ Comparing only with the constant would pass if both
      * moved back to 0 together. */
-    if (answer.window != HANDSHAKE_WINDOW || answer.window == 0) {
+    if (answer.window != THE_WINDOW || answer.window == 0) {
         fprintf(stderr, "  the answer advertises a window of %u, not %u\n",
-                answer.window, (unsigned)HANDSHAKE_WINDOW);
+                answer.window, (unsigned)THE_WINDOW);
         ok = false;
     }
     /* ⚠ Owner Decision 2: no options at all. */
@@ -563,7 +580,7 @@ static bool case_an_answer_that_would_not_fit_is_counted_as_ours(void)
         struct connection_id id = the_connection();
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                           room, &counts, &outcome);
 
         if (outcome.decision != HANDSHAKE_STAYED ||
@@ -599,7 +616,7 @@ static bool case_an_answer_that_would_not_fit_is_counted_as_ours(void)
     struct connection_id id = the_connection();
     struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
     struct handshake_outcome outcome;
-    handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
+    handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                       needed, &counts, &outcome);
     if (outcome.decision != HANDSHAKE_MOVED || outcome.reply_bytes != needed) {
         fprintf(stderr, "  exactly %zu octets of room was declined, reason %d\n", needed,
@@ -766,7 +783,7 @@ static bool case_the_acknowledgment_for_data_is_the_one_the_document_describes(v
                 (unsigned long)held->snd_nxt);
         ok = false;
     }
-    if (ours.window != HANDSHAKE_WINDOW || ours.data_offset != TCP_HEADER_LENGTH_MINIMUM) {
+    if (ours.window != THE_WINDOW || ours.data_offset != TCP_HEADER_LENGTH_MINIMUM) {
         fprintf(stderr, "  it carries a window of %u and %u octets of options\n",
                 ours.window, (ours.data_offset - TCP_HEADER_LENGTH_MINIMUM) * 4);
         ok = false;
@@ -1034,7 +1051,7 @@ static bool case_an_acknowledgment_that_would_not_fit_is_counted_as_ours(void)
     struct tcp_header data =
         carrying(a_segment(TCP_CONTROL_ACK, was, held->iss + 1u), 1);
     struct handshake_outcome outcome;
-    handshake_receive(&data, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world.connections,
+    handshake_receive(&data, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world.connections,
                       no_room, sizeof no_room, &world.counts, &outcome);
 
     if (outcome.reason != HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY ||
@@ -1151,7 +1168,7 @@ static bool case_a_segment_longer_than_the_window_is_taken_a_window_at_a_time(vo
     bool ok = true;
     /* ⚠ Two windows' worth and a bit, ⚠ **written from the constant** so this
      * follows the number rather than pinning a value of its own. */
-    size_t too_much = (size_t)HANDSHAKE_WINDOW * 2u + 7u;
+    size_t too_much = (size_t)THE_WINDOW * 2u + 7u;
     struct tcp_header oversized =
         carrying(a_segment(TCP_CONTROL_ACK, began_at, held->iss + 1u), too_much);
 
@@ -1159,13 +1176,13 @@ static bool case_a_segment_longer_than_the_window_is_taken_a_window_at_a_time(vo
      * until what is left is smaller than the window. */
     for (unsigned arrival = 1; arrival <= 2; arrival++) {
         struct handshake_outcome outcome = receive(&world, &oversized);
-        if (outcome.octets_taken != HANDSHAKE_WINDOW) {
+        if (outcome.octets_taken != THE_WINDOW) {
             fprintf(stderr, "  arrival %u of %zu octets took %u, not %u\n",
                     arrival, too_much, (unsigned)outcome.octets_taken,
-                    (unsigned)HANDSHAKE_WINDOW);
+                    (unsigned)THE_WINDOW);
             ok = false;
         }
-        if (held->rcv_nxt != began_at + arrival * HANDSHAKE_WINDOW) {
+        if (held->rcv_nxt != began_at + arrival * THE_WINDOW) {
             fprintf(stderr, "  after arrival %u RCV.NXT had moved by %lu\n", arrival,
                     (unsigned long)(held->rcv_nxt - began_at));
             ok = false;
@@ -1377,7 +1394,7 @@ static bool case_a_fin_sits_after_the_data_it_rides_with(void)
         return false;
     }
     uint32_t from = other->rcv_nxt;
-    size_t past_it = (size_t)HANDSHAKE_WINDOW + 2u;
+    size_t past_it = (size_t)THE_WINDOW + 2u;
     struct tcp_header fin_with_more =
         carrying(a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, from, other->iss + 1u),
                  past_it);
@@ -1391,9 +1408,9 @@ static bool case_a_fin_sits_after_the_data_it_rides_with(void)
         ok = false;
     }
     /* ⚠ The octets the window did cover were still taken. */
-    if (other->rcv_nxt != from + HANDSHAKE_WINDOW) {
+    if (other->rcv_nxt != from + THE_WINDOW) {
         fprintf(stderr, "  RCV.NXT moved by %lu when %u octets fit\n",
-                (unsigned long)(other->rcv_nxt - from), (unsigned)HANDSHAKE_WINDOW);
+                (unsigned long)(other->rcv_nxt - from), (unsigned)THE_WINDOW);
         ok = false;
     }
     return ok;
@@ -1766,7 +1783,7 @@ static bool case_our_close_is_the_segment_the_document_describes(void)
         fputs("  our close's ports are not ours to theirs\n", stderr);
         ok = false;
     }
-    if (ours.window != HANDSHAKE_WINDOW || ours.data_offset != TCP_HEADER_LENGTH_MINIMUM) {
+    if (ours.window != THE_WINDOW || ours.data_offset != TCP_HEADER_LENGTH_MINIMUM) {
         fprintf(stderr, "  our close carries a window of %u and %u octets of options\n",
                 ours.window, (ours.data_offset - TCP_HEADER_LENGTH_MINIMUM) * 4);
         ok = false;
@@ -1884,9 +1901,102 @@ static bool case_every_segment_we_build_carries_the_same_window(void)
     }
     /* ⚠ And the other half: ⚠ **it is the number we chose**, not merely the
      * same wrong number three times. */
-    if (in_the_answer != HANDSHAKE_WINDOW) {
+    if (in_the_answer != THE_WINDOW) {
         fprintf(stderr, "  all four say %u and the window is %u\n", in_the_answer,
-                (unsigned)HANDSHAKE_WINDOW);
+                (unsigned)THE_WINDOW);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ hidetzu/tcpip-stack#119 AC 1, 3 and 4. ⚠ The window is derived from an MTU,
+ * ⚠ **and the two refusals are asserted here and nowhere else** — ⚠ neither is
+ * reachable from a device (the kernel takes 68 .. 65521), and ⚠ **contriving one
+ * would be testing the contrivance.** ⚠ **Pure: no fd, no clock, no device.** */
+static bool case_the_window_is_what_one_frame_carries(void)
+{
+    bool ok = true;
+    uint16_t window = 0;
+
+    /* ⚠ The MTU the checks use, and ⚠ **the arithmetic is written out here**
+     * rather than as 1460 — ⚠ a literal would be a second copy of the decision
+     * (`.claude/rules/testing.md`). */
+    if (handshake_window_for_mtu(1500u, &window) != HANDSHAKE_WINDOW_OK ||
+        window != 1500u - HANDSHAKE_HEADERS_BEFORE_DATA) {
+        fprintf(stderr, "  an MTU of 1500 gave a window of %u\n", (unsigned)window);
+        ok = false;
+    }
+    /* ⚠ And it must not have stopped being what it was: ⚠ **1460 is the value
+     * every measurement in docs/SPEC.md §3 was taken at**, so a change to the
+     * headers constant that moved it silently is a regression (`.claude/rules/
+     * testing.md`: assert against the constant AND against the value it must
+     * not be). */
+    if (window != 1460u) {
+        fprintf(stderr, "  an MTU of 1500 no longer gives 1460, it gives %u — "
+                        "re-measure docs/SPEC.md §3 before changing this\n",
+                (unsigned)window);
+        ok = false;
+    }
+
+    /* ⚠ It follows the device, and ⚠ **68 and 65521 are the two ends the kernel
+     * actually accepts** — measured, `unshare -Urn`, 3 runs. */
+    static const struct { unsigned int mtu; unsigned int window; } follows[] = {
+        { 68u, 28u }, { 1400u, 1360u }, { 9000u, 8960u }, { 65521u, 65481u },
+        { HANDSHAKE_HEADERS_BEFORE_DATA + 1u, 1u },
+    };
+    for (size_t i = 0; i < sizeof follows / sizeof follows[0]; i++) {
+        window = 0;
+        if (handshake_window_for_mtu(follows[i].mtu, &window) != HANDSHAKE_WINDOW_OK ||
+            window != follows[i].window) {
+            fprintf(stderr, "  an MTU of %u gave a window of %u, not %u\n",
+                    follows[i].mtu, (unsigned)window, follows[i].window);
+            ok = false;
+        }
+    }
+
+    /* ⚠ Nothing left after the two headers. ⚠ The boundary is the headers
+     * constant itself, ⚠ **and one octet either side of it.** */
+    for (unsigned int mtu = 0; mtu <= HANDSHAKE_HEADERS_BEFORE_DATA; mtu++) {
+        window = 0xabcdu;
+        if (handshake_window_for_mtu(mtu, &window) != HANDSHAKE_WINDOW_THE_MTU_LEAVES_NOTHING) {
+            fprintf(stderr, "  an MTU of %u was not refused\n", mtu);
+            ok = false;
+        }
+        /* ⚠ **The caller's number is untouched on a refusal** — a refusal that
+         * writes a value is one a caller can use by accident. */
+        if (window != 0xabcdu) {
+            fprintf(stderr, "  a refused MTU of %u still wrote %u\n", mtu, (unsigned)window);
+            ok = false;
+        }
+    }
+
+    /* ⚠ More than the field can promise. ⚠ **Refused, never truncated**: the
+     * promise a peer reads must be the promise we made (`CLAUDE.md` §1). */
+    static const unsigned int too_much[] = {
+        0xffffu + HANDSHAKE_HEADERS_BEFORE_DATA + 1u, 0x20000u, 0xffffffffu,
+    };
+    for (size_t i = 0; i < sizeof too_much / sizeof too_much[0]; i++) {
+        window = 0xabcdu;
+        if (handshake_window_for_mtu(too_much[i], &window) !=
+            HANDSHAKE_WINDOW_WOULD_NOT_FIT_THE_FIELD) {
+            fprintf(stderr, "  an MTU of %u was not refused as too large\n", too_much[i]);
+            ok = false;
+        }
+        if (window != 0xabcdu) {
+            fprintf(stderr, "  a too-large MTU of %u still wrote %u\n",
+                    too_much[i], (unsigned)window);
+            ok = false;
+        }
+    }
+
+    /* ⚠ And the largest that is still taken, one octet below the first refusal.
+     * ⚠ **Without this the refusal above would pass for a build that refuses
+     * everything** (`verify` §5). */
+    window = 0;
+    if (handshake_window_for_mtu(0xffffu + HANDSHAKE_HEADERS_BEFORE_DATA, &window) !=
+            HANDSHAKE_WINDOW_OK || window != 0xffffu) {
+        fprintf(stderr, "  the largest window that fits was refused, giving %u\n",
+                (unsigned)window);
         ok = false;
     }
     return ok;
@@ -1900,8 +2010,10 @@ static bool case_every_segment_we_build_carries_the_same_window(void)
 static bool case_a_segment_the_window_covers_is_taken_whole(void)
 {
     bool ok = true;
-    static const size_t sizes[] = { 1, 2, 100, (size_t)HANDSHAKE_WINDOW - 1u,
-                                    (size_t)HANDSHAKE_WINDOW };
+    /* ⚠ Not `static const`: ⚠ **the window is derived now, not a macro**, so
+     * these are not constant expressions (hidetzu/tcpip-stack#119). */
+    const size_t sizes[] = { 1, 2, 100, (size_t)THE_WINDOW - 1u,
+                             (size_t)THE_WINDOW };
 
     for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
         struct world world;
@@ -2082,7 +2194,7 @@ static bool case_the_time_to_live_we_send_with_is_the_callers(void)
         struct connection_id id = the_connection();
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, at(0), values[i], THEIR_MAC, OUR_MAC,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), values[i], THEIR_MAC, OUR_MAC,
                           &world.connections, world.reply, sizeof world.reply,
                           &world.counts, &outcome);
         if (outcome.reply_bytes == 0) {
@@ -2136,7 +2248,7 @@ static bool case_a_syn_from_an_impossible_source_is_refused(void)
         memcpy(id.remote.address, from[i].address, CONNECTION_ADDRESS_BYTES);
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
                           THEIR_MAC, OUR_MAC, &world.connections, world.reply,
                           sizeof world.reply, &world.counts, &outcome);
 
@@ -2200,7 +2312,7 @@ static bool case_a_syn_from_an_impossible_source_is_refused(void)
             memcpy(id.remote.address, still[i].address, CONNECTION_ADDRESS_BYTES);
             struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
             struct handshake_outcome outcome;
-            handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+            handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
                               THEIR_MAC, OUR_MAC, &world.connections, world.reply,
                               sizeof world.reply, &world.counts, &outcome);
             if (outcome.reason == HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE ||
@@ -2224,7 +2336,7 @@ static bool case_a_syn_from_an_impossible_source_is_refused(void)
         id.remote.address[3] = 255;
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
                           THEIR_MAC, OUR_MAC, &world.connections, world.reply,
                           sizeof world.reply, &world.counts, &outcome);
         if (outcome.reason == HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE) {
@@ -2261,7 +2373,7 @@ static bool case_a_segment_addressed_to_everyone_is_refused(void)
         memcpy(id.local.address, to[i].address, CONNECTION_ADDRESS_BYTES);
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
                           THEIR_MAC, OUR_MAC, &world.connections, world.reply,
                           sizeof world.reply, &world.counts, &outcome);
 
@@ -2307,7 +2419,7 @@ static bool case_a_segment_addressed_to_everyone_is_refused(void)
         id.local.address[3] = 255;
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
                           THEIR_MAC, OUR_MAC, &world.connections, world.reply,
                           sizeof world.reply, &world.counts, &outcome);
         if (outcome.reason == HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE) {
@@ -2922,7 +3034,7 @@ static bool case_a_close_that_would_not_fit_is_counted_as_ours(void)
     struct tcp_header fin =
         a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, their_fin, held->iss + 1u);
     struct handshake_outcome outcome;
-    handshake_receive(&fin, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world.connections,
+    handshake_receive(&fin, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world.connections,
                       no_room, sizeof no_room, &world.counts, &outcome);
 
     if (outcome.reason != HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY ||
@@ -3025,7 +3137,7 @@ static bool case_each_reason_moves_only_its_own_count(void)
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                           sizeof reply, &counts, &outcome);
         if (outcome.reason != HANDSHAKE_REASON_NO_ROOM ||
             counts.room.refused_for_want_of_room != 1 || counts.opened != 0) {
@@ -3045,7 +3157,7 @@ static bool case_each_reason_moves_only_its_own_count(void)
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT + 1, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections,
+        handshake_receive(&syn, &id, OUR_PORT + 1, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections,
                           reply, sizeof reply, &counts, &outcome);
         if (outcome.reason != HANDSHAKE_REASON_NO_CONNECTION_HELD ||
             counts.opened != 0) {
@@ -3072,7 +3184,7 @@ static bool case_a_block_taken_again_holds_none_of_the_last_connections_numbers(
     struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
     unsigned char reply[256];
     struct handshake_outcome outcome;
-    handshake_receive(&syn, &first, OUR_PORT, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
+    handshake_receive(&syn, &first, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                       sizeof reply, &counts, &outcome);
 
     struct transmission_control_block *block = connections_find(&connections, &first);
@@ -3509,6 +3621,8 @@ static const struct test_case cases[] = {
       case_our_close_is_the_segment_the_document_describes },
     { "every_segment_we_build_carries_the_same_window",
       case_every_segment_we_build_carries_the_same_window },
+    { "the_window_is_what_one_frame_carries",
+      case_the_window_is_what_one_frame_carries },
     { "a_segment_the_window_covers_is_taken_whole",
       case_a_segment_the_window_covers_is_taken_whole },
     { "a_duplicate_and_a_segment_ahead_are_told_apart_at_the_wrap",

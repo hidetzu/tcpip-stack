@@ -1083,6 +1083,83 @@ for bits, sequence, acknowledgment in ours[:1]:
 # ⚠ **Re-measured at 1460**: five octets handed to `send()` arrive as ⚠ **one
 # segment**, because the window now allows the peer to send them together.
 # ⚠ Lower the window without re-measuring and this fails again.
+# ⚠ hidetzu/tcpip-stack#119 AC 2. ⚠ **The window on the wire follows the device's
+# MTU** — ⚠ not the constant it used to be, and ⚠ **not our own output**: the
+# segment is read off an AF_PACKET socket (ADR 0009).
+#
+# ⚠ The device is brought up at 1400 HERE, before the stack starts, because
+# ⚠ **a device the stack creates itself is always 1500** (measured, 3 runs) —
+# ⚠ so a case that only ever saw 1500 could not tell a derivation from the old
+# constant.
+inside_the_window_on_the_wire_follows_the_mtu() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    headers=$(constant src/handshake.h HANDSHAKE_HEADERS_BEFORE_DATA)
+    headers=${headers%u}
+
+    for mtu in 1400 1500; do
+        ip tuntap add dev tap0 mode tap
+        ip link set tap0 mtu "$mtu"
+        "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+            --timeout 2500 --hex >"$work/out-$mtu.txt" 2>&1 &
+        reader=$!
+        if ! wait_for_interface tap0; then
+            note_failure "tap0 never appeared at MTU $mtu"
+            kill "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+            return
+        fi
+        sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+        ip addr add 10.0.0.1/24 dev tap0
+        ip link set tap0 up
+
+        # ⚠ Read off the wire, not out of our own report (ADR 0009).
+        LC_ALL=C python3 -c '
+import socket, struct, sys
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.settimeout(2.0)
+import subprocess
+subprocess.Popen(["timeout", "2", "bash", "-c",
+                  "exec 3<>/dev/tcp/10.0.0.2/80 || true"])
+while True:
+    frame = wire.recv(2048)
+    if len(frame) < 14 + 20 + 20: continue
+    if frame[12:14] != b"\x08\x00": continue
+    ihl = (frame[14] & 0x0f) * 4
+    if frame[14 + 9] != 6: continue
+    at = 14 + ihl
+    control = frame[at + 13]
+    if not (control & 0x12) == 0x12:   # SYN and ACK
+        continue
+    print(struct.unpack("!H", frame[at + 14:at + 16])[0])
+    break
+' >"$work/window-$mtu.txt" 2>"$work/wire-$mtu.txt" || true
+
+        kill -INT "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+        ip link del tap0 2>/dev/null
+    done
+
+    for mtu in 1400 1500; do
+        want=$(( mtu - headers ))
+        got=$(cat "$work/window-$mtu.txt" 2>/dev/null)
+        if [ -z "$got" ]; then
+            note_failure "no SYN,ACK was captured at MTU $mtu, so nothing was judged"
+        elif [ "$got" != "$want" ]; then
+            note_failure "at MTU $mtu the SYN,ACK carried a window of $got and one frame carries $want"
+        fi
+    done
+
+    # ⚠ The other half: ⚠ **the two must DIFFER**, or a build that ignored the
+    # MTU entirely would pass both (`verify` §5).
+    if [ "$(cat "$work/window-1400.txt" 2>/dev/null)" = "$(cat "$work/window-1500.txt" 2>/dev/null)" ]; then
+        note_failure "the window was the same at MTU 1400 and 1500, so it does not follow the device"
+    fi
+
+    printf '    the SYN,ACK carried %s at MTU 1400 and %s at MTU 1500\n' \
+        "$(cat "$work/window-1400.txt" 2>/dev/null)" "$(cat "$work/window-1500.txt" 2>/dev/null)"
+}
+
 inside_the_peers_send_queue_drains_once_we_acknowledge() {
     ours=10.0.0.2
     our_mac=02:00:00:00:00:02
@@ -1374,10 +1451,21 @@ inside_an_acknowledgment_never_covers_an_octet_we_did_not_take() {
     ip link set tap0 up
 
     # ⚠ Read out of the header rather than written here a second time, and
-    # ⚠ **the `u` suffix stripped** — the shell compares text, and `1460u` is
-    # not `1460` (`CLAUDE.md` §3).
-    window=$(constant src/handshake.h HANDSHAKE_WINDOW)
-    window=${window%u}
+    # ⚠ **the `u` suffix stripped** — the shell compares text, and `40u` is not
+    # `40` (`CLAUDE.md` §3).
+    #
+    # ⚠ **Repointed at hidetzu/tcpip-stack#119.** ⚠ This named `HANDSHAKE_WINDOW`
+    # until the window stopped being a constant and became what the device's MTU
+    # leaves. ⚠ **The check was NOT widened and the assertion did not weaken**
+    # (`.claude/rules/testing.md`): it still asks what one frame carries, and
+    # ⚠ **it now performs the arithmetic the code performs, from the same
+    # constant** — so a change to either follows through to here.
+    #
+    # ⚠ 1500 is what the device is brought up with above, in this file, by this
+    # case. ⚠ **It is the harness's own number and not an assumption about
+    # somebody's device.**
+    headers=$(constant src/handshake.h HANDSHAKE_HEADERS_BEFORE_DATA)
+    window=$(( 1500 - ${headers%u} ))
     ack_bit=$(constant src/tcp.h TCP_CONTROL_ACK)
     syn_bit=$(constant src/tcp.h TCP_CONTROL_SYN)
 
@@ -2269,6 +2357,10 @@ case_the_kernel_reaches_time_wait_and_our_block_is_free_again() {
 case_a_fin_whose_sequence_number_we_do_not_expect_is_not_answered() {
     in_namespace a_fin_whose_sequence_number_we_do_not_expect_is_not_answered
 }
+case_the_window_on_the_wire_follows_the_mtu() {
+    in_namespace the_window_on_the_wire_follows_the_mtu
+}
+
 case_the_peers_send_queue_drains_once_we_acknowledge() {
     in_namespace the_peers_send_queue_drains_once_we_acknowledge
 }
@@ -2307,7 +2399,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

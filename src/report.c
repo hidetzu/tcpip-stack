@@ -23,6 +23,20 @@ void report_mtu(FILE *out, const char *device_name, unsigned int mtu)
     fprintf(out, "%s carries frames of up to %u bytes\n", device_name, mtu);
 }
 
+void report_no_window(FILE *out, const char *device_name, unsigned int mtu,
+                      bool too_large)
+{
+    if (too_large) {
+        fprintf(out, "%s carries frames of up to %u bytes, which leaves more room "
+                     "than the Window field can promise.\n", device_name, mtu);
+        fprintf(out, "  Nothing was read. Bring the device up with a smaller MTU.\n");
+        return;
+    }
+    fprintf(out, "%s carries frames of up to %u bytes, which leaves no room for "
+                 "data after an internet header and a TCP header.\n", device_name, mtu);
+    fprintf(out, "  Nothing was read. Bring the device up with a larger MTU.\n");
+}
+
 void report_mtu_could_not_be_read(FILE *out, const char *device_name,
                                   const struct tap_failure *failure,
                                   unsigned int carrying_on_with)

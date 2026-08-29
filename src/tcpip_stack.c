@@ -316,6 +316,30 @@ int main(int argc, char **argv)
         report_mtu_could_not_be_read(stdout, options.device_name, &asking,
                                      frame_bytes_the_device_carries);
     }
+
+    /* ⚠ Derived once, from what the device reported, before a single frame is
+     * read (hidetzu/tcpip-stack#119, ADR 0028). ⚠ **Not per packet**
+     * (`CLAUDE.md` §3).
+     *
+     * ⚠ **Both refusals are measured not to occur on a tap** — the kernel takes
+     * 68 .. 65521, which leaves 28 .. 65481 — ⚠ **so this is a guard and not a
+     * path**, and the guard is asserted against `handshake_window_for_mtu`
+     * directly, with no device. */
+    uint16_t window_we_promise = 0;
+    switch (handshake_window_for_mtu(frame_bytes_the_device_carries, &window_we_promise)) {
+    case HANDSHAKE_WINDOW_OK:
+        break;
+    case HANDSHAKE_WINDOW_THE_MTU_LEAVES_NOTHING:
+        report_no_window(stderr, options.device_name,
+                         frame_bytes_the_device_carries, false);
+        tap_detach(device);
+        return EXIT_COULD_NOT_USE_THE_DEVICE;
+    case HANDSHAKE_WINDOW_WOULD_NOT_FIT_THE_FIELD:
+        report_no_window(stderr, options.device_name,
+                         frame_bytes_the_device_carries, true);
+        tap_detach(device);
+        return EXIT_COULD_NOT_USE_THE_DEVICE;
+    }
     fflush(stdout);
 
     /* ⚠ Owner of this buffer: main. It lives as long as the loop and nothing
@@ -551,7 +575,8 @@ int main(int argc, char **argv)
 
                         uint8_t reply[TAP_FRAME_BUFFER_BYTES];
                         struct handshake_outcome handshake;
-                        handshake_receive(&tcp, &id, options.tcp_port, moment_now(),
+                        handshake_receive(&tcp, &id, options.tcp_port, window_we_promise,
+                                          moment_now(),
                                           options.time_to_live, header.source,
                                           options.hardware_address, &connections, reply,
                                           sizeof reply, &handshake_counts, &handshake);
