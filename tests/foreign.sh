@@ -1223,6 +1223,272 @@ print("distinct-lengths", " ".join(str(d) for d in sorted(set(d for d, _ in carr
     printf '    Send-Q reached %s\n' "$left"
 }
 
+# ⚠ hidetzu/tcpip-stack#77 — the milestone's proof, in one run, and
+# ⚠ **every verdict in it belongs to the kernel**: `send()` returning,
+# `Send-Q` reaching 0, and `ss` reporting `TIME-WAIT`.
+#
+# ⚠ Measured before this milestone, same conditions, 2026-08-29: with nothing
+# acknowledging, ⚠ **the peer's `Send-Q` stayed at 5 for twelve seconds** and
+# the connection was never closed.
+#
+# ⚠ **Data and the close in the same connection on purpose.** ⚠ Each has its
+# own case already; ⚠ **what this one asserts is that they still hold
+# together** — a data path that broke the closing sequence would pass both
+# separately.
+inside_a_connection_carries_data_and_then_closes_properly() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 8000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    LC_ALL=C python3 -c '
+import socket, subprocess, sys, time
+
+HOW_MUCH = 3000
+
+def ss():
+    return subprocess.run(["ss", "-tan"], capture_output=True, text=True).stdout
+
+def about(here):
+    for line in ss().splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 5 and parts[3] == "%s:%d" % here:
+            return parts[0], parts[2]
+    return "gone", "gone"
+
+s = socket.socket()
+s.settimeout(5)
+try:
+    s.connect(("10.0.0.2", 80))
+except Exception as why:
+    print("connect-failed", why); sys.exit(1)
+here = s.getsockname()
+
+began = time.time()
+s.sendall(b"z" * HOW_MUCH)
+print("sendall-returned-after", round(time.time() - began, 3))
+
+# ⚠ Watched until the queue empties, ⚠ **never a fixed sleep long enough to
+# hide a slow one.** ⚠ What is printed is the last value seen, whatever it is.
+state, queued = about(here)
+deadline = time.time() + 5.0
+while time.time() < deadline and queued not in ("0", "gone"):
+    time.sleep(0.05)
+    state, queued = about(here)
+print("send-q", queued)
+
+s.close()
+state, queued = about(here)
+deadline = time.time() + 4.0
+while time.time() < deadline and state in ("ESTAB", "FIN-WAIT-1", "FIN-WAIT-2"):
+    time.sleep(0.1)
+    state, queued = about(here)
+print("state-after-close", state)
+print("how-much", HOW_MUCH)
+' >"$work/run.txt" 2>&1
+    ran=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$ran" -ne 0 ]; then
+        note_failure "the connection could not be opened, so nothing was sent"
+        sed 's/^/      /' "$work/run.txt" >&2
+        return
+    fi
+
+    queued=$(awk '$1 == "send-q" { print $2 }' "$work/run.txt")
+    state=$(awk '$1 == "state-after-close" { print $2 }' "$work/run.txt")
+    how_much=$(awk '$1 == "how-much" { print $2 }' "$work/run.txt")
+
+    # ⚠ AC 1. ⚠ **The kernel does not release a buffer until the octets in it
+    # have been acknowledged with numbers it accepts.**
+    if [ "$queued" != "0" ]; then
+        note_failure "the peer still holds $queued octets, so it has not accepted our acknowledgments"
+        sed 's/^/      /' "$work/run.txt" >&2
+        printf '    what the stack said:\n' >&2
+        grep -v '^  [0-9a-f]' "$work/out.txt" | tail -14 | sed 's/^/      /' >&2
+        return
+    fi
+    # ⚠ AC 3. ⚠ **The data path did not break the closing sequence.**
+    if [ "$state" != "TIME-WAIT" ]; then
+        note_failure "the kernel is in $state after close(), not TIME-WAIT, so carrying data broke the closing sequence"
+        sed 's/^/      /' "$work/run.txt" >&2
+        return
+    fi
+    # ⚠ Our own count agrees, and ⚠ **every octet handed to send() was taken** —
+    # not merely enough of them for the queue to empty.
+    assert_file_contains "$work/out.txt" "$how_much octets of data were taken and discarded" \
+        "every octet handed to send() was taken"
+    assert_file_contains "$work/out.txt" "1 connection finished" \
+        "the connection was released after carrying data"
+
+    printf '    %s octets went through, the peer Send-Q reached %s, and ss then said %s\n' \
+        "$how_much" "$queued" "$state"
+}
+
+# ⚠ hidetzu/tcpip-stack#77 AC 2, and ⚠ **it is what stops the case above passing
+# for a stack that acknowledged optimistically.**
+#
+# ⚠ The pattern hidetzu/tcpip-stack#35, #44 and #67 all hit: ⚠ **a stack that
+# acknowledged every arriving segment with a number ahead of what it took would
+# still drain the peer's queue.**
+#
+# ⚠ A peer that sends MORE than the window allows is not something the Linux
+# kernel does — it honours the window, measured. ⚠ **So it is built here by
+# hand**, from an address nobody owns, over `AF_PACKET`.
+#
+# ⚠ The device's MTU is raised for this case only: ⚠ **a segment carrying more
+# than we asked for has to fit in a frame**, and 1460 is what one frame carries
+# at the default MTU. ⚠ **That is the case building its own hostile input, not a
+# claim about what the window means.**
+inside_an_acknowledgment_never_covers_an_octet_we_did_not_take() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 6000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 mtu 1700
+    ip link set tap0 up
+
+    # ⚠ Read out of the header rather than written here a second time, and
+    # ⚠ **the `u` suffix stripped** — the shell compares text, and `1460u` is
+    # not `1460` (`CLAUDE.md` §3).
+    window=$(constant src/handshake.h HANDSHAKE_WINDOW)
+    window=${window%u}
+    ack_bit=$(constant src/tcp.h TCP_CONTROL_ACK)
+    syn_bit=$(constant src/tcp.h TCP_CONTROL_SYN)
+
+    LC_ALL=C python3 -c '
+import socket, struct, sys, time
+
+window, ack_bit, syn_bit = (int(a.rstrip("uU"), 0) for a in sys.argv[1:4])
+MORE = window + 140
+
+OURS = b"\x02\x00\x00\x00\x00\x02"
+THEIRS = b"\x02\xaa\xaa\xaa\xaa\xaa"
+source = socket.inet_aton("10.0.0.99")
+destination = socket.inet_aton("10.0.0.2")
+THEIR_PORT = 40011
+THEIR_ISN = 500000
+
+def sum_of(octets):
+    total = 0
+    for i in range(0, len(octets) - 1, 2):
+        total += (octets[i] << 8) | octets[i + 1]
+    if len(octets) % 2:
+        total += octets[-1] << 8
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
+
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.settimeout(0.3)
+
+def send(bits, sequence, acknowledgment, payload=b""):
+    segment = struct.pack("!HHIIBBHHH", THEIR_PORT, 80, sequence, acknowledgment,
+                          5 << 4, bits, 64240, 0, 0) + payload
+    pseudo = source + destination + bytes([0, 6, len(segment) >> 8, len(segment) & 0xff])
+    segment = segment[:16] + struct.pack("!H", sum_of(pseudo + segment)) + segment[18:]
+    header = struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(segment), 1, 0, 64, 6, 0) \
+        + source + destination
+    header = header[:10] + struct.pack("!H", sum_of(header)) + header[12:]
+    wire.send(OURS + THEIRS + b"\x08\x00" + header + segment)
+
+def ours(seconds):
+    out = []
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            frame = wire.recv(4096)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if len(frame) < 54 or frame[12:14] != b"\x08\x00" or frame[14 + 9] != 6:
+            continue
+        if frame[6:12] != OURS:
+            continue
+        at = 14 + (frame[14] & 0x0f) * 4
+        out.append((frame[at + 13], int.from_bytes(frame[at + 4:at + 8], "big"),
+                    int.from_bytes(frame[at + 8:at + 12], "big")))
+    return out
+
+send(syn_bit, THEIR_ISN, 0)
+answers = [a for a in ours(1.5) if a[0] & syn_bit]
+if not answers:
+    print("no-answer-to-our-syn"); sys.exit(1)
+our_iss = answers[0][1]
+send(ack_bit, THEIR_ISN + 1, our_iss + 1)
+time.sleep(0.3)
+
+send(ack_bit, THEIR_ISN + 1, our_iss + 1, b"z" * MORE)
+back = ours(1.5)
+print("segments-back", len(back))
+for bits, sequence, acknowledgment in back[:1]:
+    print("acknowledges", (acknowledgment - (THEIR_ISN + 1)) % 4294967296)
+print("we-sent", MORE)
+print("the-window", window)
+' "$window" "$ack_bit" "$syn_bit" >"$work/over.txt" 2>&1
+    crafted=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$crafted" -ne 0 ]; then
+        note_failure "the crafted connection could not be driven"
+        sed 's/^/      /' "$work/over.txt" >&2
+        return
+    fi
+
+    back=$(awk '$1 == "segments-back" { print $2 }' "$work/over.txt")
+    acknowledges=$(awk '$1 == "acknowledges" { print $2 }' "$work/over.txt")
+    we_sent=$(awk '$1 == "we-sent" { print $2 }' "$work/over.txt")
+
+    # ⚠ It answered at all — or refusing to over-acknowledge would prove nothing.
+    if [ "${back:-0}" -lt 1 ]; then
+        note_failure "nothing came back for $we_sent octets, so this says nothing about what we acknowledge"
+        sed 's/^/      /' "$work/over.txt" >&2
+        return
+    fi
+    # ⚠ AC 2, and it is the whole point: ⚠ **exactly what the window covers, and
+    # not one octet more.**
+    if [ "$acknowledges" != "$window" ]; then
+        note_failure "we acknowledged $acknowledges octets of the $we_sent that arrived, and the window is $window"
+        sed 's/^/      /' "$work/over.txt" >&2
+        return
+    fi
+    assert_file_contains "$work/out.txt" "$window octets of data were taken and discarded" \
+        "exactly the window was taken from an oversized segment"
+
+    printf '    %s octets arrived in one segment and we acknowledged %s, the window\n' \
+        "$we_sent" "$acknowledges"
+    printf '    being %s\n' "$window"
+}
+
 # ⚠ The half that stops the case above passing for a stack that never looked at
 # a checksum (hidetzu/tcpip-stack#44 AC 2, and `CLAUDE.md` §1).
 #
@@ -1340,6 +1606,12 @@ case_a_fin_whose_sequence_number_we_do_not_expect_is_not_answered() {
 case_the_peers_send_queue_drains_once_we_acknowledge() {
     in_namespace the_peers_send_queue_drains_once_we_acknowledge
 }
+case_a_connection_carries_data_and_then_closes_properly() {
+    in_namespace a_connection_carries_data_and_then_closes_properly
+}
+case_an_acknowledgment_never_covers_an_octet_we_did_not_take() {
+    in_namespace an_acknowledgment_never_covers_an_octet_we_did_not_take
+}
 case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
     in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
 }
@@ -1350,7 +1622,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

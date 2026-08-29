@@ -51,9 +51,10 @@ make                 # build/tcpip-stack
 make check           # all three tiers
 ```
 
-Answering a ping, a connection request and a close with our own code (⚠ **a real run, 2026-08-29,
-kernel `7.0.2-arch1-1`** — the kernel's hardware address and its source port are whatever it picked
-on that run, and the IPv6 frames it sends unprompted are left in rather than tidied away):
+Answering a ping, a connection request, some data and a close with our own code (⚠ **a real run,
+2026-08-29, kernel `7.0.2-arch1-1`** — the kernel's hardware address and its source port are
+whatever it picked on that run, and the IPv6 frames it sends unprompted are left in rather than
+tidied away):
 
 ```sh
 unshare -Urn sh -c '
@@ -65,6 +66,7 @@ unshare -Urn sh -c '
   python3 -c "
 import socket, subprocess, time
 s = socket.socket(); s.connect((\"10.0.0.2\", 80))
+s.sendall(b\"hello, stack\")
 print(subprocess.run([\"ss\", \"-tn\"], capture_output=True, text=True).stdout, end=\"\")
 s.close(); time.sleep(0.5)
 print(subprocess.run([\"ss\", \"-tan\"], capture_output=True, text=True).stdout, end=\"\")
@@ -76,23 +78,25 @@ print(subprocess.run([\"ss\", \"-tan\"], capture_output=True, text=True).stdout,
 What `ping` said:
 
 ```text
-2 packets transmitted, 2 received, 0% packet loss, time 306ms
-rtt min/avg/max/mdev = 0.059/0.117/0.175/0.058 ms
+2 packets transmitted, 2 received, 0% packet loss, time 305ms
+rtt min/avg/max/mdev = 0.054/0.055/0.056/0.001 ms
 ```
 
 What `ss` said, while the connection was open and again after `close()`:
 
 ```text
 State     Recv-Q Send-Q Local Address:Port  Peer Address:Port
-ESTAB     0      0           10.0.0.1:54972     10.0.0.2:80
+ESTAB     0      0           10.0.0.1:42920     10.0.0.2:80
 
 State     Recv-Q Send-Q Local Address:Port  Peer Address:Port
-TIME-WAIT 0      0           10.0.0.1:54972     10.0.0.2:80
+TIME-WAIT 0      0           10.0.0.1:42920     10.0.0.2:80
 ```
 
-⚠ **`TIME-WAIT` is the kernel's own state**, entered only once it has had our close and acknowledged
-it. ⚠ **It is the peer's, and this stack never enters it** — RFC 793 puts it on the side that closed
-first. ⚠ **How long it stays there is the peer's business and nothing here can shorten it.**
+⚠ **`Send-Q` is 0 while the connection is still open**, which is the kernel saying it has had an
+acknowledgment it accepts for every octet of `hello, stack`. ⚠ **`TIME-WAIT` is the kernel's own
+state**, entered only once it has had our close and acknowledged it. ⚠ **It is the peer's, and this
+stack never enters it** — RFC 793 puts it on the side that closed first. ⚠ **How long it stays there
+is the peer's business and nothing here can shorten it.**
 
 What the stack said (⚠ **the ethernet header line of every frame is left out
 here; a real run prints one for each**):
@@ -102,15 +106,17 @@ listening on tap0
   answered it: 10.0.0.2 is ours, and 10.0.0.1 was told our hardware address
   answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back
   answered it: 10.0.0.2 is ours, and 10.0.0.1 got its 56 octets back
-  10.0.0.1:54972 asked to open a connection; now waiting for it to
+  10.0.0.1:42920 asked to open a connection; now waiting for it to
     confirm (SYN-RECEIVED)
-  10.0.0.1:54972 confirmed it; the connection is open (ESTABLISHED)
-  10.0.0.1:54972 has closed its side; we read the FIN, closed ours in the same
+  10.0.0.1:42920 confirmed it; the connection is open (ESTABLISHED)
+  12 octets of data arrived; we took them, told the sender so, and
+    had nobody to give them to
+  10.0.0.1:42920 has closed its side; we read the FIN, closed ours in the same
     segment, and are waiting for that to be acknowledged (LAST-ACK)
-  10.0.0.1:54972 acknowledged our own close; the connection is finished and
+  10.0.0.1:42920 acknowledged our own close; the connection is finished and
     the room it held is free again (CLOSED)
-listened on tap0 for 1500 ms after frame 13 and read no more. That does not say whether anything more was sent.
-read 13 frames, 0 read errors
+listened on tap0 for 1500 ms after frame 14 and read no more. That does not say whether anything more was sent.
+read 14 frames, 0 read errors
 0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define
 answered 1 ARP request. 0 were not for us, 0 were malformed, 0 named an address space we cannot place, 0 had an opcode we do not act on
 answered 2 echo requests. 0 were not for us, 0 carried a protocol we do not act on
@@ -123,8 +129,9 @@ answered 2 echo requests. 0 were not for us, 0 carried a protocol we do not act 
 1 of our own closes left the device and 0 went out again because nobody had acknowledged them. 1 connection finished, and 0 were given up on with our close unacknowledged
 0 answers went out again because nobody had confirmed them
 0 connections were given up on after nobody confirmed them
-0 octets of data were taken and discarded, and 0 segments carried data none of which was inside the window we promised
-the other side closed 1 connection. 0 FINs arrived that were not the next thing we were waiting for, and 0 named a connection we hold nothing for
+1 acknowledgment for data left the device
+12 octets of data were taken and discarded. 0 segments carried data we had taken already, and 0 began past what we were waiting for
+the other side closed 1 connection. 0 FINs arrived that we had read already, 0 began past what we were waiting for, and 0 named a connection we hold nothing for
 0 were refused for want of room and 0 answers never left the device, which are ours and not the sender's
 ```
 
@@ -133,10 +140,11 @@ lie for a VLAN-tagged frame, and ⚠ **`0x0800` → IPv4 has never been taken fr
 repository** — it is what the kernel put on a device while doing IPv4
 ([ADR 0003](docs/adr/0003-what-the-length-type-field-means-and-what-the-parse-layer-refuses-to-guess.md)).
 
-⚠ **This run is not the one that stood here before.** ⚠ The previous one, on 2026-08-28, ended with
-four lines of `nothing in this connection's state expects that` and a connection that was never
-closed. ⚠ **It was re-run rather than edited** (hidetzu/tcpip-stack#67 AC 6): a worked example
-patched by hand is no longer a record of anything.
+⚠ **This run is not the one that stood here before.** ⚠ The 2026-08-28 one ended with four lines of
+`nothing in this connection's state expects that` and a connection that was never closed; ⚠ the one
+after it closed but carried no data. ⚠ **Each was re-run rather than edited**
+(hidetzu/tcpip-stack#67 AC 6, #77 AC 6): a worked example patched by hand is no longer a record of
+anything.
 
 ⚠ **The last line of the timer is not a failure.** ⚠ Nothing more arrived here, and that does not
 say whether anything more was sent (`CLAUDE.md` §1).
@@ -151,6 +159,31 @@ Development tooling is Node (the hooks under `.claude/` use only Node built-ins 
 there are no npm dependencies). The product itself is C.
 
 ## Milestones
+
+### Data actually moves
+
+⚠ **Met, on 2026-08-29.** ⚠ **`send()` from the Linux kernel completes and its `Send-Q` reaches 0**,
+and ⚠ **the connection then closes properly in the same run** (`tests/foreign.sh`
+`a_connection_carries_data_and_then_closes_properly`, 3000 octets). ⚠ **The kernel does not release
+a buffer until the octets in it have been acknowledged with numbers it accepts**, so ⚠ **that is its
+judgement on our acknowledgment numbers, not ours.**
+
+⚠ **What is taken is acknowledged and then discarded.** ⚠ There is no user of this stack to hand an
+octet to, and ⚠ **saying so out loud is the whole of what "data moves" means here.**
+
+⚠ **The same lesson as the ping, the handshake and the close applies:** a stack that acknowledged
+every arriving segment with a number ahead of what it took would drain the peer's queue too.
+⚠ **A segment carrying 1600 octets against a window of 1460 is acknowledged for exactly 1460 — not
+one octet more** (`tests/foreign.sh` `an_acknowledgment_never_covers_an_octet_we_did_not_take`).
+⚠ The Linux kernel honours the window and will not build that segment, ⚠ **so the check builds it by
+hand.**
+
+⚠ **What it cost, and it is worth saying where:** the foreign tier is 24157 / 24167 / 24167 ms at
+thirteen cases, up from 8747 ms at six. ⚠ **The cost is not the case count and it is not the
+namespace** — ⚠ **the two cases added here take 100 and 103 ms between them**, and a whole
+connection with 3000 octets through it is one of them. ⚠ **It is the cases that wait on real time**:
+a schedule running out, a `close()` completing, a crafted connection driven a step at a time.
+⚠ [`docs/SPEC.md`](docs/SPEC.md) §3 has every case timed on its own.
 
 ### The connection can be closed
 
