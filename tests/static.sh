@@ -340,6 +340,91 @@ case_moment() {
 #
 # ⚠ Owner Decision, hidetzu/tcpip-stack#129: it was on loan until #130.
 # ⚠ **#130 is here, so the loan is over.**
+# ⚠ A row in `docs/SPEC.md` §2 says what may NOT be claimed. ⚠ **A row that names
+# a requirement `docs/conformance.md` records as MET is false**, and
+# ⚠ **it is false in the direction that makes this stack look like it does less
+# than it does.**
+#
+# ⚠ **Grounds: it happened four times** (`CLAUDE.md` §9). ⚠ hidetzu/tcpip-stack#126,
+# #130, #131 and #132 each closed a gap, ⚠ **and each left §2's old sentence
+# standing** — ⚠ found while deciding whether the tree was fit to call v0.1,
+# ⚠ **not by any check.**
+#
+# ⚠ **This is the half that CAN be mechanised.** ⚠ It cannot read whether a
+# sentence is true; ⚠ **it can read whether §2 and `conformance.md` contradict
+# each other about a requirement they both name.**
+case_spec_does_not_deny_what_conformance_says_is_met() {
+    # ⚠ Every requirement id `docs/conformance.md` calls met, and only those.
+    # ⚠ "met in part" and "met, and by accident" are still met.
+    awk -F'|' '/^\| `[A-Z]+-[0-9]+`/ {
+        id = $2; verdict = $4
+        gsub(/[ `]/, "", id)
+        if (verdict ~ /\*\*met/) print id
+    }' docs/conformance.md | sort -u >"$work/met.txt"
+
+    if [ ! -s "$work/met.txt" ]; then
+        note_failure "no requirement was read as met, so this case is not looking for the thing it names"
+        return
+    fi
+
+    # ⚠ Only §2's rows: §1 says what IS claimed and naming a met requirement
+    # there is right.
+    awk '/^## 2\. What this deliberately does not implement/ { inside = 1; next }
+         /^## / { inside = 0 }
+         inside && /^\| ⚠/ { print }' docs/SPEC.md >"$work/section-two.txt"
+
+    if [ ! -s "$work/section-two.txt" ]; then
+        note_failure "docs/SPEC.md section 2 has no rows, so this case is not looking for the thing it names"
+        return
+    fi
+
+    found=0
+    while read -r id; do
+        [ -n "$id" ] || continue
+        # ⚠ A row MAY name a met requirement to say which PART is missing — a
+        # partial verdict is the whole reason `met in part` exists. ⚠ So only a
+        # row naming one that is met OUTRIGHT is a contradiction.
+        if grep -q "^| \`$id\` |.*⚠ \*\*met in part" docs/conformance.md; then
+            continue
+        fi
+        # ⚠ A §2 row MAY cite a met requirement, and often must — to say the
+        # ceiling is OURS and not the document's, or that the bits ARE read and
+        # the mechanism is not. ⚠ **What it may not do is leave a reader to
+        # guess which.**
+        #
+        # ⚠ So the rule is: ⚠ **a row citing it must say it is met, and must not
+        # say it is not.** ⚠ That is exact, it is cheap, and ⚠ **it makes the
+        # document better rather than working around the check** — a citation
+        # that does not say which was ambiguous before this existed.
+        grep "\`$id\`" "$work/section-two.txt" >"$work/citing.txt" || true
+        while IFS= read -r row; do
+            [ -n "$row" ] || continue
+            case "$row" in
+                *"not met"*)
+                    note_failure "docs/SPEC.md section 2 says $id is not met, and docs/conformance.md records it as met"
+                    printf '      %s\n' "$(printf '%s' "$row" | cut -c1-120)" >&2
+                    found=$((found + 1))
+                    continue
+                    ;;
+            esac
+            case "$row" in
+                *met*) ;;
+                *)
+                    note_failure "docs/SPEC.md section 2 cites $id without saying it is met, and docs/conformance.md records it as met"
+                    printf '      %s\n' "$(printf '%s' "$row" | cut -c1-120)" >&2
+                    found=$((found + 1))
+                    ;;
+            esac
+        done <"$work/citing.txt"
+    done <"$work/met.txt"
+
+    if [ "$found" -ne 0 ]; then
+        return
+    fi
+    printf '    %d met requirements, none of them denied by section 2\n' \
+        "$(wc -l <"$work/met.txt")"
+}
+
 case_the_borrowed_interval_is_gone() {
     gone="HANDSHAKE_SEND_DATA_AGAIN""_AFTER_MILLISECONDS"
     if grep -rn --exclude-dir=.git --exclude-dir=build --exclude-dir=adr \
@@ -716,5 +801,5 @@ case_spec_names_checks_that_exist() {
         "$rows_seen" "$entry_points_seen" "$cases_seen"
 }
 
-select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case moment ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_clock_is_read_in_one_place the_mtu_is_read_in_one_place the_borrowed_interval_is_gone the_old_program_name_is_gone a_lowercase_keyword_is_not_called_a_requirement spec_names_checks_that_exist" "$@"
+select_cases static "build_warnings_are_errors build_with_sanitizers report_lines every_report_function_has_a_case moment ethernet_header arp_packet arp_responder internet_checksum ipv4_header icmp_message tcp_header connection_state handshake echo_responder a_device_name_that_is_too_long_is_refused half_an_identity_is_refused prose_lives_only_in_report the_clock_is_read_in_one_place the_mtu_is_read_in_one_place the_borrowed_interval_is_gone spec_does_not_deny_what_conformance_says_is_met the_old_program_name_is_gone a_lowercase_keyword_is_not_called_a_requirement spec_names_checks_that_exist" "$@"
 run_selected_cases
