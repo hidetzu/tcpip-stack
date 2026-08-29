@@ -425,6 +425,35 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
         outcome->state = held->state;
         outcome->we_would_acknowledge = held->rcv_nxt;
 
+        /* ⚠ RFC 9293 §3.10.7.4's second step, before the rest. ⚠ A `RST` that
+         * the sequence check accepts ends the connection: "Enter the CLOSED
+         * state, delete the TCB, and return."
+         *
+         * ⚠ The acceptability test is the document's first step, for a segment
+         * of length 0 against a window above zero:
+         * "RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND". ⚠ Written unsigned so it holds
+         * where the space wraps, for the reason `at_or_before` gives.
+         *
+         * ⚠ **A `RST` outside the window is dropped and nothing is sent** — the
+         * first step says so in as many words: an acknowledgment is sent for an
+         * unacceptable segment ⚠ **"(unless the RST bit is set, if so drop the
+         * segment and return)"**. */
+        if ((header->control_bits & TCP_CONTROL_RST) != 0) {
+            uint32_t past_the_window = held->rcv_nxt + HANDSHAKE_WINDOW;
+            bool inside = at_or_before(held->rcv_nxt, header->sequence_number) &&
+                          !at_or_before(past_the_window, header->sequence_number);
+            if (inside) {
+                connections_release(connections, held);
+                stayed(outcome, HANDSHAKE_REASON_THE_OTHER_SIDE_RESET_IT,
+                       &counts->reset_by_the_other_side);
+                outcome->state = CONNECTION_CLOSED;
+            } else {
+                stayed(outcome, HANDSHAKE_REASON_A_RESET_OUTSIDE_THE_WINDOW,
+                       &counts->reset_outside_the_window);
+            }
+            return;
+        }
+
         /* ⚠ RFC 793, on a SYN reaching a connection past LISTEN: "If the SYN is
          * in the window it is an error, send a reset ... If the SYN is not in
          * the window this step would not be reached and an ack would have been
@@ -606,6 +635,17 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
                 say_where_we_are(held, time_to_live, id, requester_hardware_address,
                                  our_hardware_address, reply, reply_bytes, outcome);
             }
+            return;
+        }
+
+        /* ⚠ RFC 9293 asks that a segment carrying `URG` have its pointer
+         * processed and the user signalled. ⚠ **There is no user** (ADR 0022),
+         * so ⚠ **it is counted and said** rather than passing as ordinary.
+         * ⚠ Reached only when nothing else was: ⚠ **a segment carrying `URG`
+         * AND data is acted on for its data**, above. */
+        if ((header->control_bits & TCP_CONTROL_URG) != 0) {
+            stayed(outcome, HANDSHAKE_REASON_URGENT_AND_NOBODY_TO_TELL,
+                   &counts->urgent_and_nobody_to_tell);
             return;
         }
 

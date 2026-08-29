@@ -227,6 +227,54 @@ enum handshake_reason {
      * nothing is sent here. */
     HANDSHAKE_REASON_NO_CONNECTION_HELD,
 
+    /* ⚠ The other side reset the connection, and ⚠ **it is gone.**
+     *
+     * ⚠ RFC 9293 §3.10.7.4, for the synchronised states: "If the RST bit is set,
+     * then any outstanding RECEIVEs and SEND should receive 'reset' responses.
+     * All segment queues should be flushed.  Users should also receive an
+     * unsolicited general 'connection reset' signal.  Enter the CLOSED state,
+     * delete the TCB, and return."
+     *
+     * ⚠ **There is no user and there are no queues** (ADR 0022). ⚠ What is left
+     * is deleting the block, ⚠ **and telling the human who is watching** — which
+     * is what the Report layer is for.
+     *
+     * ⚠ For `SYN-RECEIVED` the document says to "return this connection to
+     * LISTEN state ... The user need not be informed", and ⚠ **holding nothing
+     * IS our LISTEN**, so the two come to the same thing here. ⚠ **The only
+     * difference the document draws is in what a user is told**, and there is
+     * none.
+     *
+     * ⚠ **RFC 5961's three checks are not implemented.** ⚠ The document makes
+     * them conditional — "For stacks implementing the protection described in
+     * RFC 5961" — and ⚠ ADR 0024 clause 3 adds a deferred document only when
+     * that function is implemented. */
+    HANDSHAKE_REASON_THE_OTHER_SIDE_RESET_IT,
+
+    /* ⚠ A `RST` whose sequence number the window does not cover. ⚠ **Dropped,
+     * and nothing is sent for it.**
+     *
+     * ⚠ RFC 9293 §3.10.7.4's first step says an unacceptable segment draws an
+     * acknowledgment ⚠ **"(unless the RST bit is set, if so drop the segment and
+     * return)"** — ⚠ **so this one draws nothing**, unlike refused data or a
+     * refused `FIN`.
+     *
+     * ⚠ Counted on its own: ⚠ **a reset we could not place is not a connection
+     * that was reset**, and folding them together would make an attempt to cut
+     * a connection look like a connection cut. */
+    HANDSHAKE_REASON_A_RESET_OUTSIDE_THE_WINDOW,
+
+    /* ⚠ A segment carrying `URG`. ⚠ **The pointer is read and nothing is done
+     * with it.**
+     *
+     * ⚠ RFC 9293 asks that the urgent pointer be processed and the user
+     * signalled. ⚠ **There is no user** (ADR 0022), so ⚠ **this counts the
+     * segment and says so, rather than letting it pass as ordinary.**
+     *
+     * ⚠ It is not a refusal: ⚠ **whatever else the segment carries is still
+     * acted on.** ⚠ This reason is only reached when nothing else was. */
+    HANDSHAKE_REASON_URGENT_AND_NOBODY_TO_TELL,
+
     /* ⚠ The segment is addressed to a broadcast or a multicast address, and
      * ⚠ **nothing is done with it — no state, no reply.**
      *
@@ -434,6 +482,16 @@ struct handshake_counts {
 
     /* ⚠ **Segments** addressed to a broadcast or a multicast address. */
     unsigned long addressed_to_everyone;
+
+    /* ⚠ **Connections** the other side reset. ⚠ Apart from every other ending:
+     * one was closed properly, one timed out, ⚠ **this one was cut.** */
+    unsigned long reset_by_the_other_side;
+
+    /* ⚠ **Segments** carrying `URG`, which ⚠ **nothing here can act on.** */
+    unsigned long urgent_and_nobody_to_tell;
+
+    /* ⚠ **Segments** carrying a `RST` the window did not cover. */
+    unsigned long reset_outside_the_window;
 
     /* ⚠ **Connections.** ⚠ Nobody acknowledged our FIN and we stopped waiting.
      * ⚠ Apart from `given_up_on`, which is a handshake that never finished. */

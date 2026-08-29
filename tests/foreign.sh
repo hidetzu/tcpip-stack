@@ -1942,6 +1942,138 @@ wire.send(OURS + b"\x02\xaa\xaa\xaa\xaa\xaa" + b"\x08\x00" + header + segment)
     printf '    10.0.0.2 opened a connection. ⚠ A directed broadcast is not covered\n'
 }
 
+# ⚠ hidetzu/tcpip-stack#101 on the wire. ⚠ RFC 9293 `MUST-66`.
+#
+# ⚠ Measured before the change, same conditions, 2026-08-29: a `RST,ACK` on an
+# open connection changed nothing — ⚠ **the connection stayed open, took 13
+# octets afterwards and acknowledged them.**
+#
+# ⚠ The connection is driven by hand over `AF_PACKET` from an address nobody
+# owns, ⚠ **so the kernel never joins in** and the reset is ours to time.
+inside_a_reset_ends_a_connection_on_the_wire() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 5000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    rst=$(constant src/tcp.h TCP_CONTROL_RST)
+    ack=$(constant src/tcp.h TCP_CONTROL_ACK)
+    syn=$(constant src/tcp.h TCP_CONTROL_SYN)
+
+    LC_ALL=C python3 -c '
+import socket, struct, sys, time
+
+rst, ack, syn = (int(a.rstrip("uU"), 0) for a in sys.argv[1:4])
+OURS = bytes.fromhex(sys.argv[4].replace(":", ""))
+THEIRS = b"\x02\xaa\xaa\xaa\xaa\xaa"
+source = socket.inet_aton("10.0.0.99")
+destination = socket.inet_aton("10.0.0.2")
+PORT = 40031
+THEIR_ISN = 300000
+
+def sum_of(o):
+    t = 0
+    for i in range(0, len(o) - 1, 2): t += (o[i] << 8) | o[i + 1]
+    if len(o) % 2: t += o[-1] << 8
+    while t >> 16: t = (t & 0xffff) + (t >> 16)
+    return (~t) & 0xffff
+
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.settimeout(0.3)
+
+def send(bits, sequence, acknowledgment, payload=b""):
+    seg = struct.pack("!HHIIBBHHH", PORT, 80, sequence, acknowledgment,
+                      5 << 4, bits, 64240, 0, 0) + payload
+    pseudo = source + destination + bytes([0, 6, len(seg) >> 8, len(seg) & 0xff])
+    seg = seg[:16] + struct.pack("!H", sum_of(pseudo + seg)) + seg[18:]
+    h = struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(seg), 1, 0, 64, 6, 0) \
+        + source + destination
+    h = h[:10] + struct.pack("!H", sum_of(h)) + h[12:]
+    wire.send(OURS + THEIRS + b"\x08\x00" + h + seg)
+
+def ours(seconds):
+    out = []
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            f = wire.recv(2048)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if len(f) < 54 or f[12:14] != b"\x08\x00" or f[14 + 9] != 6:
+            continue
+        if f[6:12] != OURS:
+            continue
+        at = 14 + (f[14] & 0x0f) * 4
+        out.append((f[at + 13], int.from_bytes(f[at + 4:at + 8], "big")))
+    return out
+
+send(syn, THEIR_ISN, 0)
+answers = [a for a in ours(1.5) if a[0] & syn]
+if not answers:
+    print("no-answer-to-our-syn"); sys.exit(1)
+iss = answers[0][1]
+send(ack, THEIR_ISN + 1, iss + 1)
+time.sleep(0.3)
+
+send(rst | ack, THEIR_ISN + 1, iss + 1)
+print("back-for-the-reset", len(ours(0.8)))
+
+# ⚠ The connection must be gone: data after it draws nothing.
+send(ack, THEIR_ISN + 1, iss + 1, b"after-the-reset")
+print("back-for-data-after-it", len(ours(1.2)))
+' "$rst" "$ack" "$syn" "$our_mac" >"$work/reset.txt" 2>&1
+    driven=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$driven" -ne 0 ]; then
+        note_failure "the crafted connection could not be driven"
+        sed 's/^/      /' "$work/reset.txt" >&2
+        return
+    fi
+
+    for_reset=$(awk '$1 == "back-for-the-reset" { print $2 }' "$work/reset.txt")
+    after=$(awk '$1 == "back-for-data-after-it" { print $2 }' "$work/reset.txt")
+
+    # ⚠ Nothing is sent for a reset.
+    if [ "${for_reset:-1}" -ne 0 ]; then
+        note_failure "$for_reset segments came back for a reset, and nothing should"
+        sed 's/^/      /' "$work/reset.txt" >&2
+        return
+    fi
+    # ⚠ And the connection really is gone. ⚠ Measured before the change: 1.
+    if [ "${after:-1}" -ne 0 ]; then
+        note_failure "data after the reset drew $after segments, so the connection survived it"
+        sed 's/^/      /' "$work/reset.txt" >&2
+        printf '    what the stack said:\n' >&2
+        grep -v '^  [0-9a-f]' "$work/out.txt" | tail -12 | sed 's/^/      /' >&2
+        return
+    fi
+    assert_file_contains "$work/out.txt" "the other side reset 1 connection" \
+        "the reset is counted as one"
+    assert_file_contains "$work/out.txt" "0 octets of data were taken and discarded" \
+        "nothing was taken after the connection was gone"
+
+    printf '    the reset drew nothing and data after it drew nothing; the connection\n'
+    printf '    was gone\n'
+}
+
 # ⚠ The half that stops the case above passing for a stack that never looked at
 # a checksum (hidetzu/tcpip-stack#44 AC 2, and `CLAUDE.md` §1).
 #
@@ -2077,6 +2209,9 @@ case_the_time_to_live_we_were_given_reaches_the_wire() {
 case_a_syn_to_everyone_is_not_answered() {
     in_namespace a_syn_to_everyone_is_not_answered
 }
+case_a_reset_ends_a_connection_on_the_wire() {
+    in_namespace a_reset_ends_a_connection_on_the_wire
+}
 case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
     in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
 }
@@ -2087,7 +2222,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)
