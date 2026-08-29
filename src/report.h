@@ -32,6 +32,19 @@ void report_listening(FILE *out, const char *device_name);
  * called (`CLAUDE.md` §4). */
 void report_mtu(FILE *out, const char *device_name, unsigned int mtu);
 
+/* ⚠ No window can be promised for a device that carries frames of this size.
+ *
+ * ⚠ `too_large` tells the two apart: ⚠ **an MTU that leaves nothing after the
+ * two headers, and one that leaves more than the sixteen bits RFC 793 gives the
+ * field.** ⚠ They are opposite problems and the sentences say which
+ * (`.claude/rules/layers.md`).
+ *
+ * ⚠ **Neither is reachable on a tap** — the kernel takes 68 .. 65521 — ⚠ **and
+ * the line exists anyway**, because a refusal nobody can read is the same as a
+ * silent one (`CLAUDE.md` §1). */
+void report_no_window(FILE *out, const char *device_name, unsigned int mtu,
+                      bool too_large);
+
 /* ⚠ The device could not be asked, ⚠ **which is not the same as a small
  * device** (`CLAUDE.md` §1).
  *

@@ -540,6 +540,31 @@ static bool case_the_mtu_lines_say_which_it_was(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#119. ⚠ Two refusals and they are opposite problems:
+ * ⚠ **an MTU that leaves nothing, and one that leaves more than the field can
+ * promise.** ⚠ The sentences say which, and ⚠ **each tells the reader what to
+ * do about it** (`CLAUDE.md` §4-1). */
+static bool case_no_window_says_which_way_it_failed(void)
+{
+    struct produced produced;
+    produced_open(&produced);
+    report_no_window(produced.out, "tap0", 40, false);
+    bool ok = matches("nothing left", &produced,
+        "tap0 carries frames of up to 40 bytes, which leaves no room for data "
+        "after an internet header and a TCP header.\n"
+        "  Nothing was read. Bring the device up with a larger MTU.\n");
+    produced_close(&produced);
+
+    produced_open(&produced);
+    report_no_window(produced.out, "tap9", 70000, true);
+    ok = matches("more than the field can promise", &produced,
+        "tap9 carries frames of up to 70000 bytes, which leaves more room than "
+        "the Window field can promise.\n"
+        "  Nothing was read. Bring the device up with a smaller MTU.\n") && ok;
+    produced_close(&produced);
+    return ok;
+}
+
 static bool case_the_listening_line(void)
 {
     struct produced produced;
@@ -1110,6 +1135,7 @@ static const struct test_case cases[] = {
     { "the_echo_summary_counts_every_reason_apart",
       case_the_echo_summary_counts_every_reason_apart },
     { "the_listening_line", case_the_listening_line },
+    { "no_window_says_which_way_it_failed", case_no_window_says_which_way_it_failed },
     { "the_mtu_lines_say_which_it_was", case_the_mtu_lines_say_which_it_was },
     { "every_option_problem_has_its_own_sentence",
       case_every_option_problem_has_its_own_sentence },
