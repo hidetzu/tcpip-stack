@@ -98,9 +98,26 @@ uint32_t handshake_initial_send_sequence(struct moment now);
 /* The overhead one frame gives up before a single octet of data: an internet
  * header and a TCP header, both without options.
  *
- * ⚠ Both are twenty octets because ⚠ **this stack sends neither kind of option**
- * (ADR 0012, ADR 0013). ⚠ **The day it sends one, this number is wrong** and
- * `the_window_is_what_one_frame_carries` is what says so. */
+ * ⚠ **Whose headers: THEIRS.** ⚠ The window is a promise about how much data the
+ * peer may send us, so ⚠ **the frame that has to carry it is the peer's** — and
+ * ⚠ **what this stack puts in its own headers has nothing to do with this
+ * number.**
+ *
+ * ⚠ **Corrected 2026-08-29, the day it was written**: it first said "both are
+ * twenty octets because this stack sends neither kind of option", ⚠ **which is
+ * the wrong side of the conversation.** ⚠ The value was right and the grounds
+ * were not, and ⚠ **a number is only as good as the sentence under it**
+ * (`CLAUDE.md` §6).
+ *
+ * ⚠ Both are twenty octets because ⚠ **no option is negotiated in either
+ * direction**: this stack sends none (ADR 0012, ADR 0013) and interprets none
+ * of what arrives (ADR 0013), ⚠ **so nothing has agreed to anything that would
+ * put options on an incoming segment.**
+ *
+ * ⚠ **The day an MSS Option is negotiated — RFC 9293 `MUST-14`, still not met —
+ * this number becomes optimistic**: the window would promise more than one of
+ * their frames actually delivers. ⚠ `the_window_is_what_one_frame_carries` is
+ * what will say so, because it asserts an MTU of 1500 still gives 1460. */
 #define HANDSHAKE_HEADERS_BEFORE_DATA 40u
 
 /* Why a window could not be derived. ⚠ An enum never reaches a human. */
