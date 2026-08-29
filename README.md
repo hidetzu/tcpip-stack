@@ -1,6 +1,8 @@
 # tcpip-stack
 
-A user-space TCP/IP stack for Linux, built as an experiment in AI-assisted systems engineering.
+A user-space TCP/IP protocol core for Linux, interoperated against the Linux kernel and built as an
+experiment in AI-assisted systems engineering. **v0.1 deliberately has no application-facing TCP API
+and no routing-layer consumer.**
 
 **What runs today: `tcpip-stack`.** It creates and attaches to a TAP device in the current network
 namespace, and reports the ethernet frames the kernel puts on it — length per frame, and the raw
@@ -9,9 +11,12 @@ requests that ask for that address**, and ⚠ **`ping` reports 0% packet loss ag
 `--tcp-port` and the Linux kernel's own `connect()` succeeds against it: `ss` reports the connection
 established.** ⚠ **When the other side closes, its `FIN` is acknowledged and this end closes in the same segment,
 and the connection is finished once that is acknowledged in return** — ⚠ `ss` on the peer then
-reports `TIME-WAIT`, which is its own. ⚠ **Data that arrives is taken and discarded**, an octet at a
-time, ⚠ **without the sender being told at the time** — [`docs/SPEC.md`](docs/SPEC.md) §2 says what
-is missing. ⚠ Nothing else is sent. Without those options it only reads.
+reports `TIME-WAIT`, which is its own. ⚠ **Data that arrives is taken and discarded**, as much of it as the advertised window
+covers. ⚠ **With `--send` it also sends data of its own**: bounded by the effective send MSS and by
+the smaller of the peer's window and a congestion window, ⚠ **and resent when nobody acknowledges
+it** — ⚠ **the retransmission timeout is computed from round trips it measured, and it backs off.**
+⚠ **An ICMP error is matched to the connection that caused it.** Without those options it only reads.
+⚠ [`docs/SPEC.md`](docs/SPEC.md) §2 says what is missing.
 
 ⚠ **The namespace is not `tcpip-stack`'s doing.** It uses whichever network namespace it is
 started in. The checks put a fresh one there with `unshare -Urn`
