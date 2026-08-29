@@ -104,6 +104,27 @@ struct ipv4_header {
 enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes,
                                   struct ipv4_header *header);
 
+/* Read the header of a datagram we only have the FRONT of.
+ *
+ * ⚠ **A different question from the one above, and it must be**
+ * (hidetzu/tcpip-stack#138). ⚠ `ipv4_parse_header` refuses a datagram whose
+ * `Total Length` names more octets than arrived — ⚠ **which is exactly right for
+ * something off the wire and exactly wrong here.**
+ *
+ * ⚠ **What this reads is a header quoted back inside an ICMP error.** ⚠ RFC 792
+ * promises "The internet header plus the first 64 bits of the original
+ * datagram's data" and ⚠ **nothing more** — ⚠ so `Total Length` will almost
+ * always exceed what is present, ⚠ **and that is the sender being correct.**
+ *
+ * ⚠ **Everything else is checked the same way**, including the header checksum:
+ * ⚠ **this is untrusted input twice over** — it arrived from outside, and
+ * ⚠ **it claims to be something WE sent** (`.claude/rules/c.md`).
+ *
+ * ⚠ `IPV4_PARSE_OK` here means "the header is readable", ⚠ **never "the datagram
+ * is whole"** — no caller may take it for the second. */
+enum ipv4_parse ipv4_parse_quoted_header(const uint8_t *front, size_t front_bytes,
+                                         struct ipv4_header *header);
+
 /* The value the `Protocol` field carries for ICMP.
  *
  * ⚠ Grounds, and they are not RFC 791: ⚠ **this was not taken from the

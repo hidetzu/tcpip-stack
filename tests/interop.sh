@@ -1137,6 +1137,88 @@ for bits, sequence, acknowledgment in ours[:1]:
 #
 # ⚠ **This counts what is on the wire, not what we say about ourselves**
 # (ADR 0009).
+# ⚠ hidetzu/tcpip-stack#138 AC 7. ⚠ RFC 9293 `MUST-54`: an ICMP error is directed
+# to the connection that created it.
+#
+# ⚠ **The error is the Linux kernel's own, not one we wrote.** ⚠ `nft` is told to
+# REJECT our data segments with an ICMP administratively-prohibited — ⚠ code 13,
+# which §3.9.2.2 does not classify — ⚠ and then with code 3, which it calls HARD.
+#
+# ⚠ **A message we built ourselves would prove the parser and nothing about
+# whether a real one ever arrives** (`.claude/rules/layers.md`, question 3).
+inside_an_icmp_error_the_kernel_sent_reaches_the_connection() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    for what in host-unreachable admin-prohibited; do
+        ip tuntap add dev tap0 mode tap
+        ip link set tap0 mtu 1400
+        "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+            --send 3000 --timeout 4000 >"$work/out-$what.txt" 2>&1 &
+        reader=$!
+        if ! wait_for_interface tap0; then
+            note_failure "tap0 never appeared while the stack was attached"
+            kill "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+            return
+        fi
+        sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+        ip addr add 10.0.0.1/24 dev tap0
+        ip link set tap0 up
+
+        # ⚠ In place BEFORE the connection, and ⚠ **measured to be needed**: with
+        # the rule added 0.05 s after `connect()` returned, ⚠ **all 3000 octets
+        # had already left and nothing was ever rejected.**
+        #
+        # ⚠ It matches only a FULL-SIZED data segment of ours — ⚠ the SYN,ACK is
+        # 58 octets — ⚠ **so the handshake completes and there IS a connection
+        # for the error to name.**
+        nft add table ip guard
+        nft add chain ip guard input "{ type filter hook input priority 0; }"
+        nft add rule ip guard input tcp sport 80 ip length 1400 \
+            counter reject with icmp type "$what"
+
+        LC_ALL=C python3 -c '
+import socket, time
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(3.0)
+try:
+    s.connect(("10.0.0.2", 80))
+    time.sleep(2.0)
+except Exception as e:
+    print("error", repr(e))
+finally:
+    try: s.close()
+    except Exception: pass
+' >"$work/reject-$what.txt" 2>&1 || true
+
+        kill -INT "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+        nft delete table ip guard 2>/dev/null
+        ip link del tap0 2>/dev/null
+    done
+
+    # ⚠ `host-unreachable` is Destination Unreachable code 1 — ⚠ **soft**, and
+    # §3.9.2.2 says it MUST NOT abort the connection.
+    if grep -q "^0 source quenches were discarded, 0 soft errors changed nothing" \
+        "$work/out-host-unreachable.txt"; then
+        note_failure "the kernel sent host-unreachable and no soft error was counted"
+        sed -n 's/^/      /p' "$work/out-host-unreachable.txt" | tail -6 >&2
+        return
+    fi
+    assert_file_contains "$work/out-host-unreachable.txt" \
+        "that kind of trouble does not end a connection" \
+        "a soft error is said and changes nothing"
+
+    # ⚠ `admin-prohibited` is Destination Unreachable code 13 — ⚠ **one the
+    # document does NOT classify.** ⚠ Silence is not a class, so it is its own
+    # answer and the connection is left alone.
+    assert_file_contains "$work/out-admin-prohibited.txt" \
+        "an error arrived that the document does not say" \
+        "an unclassified error is said as one"
+
+    printf '    the kernel sent a soft error and an unclassified one; each was\n'
+    printf '    matched to the connection and said as what it is\n'
+}
+
 inside_the_window_reopens_one_segment_at_a_time_after_a_loss() {
     ours=10.0.0.2
     our_mac=02:00:00:00:00:02
@@ -2854,6 +2936,10 @@ case_the_kernel_reaches_time_wait_and_our_block_is_free_again() {
 case_a_fin_whose_sequence_number_we_do_not_expect_is_not_answered() {
     in_namespace a_fin_whose_sequence_number_we_do_not_expect_is_not_answered
 }
+case_an_icmp_error_the_kernel_sent_reaches_the_connection() {
+    in_namespace an_icmp_error_the_kernel_sent_reaches_the_connection
+}
+
 case_the_window_reopens_one_segment_at_a_time_after_a_loss() {
     in_namespace the_window_reopens_one_segment_at_a_time_after_a_loss
 }
@@ -2912,7 +2998,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel data_larger_than_the_mss_arrives_in_segments_it_bounds a_lost_segment_or_a_lost_ack_still_gets_the_data_through the_window_reopens_one_segment_at_a_time_after_a_loss a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel data_larger_than_the_mss_arrives_in_segments_it_bounds a_lost_segment_or_a_lost_ack_still_gets_the_data_through the_window_reopens_one_segment_at_a_time_after_a_loss an_icmp_error_the_kernel_sent_reaches_the_connection a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

@@ -103,3 +103,75 @@ enum icmp_build icmp_build_echo_reply(const struct icmp_echo *request,
     *reply_bytes = needed;
     return ICMP_BUILD_OK;
 }
+
+enum icmp_error_class icmp_class_of_error(uint8_t type, uint8_t code)
+{
+    if (type == ICMP_TYPE_SOURCE_QUENCH) {
+        return ICMP_ERROR_SOURCE_QUENCH;
+    }
+    if (type == ICMP_TYPE_DESTINATION_UNREACHABLE) {
+        /* ⚠ "Destination Unreachable -- codes 0, 1, 5" are soft;
+         * ⚠ "Destination Unreachable -- codes 2-4" are hard. ⚠ **The rest the
+         * document does not classify.** */
+        if (code == 0u || code == 1u || code == 5u) {
+            return ICMP_ERROR_SOFT;
+        }
+        if (code >= 2u && code <= 4u) {
+            return ICMP_ERROR_HARD;
+        }
+        return ICMP_ERROR_NOT_CLASSIFIED;
+    }
+    if (type == ICMP_TYPE_TIME_EXCEEDED) {
+        /* ⚠ "Time Exceeded -- codes 0, 1". ⚠ RFC 792 gives only those two, and
+         * ⚠ **a sender may still put a third there** — untrusted input. */
+        return (code == 0u || code == 1u) ? ICMP_ERROR_SOFT : ICMP_ERROR_NOT_CLASSIFIED;
+    }
+    if (type == ICMP_TYPE_PARAMETER_PROBLEM) {
+        /* ⚠ "and Parameter Problem" — ⚠ **no code is named, so every code is
+         * soft.** ⚠ That is the document being general, not us widening it. */
+        return ICMP_ERROR_SOFT;
+    }
+    return ICMP_ERROR_NOT_CLASSIFIED;
+}
+
+enum icmp_error_parse icmp_parse_error(const uint8_t *message, size_t message_bytes,
+                                       struct icmp_error *error)
+{
+    memset(error, 0, sizeof *error);
+
+    /* ⚠ Checked against what was actually read, before an octet is touched. */
+    if (message_bytes < ICMP_FIXED_BYTES) {
+        return ICMP_ERROR_PARSE_MALFORMED;
+    }
+
+    uint8_t type = message[0];
+    if (type != ICMP_TYPE_DESTINATION_UNREACHABLE &&
+        type != ICMP_TYPE_SOURCE_QUENCH &&
+        type != ICMP_TYPE_TIME_EXCEEDED &&
+        type != ICMP_TYPE_PARAMETER_PROBLEM) {
+        return ICMP_ERROR_PARSE_NOT_AN_ERROR;
+    }
+
+    /* ⚠ Decided before any field is believed, the order ADR 0011 set: ⚠ judging
+     * a Code first would blame the sender for something a changed octet did. */
+    if (internet_checksum_with_field_cleared(message, message_bytes, CHECKSUM_OFFSET) !=
+        (uint16_t)(((uint16_t)message[2] << 8) | message[3])) {
+        return ICMP_ERROR_PARSE_CHECKSUM_DISAGREES;
+    }
+
+    /* ⚠ RFC 792: "The internet header plus the first 64 bits of the original
+     * datagram's data." ⚠ **A header with no options is 20 octets and 64 bits is
+     * 8**, so ⚠ **28 is the least that can name anything** — and
+     * ⚠ **fewer is the sender failing what the document states** (ADR 0011's
+     * shape). */
+    size_t carried_bytes = message_bytes - ICMP_FIXED_BYTES;
+    if (carried_bytes < ICMP_CARRIED_LEAST_BYTES) {
+        return ICMP_ERROR_PARSE_MALFORMED;
+    }
+
+    error->type = type;
+    error->code = message[1];
+    error->carried = message + ICMP_FIXED_BYTES;
+    error->carried_bytes = carried_bytes;
+    return ICMP_ERROR_PARSE_OK;
+}

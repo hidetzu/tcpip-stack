@@ -172,6 +172,109 @@ enum ipv4_parse ipv4_parse_header(const uint8_t *datagram, size_t datagram_bytes
     return IPV4_PARSE_OK;
 }
 
+enum ipv4_parse ipv4_parse_quoted_header(const uint8_t *front, size_t front_bytes,
+                                  struct ipv4_header *header)
+{
+    memset(header, 0, sizeof *header);
+
+    /* ⚠ Checked against what was actually read, before an octet is touched. */
+    if (front_bytes < FIXED_HEADER_BYTES) {
+        return IPV4_PARSE_MALFORMED;
+    }
+
+    uint8_t version_and_length = front[VERSION_AND_LENGTH_OFFSET];
+    header->version = (uint8_t)(version_and_length >> 4);
+    header->internet_header_length = (uint8_t)(version_and_length & 0x0f);
+    header->type_of_service = front[TYPE_OF_SERVICE_OFFSET];
+    header->total_length = read_16(front + TOTAL_LENGTH_OFFSET);
+    header->identification = read_16(front + IDENTIFICATION_OFFSET);
+
+    uint16_t flags_and_offset = read_16(front + FLAGS_AND_OFFSET_OFFSET);
+    header->flags = (uint8_t)(flags_and_offset >> 13);
+    header->fragment_offset = (uint16_t)(flags_and_offset & 0x1fffu);
+
+    header->time_to_live = front[TIME_TO_LIVE_OFFSET];
+    header->protocol = front[PROTOCOL_OFFSET];
+    header->header_checksum = read_16(front + HEADER_CHECKSUM_OFFSET);
+    memcpy(header->source_address, front + SOURCE_ADDRESS_OFFSET, IPV4_ADDRESS_BYTES);
+    memcpy(header->destination_address, front + DESTINATION_ADDRESS_OFFSET,
+           IPV4_ADDRESS_BYTES);
+
+    /* ⚠ RFC 791: "Note that the minimum value for a correct header is 5."
+     * ⚠ Below it the document says the header is not correct, so the sender is
+     * wrong — malformed, not unsupported. */
+    if (header->internet_header_length < IPV4_HEADER_LENGTH_MINIMUM) {
+        return IPV4_PARSE_MALFORMED;
+    }
+
+    /* ⚠ The header's own length and the datagram's own length are assertions by
+     * whoever sent them. ⚠ Both are checked against what arrived before either
+     * is used, and ⚠ truncation is decided before support: a datagram that does
+     * not contain what it says it contains is malformed whether or not we would
+     * have handled it (the order ADR 0005 set). */
+    size_t header_bytes = (size_t)header->internet_header_length * IPV4_HEADER_LENGTH_UNIT;
+    /* ⚠ **`Total Length` is NOT compared with what arrived.** ⚠ RFC 792 carries
+     * back the header and 64 bits of data and no more, ⚠ **so a `Total Length`
+     * larger than what is here is the sender being correct** — and
+     * ⚠ **demanding otherwise is what made this function necessary.** */
+    if (front_bytes < header_bytes) {
+        return IPV4_PARSE_MALFORMED;
+    }
+
+    /* ⚠ RFC 791 counts Total Length as "the length of the datagram, measured in
+     * octets, including internet header and data", so ⚠ a Total Length below
+     * the header's own length is a header contradicting itself — the sender is
+     * wrong (hidetzu/tcpip-stack#35 Owner Decision 4).
+     *
+     * ⚠ Left undecided by hidetzu/tcpip-stack#33 on purpose: its approved order
+     * had no row for it and that change did not invent one. ⚠ It is decided here
+     * because this is where a payload length is first computed as
+     * `Total Length - header`, and that subtraction is unsigned. */
+    if (header->total_length < header_bytes) {
+        return IPV4_PARSE_MALFORMED;
+    }
+
+    /* ⚠ RFC 791: "Bit 0: reserved, must be zero". ⚠ Set means the sender broke
+     * what the document states (Owner Decision 2). ⚠ What its lower-case "must"
+     * carries is not defined by anything that was read — ⚠ the decision is the
+     * owner's, not the document's (ADR 0010). */
+    if (header->flags & IPV4_FLAG_RESERVED) {
+        return IPV4_PARSE_MALFORMED;
+    }
+
+    /* ⚠ RFC 791: "A checksum on the header only." ⚠ Over the header's own
+     * length, not the datagram's. */
+    /* ⚠ RFC 1071, verbatim: "the checksum field itself is cleared, the 16-bit
+     * 1's complement sum is computed over the octets concerned, and the 1's
+     * complement of this sum is placed in the checksum field." ⚠ So the check is
+     * the generation, done again, compared with what arrived — ⚠ not a second
+     * way of asking the same question (`CLAUDE.md` §3).
+     *
+     * ⚠ This copied the header into a 60-octet scratch and zeroed the field
+     * there until hidetzu/tcpip-stack#34 gave `checksum.h` an entry point that
+     * counts the field as zero in place. ⚠ Two ways of clearing one field is the
+     * same defect as two ways of summing it, so the copy is gone. */
+    if (internet_checksum_with_field_cleared(front, header_bytes,
+                                             HEADER_CHECKSUM_OFFSET) !=
+        header->header_checksum) {
+        return IPV4_PARSE_CHECKSUM_DISAGREES;
+    }
+
+    if (header->version != IPV4_VERSION ||
+        header->internet_header_length > IPV4_HEADER_LENGTH_MINIMUM) {
+        return IPV4_PARSE_NOT_HANDLED;
+    }
+
+    /* ⚠ RFC 791: "Bit 2: (MF) ... 1 = More Fragments", and the offset "is
+     * measured in units of 8 octets". ⚠ Either one means this is a piece of
+     * something, and reassembly is not written (Owner Decision 1). */
+    if ((header->flags & IPV4_FLAG_MORE_FRAGMENTS) != 0 || header->fragment_offset != 0) {
+        return IPV4_PARSE_FRAGMENT;
+    }
+
+    return IPV4_PARSE_OK;
+}
+
 static void write_16(uint8_t *at, uint16_t value)
 {
     at[0] = (uint8_t)(value >> 8);

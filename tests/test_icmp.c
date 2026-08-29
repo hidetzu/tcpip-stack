@@ -575,6 +575,82 @@ static bool case_a_read_that_cannot_be_made_leaves_nothing_behind(void)
     return true;
 }
 
+/* ⚠ hidetzu/tcpip-stack#138. ⚠ Reading an error message, ⚠ **and telling the
+ * three ways it can fail apart** — RFC 792 promises "The internet header plus
+ * the first 64 bits of the original datagram's data", ⚠ **so fewer is the sender
+ * being wrong and is not the same as a Type we do not act on.** */
+static bool case_an_error_message_is_read_or_refused_for_its_own_reason(void)
+{
+    bool ok = true;
+    /* ⚠ Type 3 code 1, then four unused octets, then a twenty-octet internet
+     * header and eight octets of the datagram's data. ⚠ Built by hand so the
+     * case does not depend on the builder it is checking. */
+    uint8_t message[8 + 28];
+    memset(message, 0, sizeof message);
+    message[0] = ICMP_TYPE_DESTINATION_UNREACHABLE;
+    message[1] = 1u;
+    message[8] = 0x45u;                       /* version 4, five words */
+    uint16_t sum = internet_checksum_with_field_cleared(message, sizeof message, 2u);
+    message[2] = (uint8_t)(sum >> 8);
+    message[3] = (uint8_t)(sum & 0xffu);
+
+    struct icmp_error error;
+    if (icmp_parse_error(message, sizeof message, &error) != ICMP_ERROR_PARSE_OK ||
+        error.type != ICMP_TYPE_DESTINATION_UNREACHABLE || error.code != 1u ||
+        error.carried != message + 8 || error.carried_bytes != 28u) {
+        fputs("  a well-formed unreachable message was not read\n", stderr);
+        ok = false;
+    }
+
+    /* ⚠ One octet short of what RFC 792 promises: ⚠ **malformed**, ⚠ and NOT
+     * "a type we do not act on". */
+    {
+        uint8_t shorter[8 + 27];
+        memcpy(shorter, message, sizeof shorter);
+        uint16_t s2 = internet_checksum_with_field_cleared(shorter, sizeof shorter, 2u);
+        shorter[2] = (uint8_t)(s2 >> 8);
+        shorter[3] = (uint8_t)(s2 & 0xffu);
+        if (icmp_parse_error(shorter, sizeof shorter, &error) != ICMP_ERROR_PARSE_MALFORMED) {
+            fputs("  27 carried octets was not called malformed, and RFC 792 "
+                  "promises 28\n", stderr);
+            ok = false;
+        }
+    }
+    /* ⚠ And exactly what it promises IS enough — ⚠ **without this the check "one
+     * short is refused" would pass for a build that refuses everything**
+     * (`verify` §5). */
+    if (icmp_parse_error(message, sizeof message, &error) != ICMP_ERROR_PARSE_OK) {
+        fputs("  exactly 28 carried octets was refused\n", stderr);
+        ok = false;
+    }
+
+    /* ⚠ An echo is not an error, and ⚠ **that is its own answer**: the sender is
+     * fine and nothing here should act on it. */
+    {
+        uint8_t echo[8 + 28];
+        memcpy(echo, message, sizeof echo);
+        echo[0] = ICMP_TYPE_ECHO;
+        if (icmp_parse_error(echo, sizeof echo, &error) != ICMP_ERROR_PARSE_NOT_AN_ERROR) {
+            fputs("  an echo was not told apart from an error\n", stderr);
+            ok = false;
+        }
+    }
+
+    /* ⚠ A changed octet: ⚠ **its own answer, and decided before the code is
+     * believed** (ADR 0011's order). */
+    {
+        uint8_t changed[8 + 28];
+        memcpy(changed, message, sizeof changed);
+        changed[9] ^= 0xffu;
+        if (icmp_parse_error(changed, sizeof changed, &error) !=
+            ICMP_ERROR_PARSE_CHECKSUM_DISAGREES) {
+            fputs("  a changed octet was not caught by the checksum\n", stderr);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 static const struct test_case cases[] = {
     { "the_captured_request_is_read_as_it_holds_it",
       case_the_captured_request_is_read_as_it_holds_it },
@@ -587,6 +663,9 @@ static const struct test_case cases[] = {
     { "the_order_the_answers_are_decided_in", case_the_order_the_answers_are_decided_in },
     { "the_kernels_reply_is_rebuilt_octet_for_octet",
       case_the_kernels_reply_is_rebuilt_octet_for_octet },
+
+    { "an_error_message_is_read_or_refused_for_its_own_reason",
+      case_an_error_message_is_read_or_refused_for_its_own_reason },
     { "the_data_is_carried_across_whatever_its_length",
       case_the_data_is_carried_across_whatever_its_length },
     { "a_buffer_too_small_is_refused_and_nothing_is_written",

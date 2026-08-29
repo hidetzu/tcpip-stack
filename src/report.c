@@ -543,6 +543,31 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
         fputs("  nothing sent: there is data to send and the window they\n"
               "    advertised has no room for it yet\n", out);
         return;
+    case HANDSHAKE_REASON_A_SOURCE_QUENCH_WE_DISCARDED:
+        /* ⚠ "Silently" forbids a segment on the wire, ⚠ **not a line telling the
+         * human who is watching** — and ⚠ a message nobody counted is
+         * indistinguishable from one that never arrived. */
+        fputs("  nothing sent: a source quench arrived for this connection and\n"
+              "    the document says to discard it without a word on the wire\n", out);
+        return;
+    case HANDSHAKE_REASON_A_SOFT_ERROR_THAT_CHANGES_NOTHING:
+        fputs("  nothing sent: something along the way could not deliver a\n"
+              "    segment, and that kind of trouble does not end a connection\n", out);
+        return;
+    case HANDSHAKE_REASON_A_HARD_ERROR_THAT_ENDS_IT:
+        fputs("  the connection is over: something along the way said this\n"
+              "    destination cannot be reached at all\n", out);
+        return;
+    case HANDSHAKE_REASON_AN_ERROR_THE_DOCUMENT_DOES_NOT_CLASSIFY:
+        /* ⚠ Ours, and it says so: ⚠ **the sender is fine and the document is
+         * silent** (`CLAUDE.md` §4-1). */
+        fputs("  nothing sent: an error arrived that the document does not say\n"
+              "    what to make of, so the connection was left as it was\n", out);
+        return;
+    case HANDSHAKE_REASON_AN_ERROR_FOR_NO_CONNECTION_WE_HOLD:
+        fputs("  nothing sent: an error arrived about a connection nothing here\n"
+              "    holds; it may name one that has already closed\n", out);
+        return;
     case HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE:
         /* ⚠ Nothing here is the sender's fault in the usual sense, and the
          * sentence does not scold: ⚠ **it says what the address was and what we
@@ -677,6 +702,22 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
             counts->data_octets_we_sent_again == 1 ? "" : "s",
             counts->data_segments_we_sent_again,
             counts->data_segments_we_sent_again == 1 ? "" : "s");
+    /* ⚠ ICMP errors, ⚠ **each class on its own**: merged, a connection ended by
+     * a hard error would look the same as one left alone by a soft one, ⚠ **and
+     * that difference is the whole of what RFC 9293 §3.9.2.2 decides.** */
+    fprintf(out, "%lu source quench%s discarded, %lu soft error%s changed nothing, "
+                 "%lu hard error%s ended a connection\n",
+            counts->source_quenches_we_discarded,
+            counts->source_quenches_we_discarded == 1 ? " was" : "es were",
+            counts->soft_errors_that_changed_nothing,
+            counts->soft_errors_that_changed_nothing == 1 ? "" : "s",
+            counts->hard_errors_that_ended_a_connection,
+            counts->hard_errors_that_ended_a_connection == 1 ? "" : "s");
+    fprintf(out, "%lu error%s arrived that the document does not classify, and "
+                 "%lu named no connection we hold\n",
+            counts->errors_the_document_does_not_classify,
+            counts->errors_the_document_does_not_classify == 1 ? "" : "s",
+            counts->errors_for_no_connection_we_hold);
     /* ⚠ RFC 5681 §3.1's cut. ⚠ Counted, because ⚠ **a window that shrank and one
      * that was never large look the same from outside** (`CLAUDE.md` §1). */
     fprintf(out, "%lu congestion window%s cut to one segment because something "
