@@ -1099,6 +1099,147 @@ for bits, sequence, acknowledgment in ours[:1]:
 #
 # ⚠ Measured before the change, same conditions, 2026-08-29: ⚠ **the SYN,ACK
 # carried a Data Offset of 5 and no options at all.**
+# ⚠ hidetzu/tcpip-stack#126, and ⚠ **the criterion the owner set before any of it
+# was built** (hidetzu/tcpip-stack#125), verbatim:
+#
+#   5 bytes を送れることではなく、MSS より大きいデータを渡したとき、
+#   effective send MSS を超えない複数 segment として相手へ届くこと
+#
+# ⚠ **So this counts segments and measures each one.** ⚠ A check that only added
+# the octets up would pass for a stack that sent all 3000 in one segment, ⚠ **and
+# that stack would be violating MUST-16 while looking correct.**
+#
+# ⚠ The device is brought up at MTU 1400 so ⚠ **the effective send MSS is 1360
+# and 3000 octets CANNOT fit in two segments** — three at least.
+#
+# ⚠ The other end is the Linux kernel's own `read()`, ⚠ **which is not something
+# we wrote**, and the segments are counted off an AF_PACKET socket (ADR 0009).
+inside_data_larger_than_the_mss_arrives_in_segments_it_bounds() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+    total=3000
+
+    ip tuntap add dev tap0 mode tap
+    ip link set tap0 mtu 1400
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --send "$total" --timeout 6000 >"$work/out.txt" 2>&1 &
+    reader=$!
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    headers=$(constant src/handshake.h HANDSHAKE_HEADERS_BEFORE_DATA)
+    bound=$(( 1400 - ${headers%u} ))
+
+    LC_ALL=C python3 -c '
+import socket, struct, sys, threading, time
+TOTAL = int(sys.argv[1])
+
+got = {}
+def reader():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(5.0)
+    try:
+        s.connect(("10.0.0.2", 80))
+        seen = b""
+        while len(seen) < TOTAL:
+            more = s.recv(65536)
+            if not more: break
+            seen += more
+        got["octets"] = seen
+    except Exception as e:
+        got["error"] = repr(e)
+    finally:
+        try: s.close()
+        except Exception: pass
+
+wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+wire.bind(("tap0", 0))
+wire.settimeout(5.0)
+listener = threading.Thread(target=reader, daemon=True)
+listener.start()
+
+sizes = []
+deadline = time.monotonic() + 5.0
+while sum(sizes) < TOTAL and time.monotonic() < deadline:
+    try: frame = wire.recv(2048)
+    except socket.timeout: break
+    if len(frame) < 54 or frame[12:14] != b"\x08\x00" or frame[14 + 9] != 6:
+        continue
+    ihl = (frame[14] & 0x0f) * 4
+    at = 14 + ihl
+    total = int.from_bytes(frame[16:18], "big")
+    data = total - ihl - (frame[at + 12] >> 4) * 4
+    # ⚠ Ours are the ones from port 80.
+    if int.from_bytes(frame[at:at + 2], "big") != 80: continue
+    if data > 0: sizes.append(data)
+
+# ⚠ The wire loop finishes as soon as the octets are ON the wire, ⚠ which is
+# BEFORE the kernel has delivered them to the socket. ⚠ Reading `got` here
+# without waiting is a stale result overwriting a newer one
+# (`.claude/skills/change-review/SKILL.md` §4) — ⚠ it read 0 the first time this
+# case ran, and the stack was correct.
+listener.join(6.0)
+print("sizes", " ".join(str(n) for n in sizes))
+octets = got.get("octets", b"")
+print("read", len(octets))
+# ⚠ An empty read must not pass this: ⚠ b"" equals the pattern of length 0.
+print("correct", "yes" if octets and
+      octets == bytes((i % 251) for i in range(len(octets))) else "no")
+if "error" in got: print("error", got["error"])
+' "$total" >"$work/sent.txt" 2>"$work/sent-err.txt" || true
+
+    kill -INT "$reader" 2>/dev/null; wait "$reader" 2>/dev/null
+    ip link del tap0 2>/dev/null
+
+    sizes=$(awk '$1 == "sizes" { $1 = ""; print }' "$work/sent.txt")
+    read_back=$(awk '$1 == "read" { print $2 }' "$work/sent.txt")
+    correct=$(awk '$1 == "correct" { print $2 }' "$work/sent.txt")
+
+    # ⚠ 1. The kernel got all of it, ⚠ **and it got the RIGHT octets** — a stack
+    # that sent 3000 of anything would pass the first half alone.
+    if [ "$read_back" != "$total" ]; then
+        note_failure "the kernel read '$read_back' octets and we were asked to send $total"
+        sed 's/^/      /' "$work/sent.txt" >&2
+        return
+    fi
+    if [ "$correct" != "yes" ]; then
+        note_failure "the kernel read $total octets and they were not the ones we were asked to send"
+    fi
+
+    # ⚠ 2. ⚠ **More than one segment.** ⚠ This is the half the criterion exists
+    # for: 3000 octets in one segment is the same octet count and a different
+    # thing entirely.
+    count=$(printf '%s\n' $sizes | grep -c .)
+    if [ "$count" -lt 3 ]; then
+        note_failure "the $total octets arrived in $count segment(s), and at $bound each they need at least 3"
+    fi
+
+    # ⚠ 3. ⚠ **Not one segment carries more than the effective send MSS.**
+    for n in $sizes; do
+        if [ "$n" -gt "$bound" ]; then
+            note_failure "a segment carried $n octets and the effective send MSS is $bound"
+        fi
+    done
+
+    # ⚠ 4. The other half (`verify` §5): ⚠ **they must add up**, or a check that
+    # only bounded each segment would pass for a stack that sent three of them
+    # and stopped.
+    sum=0
+    for n in $sizes; do sum=$(( sum + n )); done
+    if [ "$sum" != "$total" ]; then
+        note_failure "the segments carry $sum octets between them, not $total"
+    fi
+
+    printf '    %s octets reached the kernel in %s segments, none above %s\n' \
+        "$read_back" "$count" "$bound"
+}
+
 inside_the_mss_option_goes_both_ways_with_the_kernel() {
     ours=10.0.0.2
     our_mac=02:00:00:00:00:02
@@ -2451,6 +2592,10 @@ case_the_kernel_reaches_time_wait_and_our_block_is_free_again() {
 case_a_fin_whose_sequence_number_we_do_not_expect_is_not_answered() {
     in_namespace a_fin_whose_sequence_number_we_do_not_expect_is_not_answered
 }
+case_data_larger_than_the_mss_arrives_in_segments_it_bounds() {
+    in_namespace data_larger_than_the_mss_arrives_in_segments_it_bounds
+}
+
 case_the_mss_option_goes_both_ways_with_the_kernel() {
     in_namespace the_mss_option_goes_both_ways_with_the_kernel
 }
@@ -2497,7 +2642,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge the_window_on_the_wire_follows_the_mtu the_mss_option_goes_both_ways_with_the_kernel data_larger_than_the_mss_arrives_in_segments_it_bounds a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_carrying_the_ecn_bits_is_the_one_that_opens_it the_time_to_live_we_were_given_reaches_the_wire a_syn_to_everyone_is_not_answered a_syn_from_an_impossible_source_is_not_answered a_reset_ends_a_connection_on_the_wire a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

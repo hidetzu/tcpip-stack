@@ -135,6 +135,43 @@ struct transmission_control_block {
     uint32_t snd_una;
     uint32_t snd_nxt;
 
+    /* ⚠ RFC 9293 §3.3.1 names this among the TCB's send-sequence variables:
+     * "SND.WND - send window". ⚠ **Borrowed exactly**
+     * (`.claude/rules/layers.md`).
+     *
+     * ⚠ **What the peer said it will accept**, read off their `Window` field.
+     * ⚠ Until hidetzu/tcpip-stack#126 nothing read it at all — ⚠ **there was
+     * nothing to send, so there was nothing to send INTO.**
+     *
+     * ⚠ **Nothing may be put on the wire past `SND.UNA + SND.WND`.** ⚠ That is
+     * not a nicety: octets past it are octets the peer told us it cannot take. */
+    uint16_t snd_wnd;
+
+    /* How much of what we were asked to send is still to go, and where it
+     * starts.
+     *
+     * ⚠ **There is no buffer, and that is on purpose.** ⚠ The octets are a
+     * pattern computed from the sequence offset (`handshake_octet_at`), so
+     * ⚠ **nothing is allocated and nothing has to be freed** (ADR 0015:
+     * connection state lives in one block and nothing frees on its own).
+     *
+     * ⚠ **What this cannot do is retransmit** — ⚠ an octet handed over is gone
+     * from `still_to_send` and nothing remembers it was unacknowledged.
+     * ⚠ **hidetzu/tcpip-stack#126 Owner Decision: that is out of scope and the
+     * limitation is recorded** (`docs/SPEC.md` §2), ⚠ **not discovered later.** */
+    uint32_t still_to_send;
+
+    /* ⚠ Who to address a segment to when nothing has just arrived from them.
+     *
+     * ⚠ Every reply before hidetzu/tcpip-stack#126 answered a frame that was in
+     * hand, so ⚠ **the hardware address came off that frame.** ⚠ Data of ours
+     * goes out unprompted, so ⚠ **there is no frame to take it from** and it is
+     * remembered when the connection is taken.
+     *
+     * ⚠ **Not an ARP cache** (`docs/SPEC.md` §2): it is one address, held for
+     * one connection, and ⚠ **nothing resolves anything.** */
+    uint8_t their_hardware_address[6];
+
     /* RFC 793's own receive-sequence names, same rules:
      *
      *   "Set RCV.NXT to SEG.SEQ+1, IRS is set to SEG.SEQ"

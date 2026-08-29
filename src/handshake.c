@@ -43,6 +43,31 @@ enum handshake_window handshake_maximum_segment_size_for_mtu(unsigned int mtu,
     return handshake_window_for_mtu(mtu, mss);
 }
 
+enum handshake_window handshake_effective_send_mss(uint16_t send_mss,
+                                                   unsigned int mtu,
+                                                   uint16_t *effective)
+{
+    uint16_t ours = 0;
+    enum handshake_window what = handshake_window_for_mtu(mtu, &ours);
+    if (what != HANDSHAKE_WINDOW_OK) {
+        return what;
+    }
+    /* ⚠ RFC 9293 §3.7.1: "MUST be the smaller (MUST-16) of the send MSS ... and
+     * the largest transmission size permitted by the sender". ⚠ **The smaller,
+     * and nothing else** — no floor and no rounding of ours. */
+    *effective = send_mss < ours ? send_mss : ours;
+    return HANDSHAKE_WINDOW_OK;
+}
+
+/* ⚠ Chosen so that ⚠ **no two octets within 251 of each other are the same**:
+ * a segment boundary put in the wrong place shows up as a break in the run, not
+ * as a coincidence. ⚠ 251 is prime, so the pattern does not line up with any
+ * power-of-two segment size. */
+uint8_t handshake_octet_at(uint32_t offset)
+{
+    return (uint8_t)(offset % 251u);
+}
+
 uint32_t handshake_initial_send_sequence(struct moment now)
 {
     /* ⚠ Truncated to 32 bits on purpose: ⚠ **the document's clock IS a 32-bit
@@ -98,6 +123,7 @@ static size_t build_the_answer(const struct transmission_control_block *block,
                                const struct connection_id *id,
                                const uint8_t *requester_hardware_address,
                                const uint8_t *our_hardware_address,
+                               const uint8_t *data, size_t data_bytes,
                                uint8_t *reply, size_t reply_bytes)
 {
     if (reply_bytes < ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES) {
@@ -142,6 +168,14 @@ static size_t build_the_answer(const struct transmission_control_block *block,
         fields.sequence_number = block->iss;
         fields.control_bits = TCP_CONTROL_SYN | TCP_CONTROL_ACK;
         break;
+    case HANDSHAKE_REPLY_THE_DATA_WE_WERE_ASKED_FOR:
+        /* ⚠ It occupies sequence space, so it starts where `SND.NXT` is now and
+         * ⚠ **the caller moves `SND.NXT` past it after this returns.**
+         * ⚠ `ACK` is set because RFC 9293 §3.1 requires it on every segment
+         * after the handshake. */
+        fields.sequence_number = block->snd_nxt;
+        fields.control_bits = TCP_CONTROL_ACK;
+        break;
     }
     /* ⚠ A promise of exactly this many octets, and ⚠ `take_the_data` is what
      * backs it (hidetzu/tcpip-stack#64 Owner Decision 1). */
@@ -162,7 +196,8 @@ static size_t build_the_answer(const struct transmission_control_block *block,
 
     uint8_t *segment = reply + ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES;
     size_t segment_bytes = 0;
-    if (tcp_build_segment(&fields, id->local.address, id->remote.address, segment,
+    if (tcp_build_segment(&fields, id->local.address, id->remote.address,
+                          data, data_bytes, segment,
                           reply_bytes - ETHERNET_HEADER_BYTES - IPV4_FIXED_HEADER_BYTES,
                           &segment_bytes) != TCP_BUILD_OK) {
         return 0;
@@ -374,7 +409,8 @@ static bool build_what_is_due(const struct transmission_control_block *block,
                               struct handshake_outcome *outcome)
 {
     outcome->reply_bytes = build_the_answer(block, what, time_to_live, id, requester_hardware_address,
-                                            our_hardware_address, reply, reply_bytes);
+                                            our_hardware_address, NULL, 0,
+                                            reply, reply_bytes);
     if (outcome->reply_bytes == 0) {
         outcome->reply = HANDSHAKE_REPLY_NONE;
         return false;
@@ -439,7 +475,8 @@ static enum handshake_reply what_is_owed(const struct transmission_control_block
 
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
                        uint16_t listening_port, uint16_t window,
-                       uint16_t maximum_segment_size, struct moment now,
+                       uint16_t maximum_segment_size, uint32_t octets_to_send,
+                       struct moment now,
                        uint8_t time_to_live,
                        const uint8_t *requester_hardware_address,
                        const uint8_t *our_hardware_address,
@@ -482,6 +519,16 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
     if (held != NULL) {
         outcome->state = held->state;
         outcome->we_would_acknowledge = held->rcv_nxt;
+
+        /* ⚠ RFC 9293 §3.3.1's `SND.WND`: what they say they will accept.
+         * ⚠ **Read from every segment they send**, because it is theirs to
+         * change and ⚠ **the last thing they said is the only thing we may
+         * rely on.**
+         *
+         * ⚠ Taken before anything is decided, ⚠ **including for a segment that
+         * is then refused**: they told us, and refusing their segment does not
+         * unsay it. */
+        held->snd_wnd = header->window;
 
         /* ⚠ RFC 9293 §3.10.7.4's second step, before the rest. ⚠ A `RST` that
          * the sequence check accepts ends the connection: "Enter the CLOSED
@@ -542,6 +589,18 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
             if (at_or_before(held->snd_una, header->acknowledgment_number) &&
                 at_or_before(header->acknowledgment_number, held->snd_nxt)) {
                 held->state = CONNECTION_ESTABLISHED;
+
+                /* ⚠ RFC 9293 §3.3.1: `SND.UNA` is "send unacknowledged".
+                 * ⚠ **They acknowledged our `SYN`, so it is no longer
+                 * unacknowledged.**
+                 *
+                 * ⚠ **Found by a check, not by reading** (hidetzu/tcpip-stack#126):
+                 * ⚠ nothing read `SND.UNA` until data of ours needed a window to
+                 * fit into, and ⚠ **a case asserting a window of 100 got 99** —
+                 * the `SYN` was still counted against the peer's window forever.
+                 * ⚠ **It was wrong before and it did not matter; it matters
+                 * now.** */
+                held->snd_una = header->acknowledgment_number;
                 /* ⚠ The acknowledgment that opens a connection may carry data —
                  * ⚠ **the window we advertised is what invites it.** ⚠ Taken
                  * before the transition is reported, because ⚠ a payload nobody
@@ -759,7 +818,11 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
      * ⚠ **`connections_take` hands back the block that already holds this id**
      * when the peer retransmits its `SYN`, and ⚠ the value is the same either
      * way. */
+    taken->snd_wnd = header->window;
+    taken->still_to_send = octets_to_send;
     taken->rcv_wnd = window;
+    memcpy(taken->their_hardware_address, requester_hardware_address,
+           sizeof taken->their_hardware_address);
     taken->mss_we_advertise = maximum_segment_size;
 
     /* ⚠ RFC 9293 `MUST-15`: "If an MSS Option is not received at connection
@@ -923,6 +986,93 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
     outcome->decision = HANDSHAKE_STAYED;
     outcome->reason = HANDSHAKE_REASON_NONE;
     return HANDSHAKE_NOTHING_DUE;
+}
+
+bool handshake_send_what_is_next(struct connections *connections,
+                                 unsigned int mtu,
+                                 uint8_t time_to_live,
+                                 const uint8_t *our_hardware_address,
+                                 uint8_t *reply, size_t reply_bytes,
+                                 struct handshake_counts *counts,
+                                 struct handshake_outcome *outcome)
+{
+    memset(outcome, 0, sizeof *outcome);
+
+    for (size_t i = 0; i < CONNECTIONS_AT_ONCE; i++) {
+        struct transmission_control_block *block = &connections->block[i];
+        if (!block->in_use || block->state != CONNECTION_ESTABLISHED ||
+            block->still_to_send == 0u) {
+            continue;
+        }
+
+        outcome->id = block->id;
+        outcome->state = block->state;
+
+        /* ⚠ RFC 9293 `MUST-16`, per connection: ⚠ **the smaller of what THEY
+         * told us and what one of OUR frames carries.** ⚠ `send_mss` is theirs
+         * or `MUST-15`'s default of 536; the MTU gives the other half. */
+        uint16_t effective_send_mss = 0;
+        if (handshake_effective_send_mss(block->send_mss, mtu,
+                                         &effective_send_mss) != HANDSHAKE_WINDOW_OK ||
+            effective_send_mss == 0u) {
+            return false;
+        }
+
+        /* ⚠ What the peer said it will take, from `SND.UNA`. ⚠ Octets past
+         * `SND.UNA + SND.WND` are octets they told us they cannot hold. */
+        uint32_t outstanding = block->snd_nxt - block->snd_una;
+        if (outstanding >= block->snd_wnd) {
+            stayed(outcome, HANDSHAKE_REASON_THEIR_WINDOW_HAD_NO_ROOM,
+                   &counts->their_window_had_no_room);
+            return false;
+        }
+        uint32_t room = (uint32_t)block->snd_wnd - outstanding;
+
+        /* ⚠ RFC 9293 `MUST-16`: no segment carries more than the effective send
+         * MSS. ⚠ **Three limits and the smallest wins** — what is left, what
+         * they will take, and what one segment may carry. */
+        uint32_t take = block->still_to_send;
+        if (take > room) {
+            take = room;
+        }
+        if (take > effective_send_mss) {
+            take = effective_send_mss;
+        }
+        if (take == 0u) {
+            return false;
+        }
+
+        /* ⚠ Built from the sequence offset, ⚠ **so no buffer is held between
+         * calls** (ADR 0030). */
+        uint8_t data[TCP_SEGMENT_DATA_MOST];
+        if (take > sizeof data) {
+            take = (uint32_t)sizeof data;
+        }
+        uint32_t already = block->snd_nxt - (block->iss + 1u);
+        for (uint32_t at = 0; at < take; at++) {
+            data[at] = handshake_octet_at(already + at);
+        }
+
+        outcome->reply_bytes =
+            build_the_answer(block, HANDSHAKE_REPLY_THE_DATA_WE_WERE_ASKED_FOR,
+                             time_to_live, &block->id, block->their_hardware_address,
+                             our_hardware_address, data, take, reply, reply_bytes);
+        if (outcome->reply_bytes == 0) {
+            counts->we_could_not_build_the_reply++;
+            return false;
+        }
+
+        block->snd_nxt += take;
+        block->still_to_send -= take;
+        counts->data_segments_we_sent++;
+        counts->data_octets_we_sent += take;
+        outcome->reply = HANDSHAKE_REPLY_THE_DATA_WE_WERE_ASKED_FOR;
+        outcome->decision = HANDSHAKE_STAYED;
+        outcome->reason = HANDSHAKE_REASON_WE_SENT_WHAT_WE_WERE_ASKED_TO;
+        outcome->octets_taken = (uint16_t)take;
+        return true;
+    }
+    return false;
 }
 
 bool handshake_next_moment(const struct connections *connections, struct moment *due)

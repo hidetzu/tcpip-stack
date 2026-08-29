@@ -215,6 +215,37 @@ enum handshake_window handshake_window_for_mtu(unsigned int mtu, uint16_t *windo
 enum handshake_window handshake_maximum_segment_size_for_mtu(unsigned int mtu,
                                                              uint16_t *mss);
 
+/* The largest segment this stack will actually put on the wire.
+ *
+ * ⚠ RFC 9293 §3.7.1, quoted: "The maximum size of a segment that a TCP endpoint
+ * really sends, the 'effective send MSS', MUST be the smaller (MUST-16) of the
+ * send MSS (that reflects the available reassembly buffer size at the remote
+ * host, the EMTU_R) and the largest transmission size permitted by the sender".
+ *
+ * ⚠ **`send_mss` is what they told us**, or RFC 9293 `MUST-15`'s default of 536
+ * when they told us nothing. ⚠ **`mtu` gives the other half**: what one of our
+ * frames can carry, which is the same arithmetic the window and our own MSS use.
+ *
+ * ⚠ **The smaller of the two, and nothing else.** ⚠ It is not clamped, rounded
+ * or floored — ⚠ **the document says "the smaller", and a third rule of ours
+ * would be a claim we cannot cite.**
+ *
+ * ⚠ **Pure**: no fd, no clock, no device. */
+enum handshake_window handshake_effective_send_mss(uint16_t send_mss,
+                                                   unsigned int mtu,
+                                                   uint16_t *effective);
+
+/* One octet of what we were asked to send, by its offset from the first.
+ *
+ * ⚠ **A pattern, not a buffer.** ⚠ Nothing is allocated and nothing is freed;
+ * ⚠ **the octet at an offset is always the same octet**, so a segment can be
+ * built from a sequence number alone.
+ *
+ * ⚠ **It is a check's counterpart too**: a harness can compute what it should
+ * have received without being told, ⚠ **so "3000 octets arrived" and "the right
+ * 3000 octets arrived" are different assertions and both can be made.** */
+uint8_t handshake_octet_at(uint32_t offset);
+
 enum handshake_decision {
     /* ⚠ The connection moved to a state it was not in. `outcome->state` says
      * which. */
@@ -277,6 +308,10 @@ enum handshake_reply {
      * kernel sends one segment carrying `FIN,ACK`** — and two segments when the
      * close comes later. ⚠ ADR 0022 puts this stack in the first situation
      * always, because the FIN's arrival IS the close here (ADR 0023). */
+    /* ⚠ Data we were asked to send, not an answer to anything that arrived.
+     * ⚠ **The first segment this stack builds that nothing prompted.** */
+    HANDSHAKE_REPLY_THE_DATA_WE_WERE_ASKED_FOR,
+
     HANDSHAKE_REPLY_OUR_FIN
 };
 
@@ -397,6 +432,16 @@ enum handshake_reason {
      * rest as well is ours, and is the narrower behaviour, exactly as it is for
      * `ADDRESSED_TO_EVERYONE` (hidetzu/tcpip-stack#112). */
     HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE,
+
+    /* ⚠ Data of ours left the stack. ⚠ Its own reason, because ⚠ **it is the
+     * only line that is not about something that arrived.** */
+    HANDSHAKE_REASON_WE_SENT_WHAT_WE_WERE_ASKED_TO,
+
+    /* ⚠ There is data to send and the peer's window has no room for it.
+     * ⚠ **Ours to wait, not theirs to blame** — they said what they can hold and
+     * we are holding to it (`CLAUDE.md` §4-1). ⚠ Counted, because ⚠ **a send
+     * that did not happen looks exactly like having nothing to send.** */
+    HANDSHAKE_REASON_THEIR_WINDOW_HAD_NO_ROOM,
 
     /* ⚠ Ours, not the sender's: every block is in use
      * (hidetzu/tcpip-stack#42 Owner Decision 1). */
@@ -600,6 +645,18 @@ struct handshake_counts {
     unsigned long they_told_us_their_segment_size;
     unsigned long they_told_us_nothing_so_we_assumed;
 
+    /* ⚠ Data of ours that actually left, in segments and in octets.
+     * ⚠ **Two numbers, because one of them alone cannot show segmentation**:
+     * 3000 octets in one segment and 3000 in three are the same octet count and
+     * ⚠ **a different thing entirely** (hidetzu/tcpip-stack#126). */
+    unsigned long data_segments_we_sent;
+    unsigned long data_octets_we_sent;
+
+    /* ⚠ Asked to send and stopped by the peer's window. ⚠ Counted, because
+     * ⚠ **a send that did not happen is invisible otherwise** and looks exactly
+     * like having nothing to send (`.claude/rules/c.md`). */
+    unsigned long their_window_had_no_room;
+
     /* ⚠ **Connections** the other side reset. ⚠ Apart from every other ending:
      * one was closed properly, one timed out, ⚠ **this one was cut.** */
     unsigned long reset_by_the_other_side;
@@ -738,7 +795,8 @@ struct handshake_outcome {
  * on the wire; `docs/SPEC.md` §2 names them. */
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
                        uint16_t listening_port, uint16_t window,
-                       uint16_t maximum_segment_size, struct moment now,
+                       uint16_t maximum_segment_size, uint32_t octets_to_send,
+                       struct moment now,
                        uint8_t time_to_live,
                        const uint8_t *requester_hardware_address,
                        const uint8_t *our_hardware_address,
@@ -791,6 +849,30 @@ enum handshake_due handshake_what_is_due(struct connections *connections,
                                          uint8_t *reply, size_t reply_bytes,
                                          struct handshake_counts *counts,
                                          struct handshake_outcome *outcome);
+
+/* Build the next data segment, if one is due.
+ *
+ * ⚠ Returns false when nothing is due — nothing left to send, no connection
+ * open, or ⚠ **the peer's window has no room.**
+ *
+ * ⚠ **The caller drains this in a loop** (`src/tcpip_stack.c`). ⚠ Putting the
+ * loop here would mean this function owning the device, and ⚠ **the State layer
+ * does not touch an fd** (`.claude/rules/layers.md`).
+ *
+ * ⚠ **At most the effective send MSS of data per segment** — RFC 9293
+ * `MUST-16` — ⚠ **and never past `SND.UNA + SND.WND`.**
+ *
+ * ⚠ **`mtu`, not a precomputed size.** ⚠ The effective send MSS is the smaller
+ * of what the PEER told us and what one of OUR frames carries, and ⚠ **the first
+ * half is per connection** — so it is computed here, per block, rather than
+ * handed in as one number for all of them. */
+bool handshake_send_what_is_next(struct connections *connections,
+                                 unsigned int mtu,
+                                 uint8_t time_to_live,
+                                 const uint8_t *our_hardware_address,
+                                 uint8_t *reply, size_t reply_bytes,
+                                 struct handshake_counts *counts,
+                                 struct handshake_outcome *outcome);
 
 /* The next moment anything is waiting for, if anything is.
  *

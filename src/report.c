@@ -534,6 +534,15 @@ void report_handshake_outcome(FILE *out, const struct handshake_outcome *outcome
         fputs("  no answer: that was marked urgent, and there is nobody here to\n"
               "    hand it to. That is ours, not the sender's\n", out);
         return;
+    case HANDSHAKE_REASON_WE_SENT_WHAT_WE_WERE_ASKED_TO:
+        fputs("  sent: data of ours, as much of it as one segment may carry\n", out);
+        return;
+    case HANDSHAKE_REASON_THEIR_WINDOW_HAD_NO_ROOM:
+        /* ⚠ Ours to wait, not theirs to blame: ⚠ **they said what they can hold
+         * and we are holding to it** (`CLAUDE.md` §4-1). */
+        fputs("  nothing sent: there is data to send and the window they\n"
+              "    advertised has no room for it yet\n", out);
+        return;
     case HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE:
         /* ⚠ Nothing here is the sender's fault in the usual sense, and the
          * sentence does not scold: ⚠ **it says what the address was and what we
@@ -658,6 +667,16 @@ void report_handshake_summary(FILE *out, const struct handshake_counts *counts)
     fprintf(out, "%lu segment%s from an address that can never send anything\n",
             counts->from_an_impossible_source,
             counts->from_an_impossible_source == 1 ? " was" : "s were");
+    /* ⚠ Two numbers, ⚠ **because one alone cannot show segmentation**: 3000
+     * octets in one segment and 3000 in three are the same octet count. */
+    fprintf(out, "%lu octet%s of ours left in %lu segment%s, and %lu time%s there "
+                 "was no room in the window they advertised\n",
+            counts->data_octets_we_sent,
+            counts->data_octets_we_sent == 1 ? "" : "s",
+            counts->data_segments_we_sent,
+            counts->data_segments_we_sent == 1 ? "" : "s",
+            counts->their_window_had_no_room,
+            counts->their_window_had_no_room == 1 ? "" : "s");
     fprintf(out, "%lu %s refused for want of room and %lu answer%s never left the "
                  "device, which are ours and not the sender's\n",
             counts->room.refused_for_want_of_room,
@@ -682,6 +701,9 @@ void report_option_problem(FILE *out, enum option_problem problem,
         return;
     case OPTION_TCP_PORT:
         fputs("--tcp-port takes a whole number from 1 to 65535.\n", out);
+        return;
+    case OPTION_SEND:
+        fputs("--send takes a whole number of octets, 0 to 1048576.\n", out);
         return;
     case OPTION_TIME_TO_LIVE:
         fputs("--ttl takes a whole number from 1 to 255.\n", out);

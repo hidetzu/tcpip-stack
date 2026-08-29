@@ -274,6 +274,7 @@ static void write_32(uint8_t *at, uint32_t value)
 enum tcp_build tcp_build_segment(const struct tcp_header *fields,
                                  const uint8_t *source_address,
                                  const uint8_t *destination_address,
+                                 const uint8_t *data, size_t data_bytes,
                                  uint8_t *segment, size_t segment_bytes,
                                  size_t *built_bytes)
 {
@@ -287,8 +288,10 @@ enum tcp_build tcp_build_segment(const struct tcp_header *fields,
     uint8_t words = (uint8_t)(header_bytes / 4u);
 
     /* ⚠ Decided before a single octet is written, so a refused build leaves the
-     * caller's buffer exactly as it was. */
-    if (segment_bytes < header_bytes) {
+     * caller's buffer exactly as it was. ⚠ **The data counts**: a segment that
+     * fit its header and not its payload would be a header claiming octets that
+     * are not there. */
+    if (segment_bytes < header_bytes || segment_bytes - header_bytes < data_bytes) {
         return TCP_BUILD_BUFFER_TOO_SMALL;
     }
 
@@ -326,14 +329,20 @@ enum tcp_build tcp_build_segment(const struct tcp_header *fields,
      * naming twenty octets over a twenty-four octet segment is a checksum the
      * peer computes differently, ⚠ **and the only thing that would come back is
      * "it does not agree".** */
+    /* ⚠ Copied before the checksum is computed, ⚠ **because the checksum covers
+     * it.** ⚠ The caller's buffer is its own and nothing of it is kept. */
+    if (data_bytes != 0) {
+        memcpy(segment + header_bytes, data, data_bytes);
+    }
+
     write_16(segment + CHECKSUM_OFFSET, 0);
     uint8_t pseudo_header[PSEUDO_HEADER_BYTES];
     build_the_pseudo_header(pseudo_header, source_address, destination_address,
-                            header_bytes);
+                            header_bytes + data_bytes);
     write_16(segment + CHECKSUM_OFFSET,
              internet_checksum_of_two(pseudo_header, sizeof pseudo_header, segment,
-                                      header_bytes, CHECKSUM_OFFSET));
+                                      header_bytes + data_bytes, CHECKSUM_OFFSET));
 
-    *built_bytes = header_bytes;
+    *built_bytes = header_bytes + data_bytes;
     return TCP_BUILD_OK;
 }
