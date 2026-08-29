@@ -94,10 +94,56 @@ inside_the_interface_exists_only_while_it_is_attached() {
     assert_file_contains "$work/out.txt" "listening on tap0" "the first line"
 }
 
+# ⚠ hidetzu/tcpip-stack#115. ⚠ The MTU that is REPORTED is the one the device
+# actually has, and ⚠ **not the value this stack would carry on with.**
+#
+# ⚠ The device is made HERE, before the stack starts, and set to 1400 —
+# ⚠ **because a device the stack creates itself is always 1500** (measured,
+# `unshare -Urn`, 3 runs, every run 1500), ⚠ so a case that only ever saw 1500
+# could not tell a reading from a constant. ⚠ `tap_attach` takes over an
+# existing device, which is what makes this possible.
+inside_the_mtu_reported_is_the_devices_own() {
+    # ⚠ 1400 first, and it must not be 1500 or this case asserts nothing.
+    ip tuntap add dev tap0 mode tap
+    ip link set tap0 mtu 1400
+    ip link set tap0 up
+    "$TCPIP_STACK" --dev tap0 --count 0 >"$work/out-1400.txt" 2>"$work/err-1400.txt"
+    assert_exit_code 0 $? "reading the MTU of a device brought up at 1400"
+    ip link del tap0 2>/dev/null
+
+    assert_file_contains "$work/out-1400.txt" "tap0 carries frames of up to 1400 bytes" \
+        "the device's own MTU, and not the value carried on with"
+    if grep -q "1500" "$work/out-1400.txt"; then
+        note_failure "1500 appeared for a device brought up at 1400"
+    fi
+    if grep -q "could not ask" "$work/out-1400.txt"; then
+        note_failure "the MTU could not be read on a device that has one"
+    fi
+
+    # ⚠ The other half: ⚠ **a device this stack creates reports 1500**, so the
+    # case above cannot pass by the number simply never being 1500 (`verify` §5).
+    "$TCPIP_STACK" --dev tap0 --count 0 >"$work/out-default.txt" 2>&1
+    assert_file_contains "$work/out-default.txt" "tap0 carries frames of up to 1500 bytes" \
+        "a device the stack created itself"
+
+    # ⚠ And the smallest the kernel will take, measured: 68. ⚠ A case that only
+    # ever saw two round numbers would not notice a lower bound of ours.
+    ip tuntap add dev tap0 mode tap
+    ip link set tap0 mtu 68
+    ip link set tap0 up
+    "$TCPIP_STACK" --dev tap0 --count 0 >"$work/out-68.txt" 2>&1
+    ip link del tap0 2>/dev/null
+    assert_file_contains "$work/out-68.txt" "tap0 carries frames of up to 68 bytes" \
+        "the smallest MTU the kernel accepts"
+
+    printf '    reported 1400, 1500 and 68 for devices brought up at each\n'
+}
+
 inside_count_zero_reads_nothing() {
     "$TCPIP_STACK" --dev tap0 --count 0 >"$work/out.txt" 2>"$work/err.txt"
     assert_exit_code 0 $? "reading no frames at all"
     assert_file_is "$work/out.txt" "listening on tap0
+tap0 carries frames of up to 1500 bytes
 read 0 frames, 0 read errors
 0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define" "reading no frames at all"
     assert_file_is "$work/err.txt" "" "reading no frames at all"
@@ -111,6 +157,7 @@ inside_a_timer_running_out_has_its_own_exit_code() {
         "listened on tap0 for 300 ms and read 0 frames. Nothing arrived here; that does not say whether anything was sent." \
         "the timer running out"
     assert_file_is "$work/out.txt" "listening on tap0
+tap0 carries frames of up to 1500 bytes
 read 0 frames, 0 read errors
 0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define" "the timer running out"
 }
@@ -151,6 +198,7 @@ inside_a_stop_request_reaches_a_reader_that_is_waiting() {
     wait "$reader"
     assert_exit_code 0 $? "being asked to stop"
     assert_file_is "$work/out.txt" "listening on tap0
+tap0 carries frames of up to 1500 bytes
 read 0 frames, 0 read errors
 0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define" "being asked to stop"
 }
@@ -216,6 +264,7 @@ inside_the_wait_says_the_device_stopped_being_usable() {
 
     # ⚠ No frame was read and no read was attempted, so neither count moved.
     assert_file_is "$work/out.txt" "listening on tap0
+tap0 carries frames of up to 1500 bytes
 read 0 frames, 0 read errors
 0 frames were malformed, 0 carried an IEEE 802.3 Length, 0 carried a length/type the standard does not define" "the device stopped being usable"
 }
@@ -363,6 +412,10 @@ in_namespace() {
 case_the_interface_exists_only_while_it_is_attached() {
     in_namespace the_interface_exists_only_while_it_is_attached
 }
+case_the_mtu_reported_is_the_devices_own() {
+    in_namespace the_mtu_reported_is_the_devices_own
+}
+
 case_count_zero_reads_nothing() { in_namespace count_zero_reads_nothing; }
 case_a_timer_running_out_has_its_own_exit_code() {
     in_namespace a_timer_running_out_has_its_own_exit_code
@@ -847,7 +900,7 @@ wire.send(b"\x02\x00\x00\x00\x00\x02" + b"\x02\xaa\xaa\xaa\xaa\xaa" + b"\x08\x00
         "the program still stops when nothing arrives"
 }
 
-ALL_CASES="the_interface_exists_only_while_it_is_attached count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused the_wait_says_the_device_stopped_being_usable a_frame_handed_over_reaches_the_kernel a_write_that_could_not_be_made_is_not_a_frame_sent each_kind_of_frame_moves_its_own_counter a_timer_of_ours_ends_the_wait_without_ending_the_program only_a_frame_puts_off_giving_up_on_reading the_answer_really_goes_out_again"
+ALL_CASES="the_interface_exists_only_while_it_is_attached the_mtu_reported_is_the_devices_own count_zero_reads_nothing a_timer_running_out_has_its_own_exit_code a_stop_request_reaches_a_reader_that_is_waiting a_second_attach_to_the_same_device_is_refused the_wait_says_the_device_stopped_being_usable a_frame_handed_over_reaches_the_kernel a_write_that_could_not_be_made_is_not_a_frame_sent each_kind_of_frame_moves_its_own_counter a_timer_of_ours_ends_the_wait_without_ending_the_program only_a_frame_puts_off_giving_up_on_reading the_answer_really_goes_out_again"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

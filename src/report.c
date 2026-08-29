@@ -18,6 +18,28 @@ void report_listening(FILE *out, const char *device_name)
     fprintf(out, "listening on %s\n", device_name);
 }
 
+void report_mtu(FILE *out, const char *device_name, unsigned int mtu)
+{
+    fprintf(out, "%s carries frames of up to %u bytes\n", device_name, mtu);
+}
+
+void report_mtu_could_not_be_read(FILE *out, const char *device_name,
+                                  const struct tap_failure *failure,
+                                  unsigned int carrying_on_with)
+{
+    /* ⚠ What happened, then what was done about it, then what it costs. ⚠ It
+     * never prints the number as though it had been read (`CLAUDE.md` §1). */
+    if (failure->errnum != 0) {
+        fprintf(out, "could not ask %s how large a frame it carries: %s\n",
+                device_name, strerror(failure->errnum));
+    } else {
+        fprintf(out, "could not ask %s how large a frame it carries: "
+                     "the answer was not a size.\n", device_name);
+    }
+    fprintf(out, "  Carrying on with %u bytes, which is a value chosen here and "
+                 "not one this device reported.\n", carrying_on_with);
+}
+
 void report_frame(FILE *out, unsigned long frame_number, size_t bytes,
                   bool filled_buffer)
 {
@@ -154,6 +176,7 @@ void report_attach_failure(FILE *out, const char *device_name,
     case TAP_STEP_WAIT:
     case TAP_STEP_READ:
     case TAP_STEP_WRITE:
+    case TAP_STEP_MTU:
         break;
     }
     /* ⚠ Reached only if a step is added above without a sentence for it. Say
