@@ -2048,6 +2048,223 @@ static bool case_the_window_is_what_one_frame_carries(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#132. ⚠ RFC 5681 §3.1's initial congestion window.
+ *
+ * ⚠ **Every boundary, and one octet either side of each** — ⚠ the table has
+ * three ranges and ⚠ **a build that used the wrong one for a boundary value
+ * would pass a check that only tried the middles.** ⚠ **Pure.** */
+static bool case_the_initial_congestion_window_follows_the_table(void)
+{
+    bool ok = true;
+    static const struct { uint16_t smss; unsigned int segments; const char *what; } table[] = {
+        { 2191, 2, "just above 2190" },
+        { 2190, 3, "exactly 2190" },
+        { 1096, 3, "just above 1095" },
+        { 1095, 4, "exactly 1095" },
+        { 1094, 4, "just below 1095" },
+        { 1460, 3, "the MSS an MTU of 1500 gives" },
+        { 1360, 3, "the MSS an MTU of 1400 gives" },
+        { 28,   4, "the MSS the smallest MTU a tap takes gives" },
+        { 65481, 2, "the MSS the largest MTU a tap takes gives" },
+    };
+    for (size_t i = 0; i < sizeof table / sizeof table[0]; i++) {
+        uint32_t want = (uint32_t)table[i].segments * (uint32_t)table[i].smss;
+        uint32_t got = handshake_initial_congestion_window(table[i].smss);
+        if (got != want) {
+            fprintf(stderr, "  %s: an SMSS of %u gave IW %u, and %u segments is %u\n",
+                    table[i].what, (unsigned)table[i].smss, (unsigned)got,
+                    table[i].segments, (unsigned)want);
+            ok = false;
+        }
+        /* ⚠ The document's SECOND limit on the same line: ⚠ "MUST NOT be more
+         * than N segments". ⚠ **Both bind, and a check that only did the
+         * arithmetic would miss a build that sent smaller segments.** */
+        if (got > (uint32_t)table[i].segments * (uint32_t)table[i].smss) {
+            fprintf(stderr, "  %s: IW is more than %u segments\n",
+                    table[i].what, table[i].segments);
+            ok = false;
+        }
+    }
+    /* ⚠ The boundaries are the document's, ⚠ **asserted as numbers** — the table
+     * above names the constants and would move with them
+     * (`.claude/rules/testing.md`). */
+    if (HANDSHAKE_IW_SMSS_LARGE != 2190u || HANDSHAKE_IW_SMSS_MEDIUM != 1095u) {
+        fputs("  the IW boundaries are not RFC 5681 section 3.1's 2190 and 1095\n",
+              stderr);
+        ok = false;
+    }
+    return ok;
+}
+
+/* ⚠ hidetzu/tcpip-stack#132. ⚠ RFC 5681 §3.1's two regimes and the loss window.
+ *
+ * ⚠ **Slow start and congestion avoidance are told apart**, and ⚠ **the cut on a
+ * timeout uses `FlightSize` and not `cwnd`** — the document calls that "an easy
+ * mistake to make". */
+static bool case_the_congestion_window_grows_and_is_cut_the_way_the_document_says(void)
+{
+    bool ok = true;
+    uint8_t reply[2048];
+    struct handshake_outcome sent;
+    const uint64_t rto = HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS / 1000000ull;
+
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    held->still_to_send = 60000u;
+    held->snd_wnd = 65535u;
+
+    /* ⚠ The first send applies `IW`. */
+    if (!handshake_send_what_is_next(&world.connections, 1500u, at(0),
+                                     IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                     reply, sizeof reply, &world.counts, &sent)) {
+        return false;
+    }
+    uint16_t smss = 0;
+    if (handshake_effective_send_mss(held->send_mss, 1500u, &smss) != HANDSHAKE_WINDOW_OK) {
+        return false;
+    }
+    if (!held->cwnd_is_set ||
+        held->cwnd != handshake_initial_congestion_window(smss) ||
+        held->ssthresh != HANDSHAKE_SSTHRESH_AT_THE_START) {
+        fprintf(stderr, "  after the first send cwnd is %u and ssthresh %u\n",
+                (unsigned)held->cwnd, (unsigned)held->ssthresh);
+        return false;
+    }
+
+    /* ⚠ Slow start: ⚠ **cwnd grows by at most SMSS for each acknowledgment**
+     * (the `MUST`), and by `min(N, SMSS)` (the RECOMMENDed equation 2). */
+    {
+        uint32_t before = held->cwnd;
+        struct connection_id id = the_connection();
+        struct tcp_header ack =
+            a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->snd_una + smss);
+        /* ⚠ **`SND.WND` is read from EVERY segment they send** — the last thing
+         * they said is the only thing we may rely on. ⚠ A helper that leaves it
+         * zero says "I can take nothing", ⚠ **and that is the peer's word, not a
+         * defect.** */
+        ack.window = 65535u;
+        struct handshake_outcome outcome;
+        handshake_receive(&ack, &id, OUR_PORT, THE_WINDOW, THE_MSS, 0, at(1),
+                          IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC,
+                          &world.connections, world.reply, sizeof world.reply,
+                          &world.counts, &outcome);
+        if (held->cwnd != before + smss) {
+            fprintf(stderr, "  slow start grew cwnd from %u to %u, and SMSS is %u\n",
+                    (unsigned)before, (unsigned)held->cwnd, (unsigned)smss);
+            ok = false;
+        }
+        if (held->cwnd > before + smss) {
+            fputs("  slow start grew cwnd by more than SMSS in one ACK\n", stderr);
+            ok = false;
+        }
+    }
+
+    /* ⚠ Congestion avoidance: ⚠ **slower than slow start, and that is what
+     * tells the two regimes apart.** ⚠ `ssthresh` is put below `cwnd` by hand,
+     * which is the condition the document names.
+     *
+     * ⚠ **More has to go out first**: an acknowledgment covering nothing new
+     * grows nothing, ⚠ **and a case that acknowledged an empty window would
+     * report "it did not grow" for a build that grows correctly.** */
+    {
+        if (!handshake_send_what_is_next(&world.connections, 1500u, at(2),
+                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                         reply, sizeof reply, &world.counts, &sent)) {
+            fputs("  nothing more was sent to be acknowledged\n", stderr);
+            return false;
+        }
+        held->ssthresh = 1u;
+        uint32_t before = held->cwnd;
+        struct connection_id id = the_connection();
+        struct tcp_header ack =
+            a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->snd_una + smss);
+        /* ⚠ **`SND.WND` is read from EVERY segment they send** — the last thing
+         * they said is the only thing we may rely on. ⚠ A helper that leaves it
+         * zero says "I can take nothing", ⚠ **and that is the peer's word, not a
+         * defect.** */
+        ack.window = 65535u;
+        struct handshake_outcome outcome;
+        handshake_receive(&ack, &id, OUR_PORT, THE_WINDOW, THE_MSS, 0, at(2),
+                          IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC,
+                          &world.connections, world.reply, sizeof world.reply,
+                          &world.counts, &outcome);
+        uint32_t grew = held->cwnd - before;
+        if (grew == 0u) {
+            fprintf(stderr, "  congestion avoidance did not grow cwnd at all: "
+                            "cwnd %u, ssthresh %u, send_mss %u, snd_una %u, snd_nxt %u\n",
+                    (unsigned)held->cwnd, (unsigned)held->ssthresh,
+                    (unsigned)held->send_mss, (unsigned)held->snd_una,
+                    (unsigned)held->snd_nxt);
+            ok = false;
+        }
+        if (grew >= smss) {
+            fprintf(stderr, "  congestion avoidance grew cwnd by %u, which is not "
+                            "slower than slow start growing it by %u\n",
+                    (unsigned)grew, (unsigned)smss);
+            ok = false;
+        }
+    }
+
+    /* ⚠ The cut on a timeout. ⚠ **`ssthresh = max(FlightSize/2, 2*SMSS)` and
+     * `cwnd = one full-sized segment`.** */
+    {
+        held->ssthresh = HANDSHAKE_SSTHRESH_AT_THE_START;
+        held->cwnd = 40000u;
+        held->retransmissions = 0u;
+        /* ⚠ Something has to be outstanding, or there is no `FlightSize` to
+         * halve ⚠ **and the cut could not be told from a constant.** */
+        if (!handshake_send_what_is_next(&world.connections, 1500u, at(3),
+                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                         reply, sizeof reply, &world.counts, &sent)) {
+            fputs("  nothing was sent to leave a FlightSize\n", stderr);
+            return false;
+        }
+        uint32_t flight = held->snd_nxt - held->snd_una;
+        if (flight == 0u) {
+            fputs("  nothing was outstanding, so FlightSize is zero and the cut "
+                  "cannot be told from a constant\n", stderr);
+            return false;
+        }
+        unsigned long cut_before = world.counts.congestion_windows_we_cut;
+        if (!handshake_send_what_is_next(&world.connections, 1500u,
+                                         at(rto * 100u), IPV4_TIME_TO_LIVE_WE_SEND,
+                                         OUR_MAC, reply, sizeof reply,
+                                         &world.counts, &sent)) {
+            fputs("  nothing went out again at the deadline\n", stderr);
+            return false;
+        }
+        uint32_t half = flight / 2u;
+        uint32_t two = 2u * (uint32_t)smss;
+        uint32_t want = half > two ? half : two;
+        if (held->ssthresh != want) {
+            fprintf(stderr, "  ssthresh is %u; max(FlightSize/2, 2*SMSS) with a "
+                            "FlightSize of %u is %u\n",
+                    (unsigned)held->ssthresh, (unsigned)flight, (unsigned)want);
+            ok = false;
+        }
+        /* ⚠ **And it is NOT cwnd/2**, which is the mistake the document names.
+         * ⚠ cwnd was 40000 and FlightSize is not, so the two differ. */
+        if (held->ssthresh == 40000u / 2u) {
+            fputs("  ssthresh is cwnd/2, and the document says FlightSize/2\n", stderr);
+            ok = false;
+        }
+        if (held->cwnd != (uint32_t)HANDSHAKE_LW_SEGMENTS * smss) {
+            fprintf(stderr, "  cwnd is %u after a timeout, and one full-sized "
+                            "segment is %u\n", (unsigned)held->cwnd, (unsigned)smss);
+            ok = false;
+        }
+        if (world.counts.congestion_windows_we_cut != cut_before + 1u) {
+            fputs("  cutting the congestion window was not counted\n", stderr);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 /* ⚠ hidetzu/tcpip-stack#131. ⚠ RFC 9293 §3.8.3 (b): R1 is "the number of
  * transmissions of the same segment" reaching a threshold.
  *
@@ -2497,6 +2714,67 @@ static bool case_an_acknowledgment_for_data_stops_the_resending(void)
         if (held->snd_nxt != held->snd_una + 10u) {
             fprintf(stderr, "  SND.NXT is %u and SND.UNA + 10 is %u\n",
                     (unsigned)held->snd_nxt, (unsigned)(held->snd_una + 10u));
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* ⚠ hidetzu/tcpip-stack#132 AC 5. ⚠ RFC 5681 §2: "a TCP MUST NOT send data with
+ * a sequence number higher than the sum of the highest acknowledged sequence
+ * number and **the minimum of cwnd and rwnd**."
+ *
+ * ⚠ **Each of the two smaller in turn**, so ⚠ **neither "always theirs" nor
+ * "always ours" passes.** */
+static bool case_the_smaller_of_cwnd_and_rwnd_governs(void)
+{
+    bool ok = true;
+    uint8_t reply[2048];
+    struct handshake_outcome sent;
+
+    static const struct {
+        uint32_t cwnd; uint16_t rwnd; uint32_t governs; const char *what;
+    } either[] = {
+        { 100u,  65535u, 100u,  "cwnd is the smaller" },
+        { 65535u, 100u,  100u,  "rwnd is the smaller" },
+        { 100u,  100u,   100u,  "they are equal" },
+    };
+    for (size_t i = 0; i < sizeof either / sizeof either[0]; i++) {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        held->still_to_send = 3000u;
+        held->snd_wnd = either[i].rwnd;
+        /* ⚠ `IW` is applied at the first send, so `cwnd` is set here and the
+         * flag with it — ⚠ **otherwise the first send would overwrite it.** */
+        held->cwnd = either[i].cwnd;
+        held->ssthresh = HANDSHAKE_SSTHRESH_AT_THE_START;
+        held->cwnd_is_set = true;
+
+        uint32_t snd_una = held->snd_una;
+        uint32_t octets = 0;
+        unsigned int segments = 0;
+        while (handshake_send_what_is_next(&world.connections, 1500u, at(0),
+                                           IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                           reply, sizeof reply, &world.counts, &sent)) {
+            octets += sent.octets_taken;
+            if (++segments > 100u) {
+                fprintf(stderr, "  %s: it never stopped sending\n", either[i].what);
+                return false;
+            }
+        }
+        if (octets != either[i].governs) {
+            fprintf(stderr, "  %s: %u octets went out and the minimum is %u\n",
+                    either[i].what, (unsigned)octets, (unsigned)either[i].governs);
+            ok = false;
+        }
+        if (held->snd_nxt != snd_una + either[i].governs) {
+            fprintf(stderr, "  %s: SND.NXT moved to %u, and SND.UNA plus the "
+                            "minimum is %u\n", either[i].what,
+                    (unsigned)held->snd_nxt, (unsigned)(snd_una + either[i].governs));
             ok = false;
         }
     }
@@ -4413,6 +4691,12 @@ static const struct test_case cases[] = {
       case_our_close_is_the_segment_the_document_describes },
     { "every_segment_we_build_carries_the_same_window",
       case_every_segment_we_build_carries_the_same_window },
+    { "the_smaller_of_cwnd_and_rwnd_governs",
+      case_the_smaller_of_cwnd_and_rwnd_governs },
+    { "the_initial_congestion_window_follows_the_table",
+      case_the_initial_congestion_window_follows_the_table },
+    { "the_congestion_window_grows_and_is_cut_the_way_the_document_says",
+      case_the_congestion_window_grows_and_is_cut_the_way_the_document_says },
     { "r1_is_crossed_once_and_said_once",
       case_r1_is_crossed_once_and_said_once },
     { "no_round_trip_is_measured_from_a_retransmission",

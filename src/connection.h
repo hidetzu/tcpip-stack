@@ -287,6 +287,27 @@ struct transmission_control_block {
     unsigned int retransmissions;
     bool told_them_about_r1;
 
+    /* RFC 5681's two state variables, ⚠ **under its own names**
+     * (`.claude/rules/layers.md`).
+     *
+     * ⚠ §2: "CONGESTION WINDOW (cwnd): A TCP state variable that limits the
+     * amount of data a TCP can send. At any given time, a TCP MUST NOT send data
+     * with a sequence number higher than the sum of the highest acknowledged
+     * sequence number and **the minimum of cwnd and rwnd**."
+     *
+     * ⚠ `rwnd` is `snd_wnd` above — ⚠ **what THEY said they will take**;
+     * ⚠ `cwnd` is what WE will put in the network. ⚠ **The smaller governs**, and
+     * ⚠ **a check asserts each of the two smaller in turn** so neither "always
+     * theirs" nor "always ours" passes.
+     *
+     * ⚠ `cwnd_is_set` is separate: ⚠ **`IW` needs `SMSS`, and `SMSS` needs the
+     * device's MTU, which the receive path is not handed.** ⚠ So it is applied
+     * at the first send, ⚠ **and a zero would be indistinguishable from a window
+     * that had legitimately been cut to nothing.** */
+    uint32_t cwnd;
+    uint32_t ssthresh;
+    bool cwnd_is_set;
+
     /* Where an answer has to go on the wire.
      *
      * ⚠ Read out of the frame that asked, and ⚠ **kept because a retransmission
