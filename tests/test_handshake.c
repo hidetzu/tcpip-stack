@@ -2048,6 +2048,77 @@ static bool case_the_window_is_what_one_frame_carries(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#131. ⚠ RFC 9293 §3.8.3 (b): R1 is "the number of
+ * transmissions of the same segment" reaching a threshold.
+ *
+ * ⚠ **Added because a mutation walked past everything**: never reporting R1 left
+ * every check green (2026-08-29).
+ *
+ * ⚠ **Said once, not on every retransmission past three** — ⚠ R1 is a threshold
+ * crossed, and saying it many times would be saying one event many times
+ * (`CLAUDE.md` §6). */
+static bool case_r1_is_crossed_once_and_said_once(void)
+{
+    bool ok = true;
+    uint8_t reply[2048];
+    struct handshake_outcome sent;
+    struct world world;
+    a_world(&world);
+    struct transmission_control_block *held = NULL;
+    if (!open_and_confirm(&world, &held)) {
+        return false;
+    }
+    held->still_to_send = 10u;
+    held->snd_wnd = 65535u;
+
+    /* ⚠ The first send, then one retransmission per deadline. ⚠ The deadlines
+     * double, so they are at 1, 3, 7, 15, 31 RTOs. */
+    const uint64_t rto = HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS / 1000000ull;
+    if (!handshake_send_what_is_next(&world.connections, 1500u, at(0),
+                                     IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                     reply, sizeof reply, &world.counts, &sent)) {
+        return false;
+    }
+    static const uint64_t at_multiple[] = { 1u, 3u, 7u, 15u, 31u };
+    for (size_t i = 0; i < sizeof at_multiple / sizeof at_multiple[0]; i++) {
+        if (!handshake_send_what_is_next(&world.connections, 1500u,
+                                         at(rto * at_multiple[i]),
+                                         IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                         reply, sizeof reply, &world.counts, &sent)) {
+            fprintf(stderr, "  nothing was sent again at %llu RTOs\n",
+                    (unsigned long long)at_multiple[i]);
+            return false;
+        }
+        /* ⚠ Below the threshold nothing is said; ⚠ at it and above, exactly one. */
+        unsigned long want = (i + 1u) >= HANDSHAKE_R1_RETRANSMISSIONS ? 1u : 0u;
+        if (world.counts.reached_r1 != want) {
+            fprintf(stderr, "  after %zu retransmissions R1 was said %lu times, "
+                            "and %lu is right (R1 is %u)\n",
+                    i + 1u, world.counts.reached_r1, want,
+                    (unsigned)HANDSHAKE_R1_RETRANSMISSIONS);
+            ok = false;
+        }
+    }
+
+    /* ⚠ And a clean acknowledgment puts the count back: ⚠ **R1 counts THE SAME
+     * segment being sent again**, so something new being acknowledged ends it
+     * (RFC 9293 §3.8.3 (a)). */
+    struct connection_id id = the_connection();
+    struct tcp_header ack = a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->snd_nxt);
+    struct handshake_outcome outcome;
+    handshake_receive(&ack, &id, OUR_PORT, THE_WINDOW, THE_MSS, 0, at(rto * 40u),
+                      IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC,
+                      &world.connections, world.reply, sizeof world.reply,
+                      &world.counts, &outcome);
+    if (held->retransmissions != 0 || held->told_them_about_r1) {
+        fprintf(stderr, "  after a clean acknowledgment the count is %u and R1 is "
+                        "%s\n", held->retransmissions,
+                held->told_them_about_r1 ? "still said" : "not said");
+        ok = false;
+    }
+    return ok;
+}
+
 /* ⚠ hidetzu/tcpip-stack#130. ⚠ RFC 6298 §3, Karn's algorithm: "RTT samples MUST
  * NOT be made using segments that were retransmitted."
  *
@@ -2117,6 +2188,8 @@ static bool case_no_round_trip_is_measured_from_a_retransmission(void)
             return false;
         }
         uint64_t before = held->round_trip.timeout_nanoseconds;
+        uint64_t before_srtt = held->round_trip.smoothed_nanoseconds;
+        uint64_t before_rttvar = held->round_trip.variation_nanoseconds;
         bool had_one = held->round_trip.have_a_sample;
 
         /* ⚠ Nobody acknowledged, so it goes out again. */
@@ -2141,10 +2214,25 @@ static bool case_no_round_trip_is_measured_from_a_retransmission(void)
                     world.counts.round_trips_we_would_not_use);
             ok = false;
         }
+        /* ⚠ **SRTT and RTTVAR must not move** — that is what Karn's forbids.
+         * ⚠ **The RTO legitimately DOES**, because RFC 6298 §5.5 doubled it on
+         * the expiry, ⚠ **and asserting it did not would be asserting against
+         * backoff** (hidetzu/tcpip-stack#131). */
         if (held->round_trip.have_a_sample != had_one ||
-            held->round_trip.timeout_nanoseconds != before) {
-            fprintf(stderr, "  the estimate moved on a retransmitted exchange: "
-                            "%llu -> %llu\n", (unsigned long long)before,
+            held->round_trip.smoothed_nanoseconds != before_srtt ||
+            held->round_trip.variation_nanoseconds != before_rttvar) {
+            fprintf(stderr, "  SRTT or RTTVAR moved on a retransmitted exchange: "
+                            "%llu/%llu -> %llu/%llu\n",
+                    (unsigned long long)before_srtt, (unsigned long long)before_rttvar,
+                    (unsigned long long)held->round_trip.smoothed_nanoseconds,
+                    (unsigned long long)held->round_trip.variation_nanoseconds);
+            ok = false;
+        }
+        /* ⚠ And the RTO DID double, ⚠ **or nothing backed off and the case above
+         * would pass for a build with no backoff at all** (`verify` §5). */
+        if (held->round_trip.timeout_nanoseconds != before * 2u) {
+            fprintf(stderr, "  the RTO went %llu -> %llu and RFC 6298 5.5 doubles it\n",
+                    (unsigned long long)before,
                     (unsigned long long)held->round_trip.timeout_nanoseconds);
             ok = false;
         }
@@ -3393,7 +3481,7 @@ static bool case_nothing_is_sent_for_a_connection_that_has_not_seen_a_fin(void)
         struct handshake_outcome outcome;
         enum handshake_due due =
             handshake_what_is_due(&world.connections,
-                                  at(HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS * 10), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                                  at((uint64_t)HANDSHAKE_R2_FOR_A_SYN_MILLISECONDS * 10ull), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                                   world.reply, sizeof world.reply, &world.counts, &outcome);
         if (due != HANDSHAKE_NOTHING_DUE || outcome.reply_bytes != 0) {
             fprintf(stderr, "  an open connection was due %d with %zu octets\n",
@@ -3424,7 +3512,7 @@ static bool case_what_goes_out_again_for_a_closing_connection_is_our_close(void)
     bool ok = true;
     struct handshake_outcome outcome;
     enum handshake_due due =
-        handshake_what_is_due(&world.connections, at(HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS), IPV4_TIME_TO_LIVE_WE_SEND,
+        handshake_what_is_due(&world.connections, at((HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS / 1000000ull)), IPV4_TIME_TO_LIVE_WE_SEND,
                               OUR_MAC, world.reply, sizeof world.reply,
                               &world.counts, &outcome);
     if (due != HANDSHAKE_ANSWER_AGAIN ||
@@ -3470,7 +3558,7 @@ static bool case_the_closing_timers_run_from_when_our_close_went_out(void)
     }
 
     /* ⚠ Late enough that the handshake's own give-up moment is nearly here. */
-    uint64_t closed_at = HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS - 500u;
+    uint64_t closed_at = 500u;
     world.now = at(closed_at);
     struct tcp_header fin =
         a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u);
@@ -3487,21 +3575,21 @@ static bool case_the_closing_timers_run_from_when_our_close_went_out(void)
 
     /* ⚠ The handshake's give-up moment passes and ⚠ **nothing happens**: the
      * timers were restarted when our close went out. */
-    if (DUE_AT(closed_at + HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS - 1u) !=
+    if (DUE_AT(closed_at + (HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS / 1000000ull) - 1u) !=
         HANDSHAKE_NOTHING_DUE) {
         fprintf(stderr, "  something was due %d at %lu, before our close was owed one\n",
                 (int)outcome.reason,
-                (unsigned long)(closed_at + HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS - 1u));
+                (unsigned long)(closed_at + (HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS / 1000000ull) - 1u));
         ok = false;
     }
-    if (DUE_AT(closed_at + HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS) !=
+    if (DUE_AT(closed_at + (HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS / 1000000ull)) !=
             HANDSHAKE_ANSWER_AGAIN ||
         outcome.reason != HANDSHAKE_REASON_OUR_FIN_WENT_OUT_AGAIN) {
         fprintf(stderr, "  our close was not owed again a second after it went out: "
                         "reason %d\n", (int)outcome.reason);
         ok = false;
     }
-    if (DUE_AT(closed_at + HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS) != HANDSHAKE_GIVE_UP ||
+    if (DUE_AT(closed_at + HANDSHAKE_R2_FOR_DATA_MILLISECONDS) != HANDSHAKE_GIVE_UP ||
         outcome.reason != HANDSHAKE_REASON_NOBODY_ACKNOWLEDGED_OUR_FIN) {
         fprintf(stderr, "  our close was not given up on three seconds after it went "
                         "out: reason %d\n", (int)outcome.reason);
@@ -3624,7 +3712,7 @@ static bool case_nobody_acknowledging_our_close_is_its_own_ending(void)
     struct handshake_outcome outcome;
     enum handshake_due due =
         handshake_what_is_due(&world.connections,
-                              at(HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                              at(HANDSHAKE_R2_FOR_A_SYN_MILLISECONDS), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                               world.reply, sizeof world.reply, &world.counts, &outcome);
     if (due != HANDSHAKE_GIVE_UP ||
         outcome.reason != HANDSHAKE_REASON_NOBODY_ACKNOWLEDGED_OUR_FIN) {
@@ -3655,7 +3743,7 @@ static bool case_nobody_acknowledging_our_close_is_its_own_ending(void)
     }
     struct handshake_outcome other;
     if (handshake_what_is_due(&opening.connections,
-                              at(HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
+                              at(HANDSHAKE_R2_FOR_A_SYN_MILLISECONDS), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC,
                               opening.reply, sizeof opening.reply, &opening.counts,
                               &other) != HANDSHAKE_GIVE_UP ||
         other.reason != HANDSHAKE_REASON_NOBODY_CONFIRMED_IT ||
@@ -3909,15 +3997,30 @@ static bool case_the_answer_is_due_a_second_after_each_send(void)
         }                                                                          \
     } while (0)
 
+    /* ⚠ Repointed at hidetzu/tcpip-stack#131. ⚠ This asserted "a second after
+     * each send" while the interval was a constant second. ⚠ **It is the RTO
+     * now, and RFC 6298 §5.5 doubles it on every expiry** — ⚠ so the schedule is
+     * 1s, then +2s, then +4s, ⚠ **and the assertion did not weaken**: it still
+     * says exactly when the next one is due and that nothing is due before it.
+     *
+     * ⚠ `first` is §2.1's value, ⚠ **named and not written as 1000**
+     * (`.claude/rules/testing.md`). */
+    const uint64_t first = HANDSHAKE_RTO_BEFORE_ANY_SAMPLE_NANOSECONDS / 1000000ull;
     DUE_AT(0, HANDSHAKE_NOTHING_DUE, "the moment it opened");
-    DUE_AT(999, HANDSHAKE_NOTHING_DUE, "one millisecond before the first second");
-    DUE_AT(1000, HANDSHAKE_ANSWER_AGAIN, "exactly a second after it opened");
-    /* ⚠ And now the timer has moved: nothing is due again until a second after
-     * THAT, not a second after the connection opened. */
-    DUE_AT(1001, HANDSHAKE_NOTHING_DUE, "just after answering again");
-    DUE_AT(1999, HANDSHAKE_NOTHING_DUE, "one millisecond before the next second");
-    DUE_AT(2000, HANDSHAKE_ANSWER_AGAIN, "a second after answering again");
-    DUE_AT(2001, HANDSHAKE_NOTHING_DUE, "just after answering a second time");
+    DUE_AT(first - 1u, HANDSHAKE_NOTHING_DUE, "one millisecond before the first RTO");
+    DUE_AT(first, HANDSHAKE_ANSWER_AGAIN, "exactly one RTO after it opened");
+    /* ⚠ The timer has moved AND the RTO has doubled: ⚠ **the next one is two
+     * RTOs away, not one.** */
+    DUE_AT(first + 1u, HANDSHAKE_NOTHING_DUE, "just after answering again");
+    DUE_AT(first * 3u - 1u, HANDSHAKE_NOTHING_DUE,
+           "one millisecond before the doubled RTO");
+    DUE_AT(first * 3u, HANDSHAKE_ANSWER_AGAIN, "two RTOs after answering again");
+    DUE_AT(first * 3u + 1u, HANDSHAKE_NOTHING_DUE, "just after answering a second time");
+    /* ⚠ And it doubles again: ⚠ **four RTOs, not two.** ⚠ Without this the case
+     * would pass for a build that doubled once and then stopped. */
+    DUE_AT(first * 7u - 1u, HANDSHAKE_NOTHING_DUE,
+           "one millisecond before the twice-doubled RTO");
+    DUE_AT(first * 7u, HANDSHAKE_ANSWER_AGAIN, "four RTOs after the second answer");
 
     /* ⚠ Answering again is not counted here: a reply that was built is not a
      * reply that left (`CLAUDE.md` §1). */
@@ -3943,20 +4046,37 @@ static bool case_a_connection_nobody_confirms_is_given_up_on(void)
     struct handshake_outcome outcome;
     bool ok = true;
 
-    /* ⚠ One millisecond before: still waiting, not given up on. */
-    if (handshake_what_is_due(&world.connections, at(2999), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
+    /* ⚠ Repointed at hidetzu/tcpip-stack#131. ⚠ This was three seconds, which
+     * ADR 0019 chose for what a check could afford. ⚠ **RFC 9293 `MUST-23` asks
+     * for at least three minutes for a `SYN`** and the owner set 180 seconds.
+     *
+     * ⚠ **NOTHING WAITS THREE MINUTES.** ⚠ ADR 0018 hands the State layer a
+     * moment rather than letting it read one, ⚠ **so this judges the boundary
+     * exactly, in microseconds** — ⚠ **the production signature, not a test
+     * hook.**
+     *
+     * ⚠ One millisecond before: still waiting, not given up on. */
+    if (handshake_what_is_due(&world.connections, at(HANDSHAKE_R2_FOR_A_SYN_MILLISECONDS - 1u), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome)
         == HANDSHAKE_GIVE_UP) {
-        fputs("  it was given up on a millisecond early\n", stderr);
+        fputs("  it was given up on a millisecond before R2\n", stderr);
         ok = false;
     }
 
-    /* ⚠ Exactly at three seconds. ⚠ Both timers are due here, and ⚠ **giving up
-     * wins** — the other order would send an answer nobody waits for. */
-    if (handshake_what_is_due(&world.connections, at(3000), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
+    /* ⚠ Exactly at R2. ⚠ Both timers are due here, and ⚠ **giving up wins** —
+     * the other order would send an answer nobody waits for.
+     *
+     * ⚠ **Asserted against the constant AND against 3000**, because
+     * ⚠ **3000 is what it was and going back would be a regression**
+     * (`.claude/rules/testing.md`). */
+    if (HANDSHAKE_R2_FOR_A_SYN_MILLISECONDS < 180000u) {
+        fputs("  R2 for a SYN is below the 180 seconds MUST-23 asks for\n", stderr);
+        ok = false;
+    }
+    if (handshake_what_is_due(&world.connections, at(HANDSHAKE_R2_FOR_A_SYN_MILLISECONDS), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome)
         != HANDSHAKE_GIVE_UP) {
-        fputs("  it was not given up on at three seconds\n", stderr);
+        fputs("  it was not given up on at R2\n", stderr);
         return false;
     }
     if (outcome.reason != HANDSHAKE_REASON_NOBODY_CONFIRMED_IT ||
@@ -4061,8 +4181,11 @@ static bool case_a_clock_that_does_not_move_neither_spins_nor_stops(void)
         }
     }
     /* ⚠ The other half: once the clock does move, it becomes due again. ⚠ Without
-     * this the loop above would pass for a schedule that never fires twice. */
-    if (handshake_what_is_due(&world.connections, at(2000), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
+     * this the loop above would pass for a schedule that never fires twice.
+     *
+     * ⚠ Repointed at hidetzu/tcpip-stack#131: ⚠ **the RTO doubled when it fired**
+     * (RFC 6298 §5.5), ⚠ so the next one is two RTOs on, not one. */
+    if (handshake_what_is_due(&world.connections, at(3000), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome)
         != HANDSHAKE_ANSWER_AGAIN) {
         fputs("  it never became due again once the clock moved\n", stderr);
@@ -4102,17 +4225,25 @@ static bool case_the_next_moment_is_the_earlier_of_the_two(void)
         ok = false;
     }
 
-    /* ⚠ After the last answer, the give-up moment is the earlier one. */
+    /* ⚠ Repointed at hidetzu/tcpip-stack#131. ⚠ This asserted the GIVE-UP became
+     * the earlier of the two once the answers ran out at three seconds.
+     * ⚠ **R2 for a `SYN` is 180 seconds now** (`MUST-23`) and ⚠ **the RTO doubles**,
+     * so the answer stays the earlier one for a long time.
+     *
+     * ⚠ **The assertion did not weaken**: it still says the next moment is the
+     * EARLIER of the two, ⚠ **and it now says which one that is and why.** */
     struct handshake_outcome outcome;
-    handshake_what_is_due(&world.connections, at(2500), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
+    handshake_what_is_due(&world.connections, at(1000), IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply,
                                           sizeof world.reply, &world.counts, &outcome);
     if (!handshake_next_moment(&world.connections, &due)) {
         fputs("  it stopped naming a moment while still waiting\n", stderr);
         return false;
     }
+    /* ⚠ It answered once at 1000, so the RTO doubled: the next answer is at
+     * 1000 + 2000 = 3000, ⚠ **and R2 at 180000 is far beyond it.** */
     if (due.nanoseconds != at(3000).nanoseconds) {
         fprintf(stderr, "  after the last answer the next moment is %llu ns, "
-                        "expected the give-up at %llu\n",
+                        "expected the doubled answer at %llu\n",
                 (unsigned long long)due.nanoseconds,
                 (unsigned long long)at(3000).nanoseconds);
         ok = false;
@@ -4143,11 +4274,16 @@ static bool case_the_answer_that_goes_out_again_is_the_same_answer(void)
     memcpy(as_first_sent, world.reply, first_bytes);
 
     bool ok = true;
+    /* ⚠ Repointed at hidetzu/tcpip-stack#131: ⚠ **the RTO doubles on each
+     * expiry** (RFC 6298 §5.5), so the two answers are due at one RTO and at
+     * three, ⚠ **not at one and two.** ⚠ The subject of the case — that the
+     * SAME answer goes out — did not move. */
+    static const uint64_t due_at[] = { 1000u, 3000u };
     for (int again = 1; again <= 2; again++) {
         memset(world.reply, 0xaa, sizeof world.reply);
         struct handshake_outcome outcome;
         enum handshake_due due =
-            handshake_what_is_due(&world.connections, at((uint64_t)again * 1000u),
+            handshake_what_is_due(&world.connections, at(due_at[again - 1]),
                                   IPV4_TIME_TO_LIVE_WE_SEND, OUR_MAC, world.reply, sizeof world.reply,
                                   &world.counts, &outcome);
         if (due != HANDSHAKE_ANSWER_AGAIN) {
@@ -4277,6 +4413,8 @@ static const struct test_case cases[] = {
       case_our_close_is_the_segment_the_document_describes },
     { "every_segment_we_build_carries_the_same_window",
       case_every_segment_we_build_carries_the_same_window },
+    { "r1_is_crossed_once_and_said_once",
+      case_r1_is_crossed_once_and_said_once },
     { "no_round_trip_is_measured_from_a_retransmission",
       case_no_round_trip_is_measured_from_a_retransmission },
     { "the_timeout_is_computed_the_way_the_document_says",

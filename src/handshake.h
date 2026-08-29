@@ -92,8 +92,43 @@ uint32_t handshake_initial_send_sequence(struct moment now);
  *
  * ⚠ So the answer goes out again twice — after a second and after two — and
  * ⚠ **the connection is given up on at three.** */
-#define HANDSHAKE_ANSWER_AGAIN_AFTER_MILLISECONDS 1000u
-#define HANDSHAKE_GIVE_UP_AFTER_MILLISECONDS 3000u
+/* RFC 9293 §3.8.3's two thresholds.
+ *
+ * ⚠ §3.8.3 (a), quoted: "R1 and R2 might be measured in **time units or as a
+ * count of retransmissions** (with the current RTO and corresponding backoffs as
+ * a conversion factor, if needed)."
+ *
+ * ⚠ **So the two are expressed in the unit each document gives its value in**,
+ * and ⚠ **no conversion of ours stands between them and the sentence they come
+ * from.** ⚠ hidetzu/tcpip-stack#114 corrected a verdict that called the time
+ * form wrong; ⚠ **it is one of the two the document offers.** */
+
+/* ⚠ `SHLD-10`: "The value of R1 SHOULD correspond to at least 3
+ * retransmissions, at the current RTO." ⚠ **A count, which is the unit the
+ * sentence uses.** */
+#define HANDSHAKE_R1_RETRANSMISSIONS 3u
+
+/* ⚠ `SHLD-11`: "The value of R2 SHOULD correspond to at least 100 seconds."
+ * ⚠ **A time, which is the unit that sentence uses.** */
+#define HANDSHAKE_R2_FOR_DATA_MILLISECONDS 100000u
+
+/* ⚠ `MUST-23`: "R2 for a SYN segment MUST be set large enough to provide
+ * retransmission of the segment for at least 3 minutes."
+ *
+ * ⚠ **Owner Decision, hidetzu/tcpip-stack#131, 2026-08-29**: 「`MUST-23` は SYN
+ * R2 を 180 秒以上とします。ただし通常の verification で実時間3分を毎回待つことは
+ * 要求しません。」
+ *
+ * ⚠ **No check waits three minutes, and none needs a seam to avoid it.**
+ * ⚠ ADR 0018 hands the State layer a moment rather than letting it read one,
+ * ⚠ **so `at(180000)` and `at(179999)` judge the boundary exactly, in
+ * microseconds** — ⚠ **that is the production signature and not a test hook.**
+ *
+ * ⚠ **What it replaced was 3000**, chosen at ADR 0019 for what a check could
+ * afford and ⚠ **recorded as exactly that.** ⚠ The checks that waited it out on
+ * a device are repointed at the retransmissions, ⚠ **which is what a device is
+ * for** (`.claude/rules/testing.md`: when a check's subject moves, repoint it). */
+#define HANDSHAKE_R2_FOR_A_SYN_MILLISECONDS 180000u
 
 /* RFC 6298's constants, and ⚠ **every one of them is the document's.**
  *
@@ -748,6 +783,12 @@ struct handshake_counts {
      * (`CLAUDE.md` §1). */
     unsigned long round_trips_we_measured;
     unsigned long round_trips_we_would_not_use;
+
+    /* ⚠ Connections where the same thing was sent again R1 times.
+     * ⚠ RFC 9293 §3.8.3 (b) asks for negative advice to IP there; ⚠ **there is
+     * no IP layer here to advise**, so ⚠ **this is counted and said and
+     * `MUST-20` (b) stays not met** (`docs/conformance.md`). */
+    unsigned long reached_r1;
 
     /* ⚠ **Connections** the other side reset. ⚠ Apart from every other ending:
      * one was closed properly, one timed out, ⚠ **this one was cut.** */
