@@ -167,6 +167,22 @@ enum handshake_reply {
      * piggyback on. */
     HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED,
 
+    /* ⚠ An acknowledgment for a segment we would not take — ⚠ **it accepts
+     * nothing, it says where we are.**
+     *
+     * ⚠ RFC 793's first step of SEGMENT ARRIVES, verbatim: "If an incoming
+     * segment is not acceptable, an acknowledgment should be sent in reply
+     * (unless the RST bit is set, if so drop the segment and return):
+     * <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>. After sending the acknowledgment,
+     * drop the unacceptable segment and return."
+     *
+     * ⚠ **The same shape as the acknowledgment for data we took, and a
+     * different event.** ⚠ One says we accepted something, the other says we
+     * did not — ⚠ **counted apart, because folding them together would make a
+     * peer that is repeating itself look like one that is getting through**
+     * (hidetzu/tcpip-stack#80). */
+    HANDSHAKE_REPLY_WHERE_WE_ARE,
+
     /* ⚠ Our own FIN, ⚠ **carrying the acknowledgment of theirs in the same
      * segment.** ⚠ Measured 2026-08-29, in a namespace on `lo`: when its
      * application closes the moment the peer's FIN arrives, ⚠ **the Linux
@@ -363,6 +379,11 @@ struct handshake_counts {
     unsigned long fin_we_have_read_already;
     unsigned long fin_that_begins_too_far_ahead;
     unsigned long fin_we_could_not_place;
+
+    /* ⚠ **Segments.** ⚠ An acknowledgment sent for a segment we would not take,
+     * counted only once the wire took it. ⚠ Apart from `data_acknowledged`:
+     * ⚠ **that one accepted something and this one accepted nothing.** */
+    unsigned long told_them_where_we_are;
 
     /* ⚠ **Segments**, not octets. ⚠ An acknowledgment for data we took, counted
      * only once the wire took the whole of it. ⚠ The caller moves this one.

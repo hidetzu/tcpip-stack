@@ -804,7 +804,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "our close unacknowledged\n"
         "0 answers went out again because nobody had confirmed them\n"
         "0 connections were given up on after nobody confirmed them\n"
-        "0 acknowledgments for data left the device\n"
+        "0 acknowledgments for data left the device, and 0 said where we are without "
+        "accepting anything\n"
         "0 octets of data were taken and discarded. 0 segments carried data we had "
         "taken already, and 0 began past what we were waiting for\n"
         "the other side closed 0 connections. 0 FINs arrived that we had read "
@@ -828,6 +829,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     one.answered = 1;
     one.room.refused_for_want_of_room = 1;
     one.data_acknowledged = 1;
+    one.told_them_where_we_are = 1;
     one.octets_taken_and_discarded = 1;
     one.data_we_have_taken_already = 1;
     one.data_that_begins_too_far_ahead = 1;
@@ -852,7 +854,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "our close unacknowledged\n"
         "1 answer went out again because nobody had confirmed it\n"
         "1 connection was given up on after nobody confirmed it\n"
-        "1 acknowledgment for data left the device\n"
+        "1 acknowledgment for data left the device, and 1 said where we are without "
+        "accepting anything\n"
         "1 octet of data was taken and discarded. 1 segment carried data we had "
         "taken already, and 1 began past what we were waiting for\n"
         "the other side closed 1 connection. 1 FIN arrived that we had read already, "
@@ -886,6 +889,7 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
     each.closed = 20;
     each.never_acknowledged_our_fin = 21;
     each.data_acknowledged = 22;
+    each.told_them_where_we_are = 25;
     each.octets_taken_and_discarded = 11;
     each.data_we_have_taken_already = 12;
     each.data_that_begins_too_far_ahead = 23;
@@ -908,7 +912,8 @@ static bool case_the_handshake_summary_counts_every_reason_apart(void)
         "with our close unacknowledged\n"
         "9 answers went out again because nobody had confirmed them\n"
         "10 connections were given up on after nobody confirmed them\n"
-        "22 acknowledgments for data left the device\n"
+        "22 acknowledgments for data left the device, and 25 said where we are "
+        "without accepting anything\n"
         "11 octets of data were taken and discarded. 12 segments carried data we had "
         "taken already, and 23 began past what we were waiting for\n"
         "the other side closed 13 connections. 14 FINs arrived that we had read "

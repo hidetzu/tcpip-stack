@@ -1489,6 +1489,132 @@ print("the-window", window)
     printf '    being %s\n' "$window"
 }
 
+# ⚠ hidetzu/tcpip-stack#80 AC 6, and ⚠ **the loss is made to happen on purpose**
+# because nothing is lost on a TAP device in a namespace — ⚠ which is why no
+# check here had ever reached this state.
+#
+# ⚠ `nft` drops our acknowledgment for data on its way into the kernel: exactly
+# `ACK`, no `SYN` and no `FIN`, and forty octets, ⚠ **so the SYN-ACK and the
+# close still get through** and the connection opens and closes normally.
+#
+# ⚠ **The verdict is the kernel's**: it does not release a buffer until the
+# octets in it have been acknowledged with numbers it accepts.
+#
+# ⚠ Measured 2026-08-29: with the acknowledgment dropped, `Send-Q` stays at 5
+# for 2.4 seconds; ⚠ **with the rule removed it reaches 0 within 0.8**, and
+# ⚠ **what saves it is the acknowledgment for a segment we REFUSED** — the
+# retransmission is a duplicate, every octet of which we had taken already.
+inside_a_peer_whose_acknowledgment_was_lost_recovers() {
+    ours=10.0.0.2
+    our_mac=02:00:00:00:00:02
+
+    "$TCPIP_STACK" --dev tap0 --mac "$our_mac" --ipv4 "$ours" --tcp-port 80 \
+        --timeout 12000 >"$work/out.txt" 2>"$work/err.txt" &
+    reader=$!
+
+    if ! wait_for_interface tap0; then
+        note_failure "tap0 never appeared while the stack was attached"
+        kill "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    sysctl -qw net.ipv6.conf.tap0.disable_ipv6=1
+    ip addr add 10.0.0.1/24 dev tap0
+    ip link set tap0 up
+
+    if ! nft add table ip guard 2>"$work/nft.txt"; then
+        note_failure "the check environment could not be built here: nft was refused"
+        sed 's/^/      /' "$work/nft.txt" >&2
+        kill -INT "$reader" 2>/dev/null
+        wait "$reader" 2>/dev/null
+        return
+    fi
+    nft add chain ip guard input "{ type filter hook input priority 0; }"
+    nft add rule ip guard input tcp sport 80 tcp flags == ack ip length 40 drop
+
+    LC_ALL=C python3 -c '
+import socket, subprocess, sys, time
+
+HOW_MUCH = 5
+
+def send_q():
+    out = subprocess.run(["ss", "-tan"], capture_output=True, text=True).stdout
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 5 and parts[4] == "10.0.0.2:80":
+            return parts[2]
+    return "gone"
+
+s = socket.socket()
+s.settimeout(5)
+try:
+    s.connect(("10.0.0.2", 80))
+except Exception as why:
+    print("connect-failed", why); sys.exit(1)
+s.sendall(b"z" * HOW_MUCH)
+
+# ⚠ Watched while the acknowledgment is being dropped. ⚠ What is printed is the
+# highest value seen, ⚠ **so a queue that emptied for a moment would show.**
+stuck = "0"
+end = time.time() + 2.0
+while time.time() < end:
+    time.sleep(0.2)
+    q = send_q()
+    if q not in ("0", "gone"):
+        stuck = q
+print("while-dropping", stuck)
+
+subprocess.run(["nft", "flush", "ruleset"])
+began = time.time()
+q = send_q()
+end = time.time() + 6.0
+while time.time() < end and q not in ("0", "gone"):
+    time.sleep(0.1)
+    q = send_q()
+print("after-the-rule-went", q)
+print("recovered-in-seconds", round(time.time() - began, 2))
+print("how-much", HOW_MUCH)
+' >"$work/lost.txt" 2>&1
+    ran=$?
+
+    kill -INT "$reader" 2>/dev/null
+    wait "$reader" 2>/dev/null
+
+    if [ "$ran" -ne 0 ]; then
+        note_failure "the connection could not be opened, so nothing was lost"
+        sed 's/^/      /' "$work/lost.txt" >&2
+        return
+    fi
+
+    stuck=$(awk '$1 == "while-dropping" { print $2 }' "$work/lost.txt")
+    after=$(awk '$1 == "after-the-rule-went" { print $2 }' "$work/lost.txt")
+    how_much=$(awk '$1 == "how-much" { print $2 }' "$work/lost.txt")
+
+    # ⚠ The loss actually happened — or the recovery below proves nothing.
+    if [ "$stuck" != "$how_much" ]; then
+        note_failure "the peer's Send-Q was $stuck while its acknowledgment was being dropped, not $how_much, so nothing was lost"
+        sed 's/^/      /' "$work/lost.txt" >&2
+        return
+    fi
+    # ⚠ AC 6. ⚠ **The kernel's verdict**, and it recovered from a loss.
+    if [ "$after" != "0" ]; then
+        note_failure "the peer still holds $after octets after the loss stopped, so it did not recover"
+        sed 's/^/      /' "$work/lost.txt" >&2
+        printf '    what the stack said:\n' >&2
+        grep -v '^  [0-9a-f]' "$work/out.txt" | tail -12 | sed 's/^/      /' >&2
+        return
+    fi
+    # ⚠ And ⚠ **what saved it was the acknowledgment for a segment we refused**,
+    # not one for data we took: the retransmission was a duplicate.
+    assert_file_contains "$work/out.txt" "said where we are without accepting anything" \
+        "the recovery came from an acknowledgment that accepted nothing"
+
+    printf '    Send-Q was %s while our acknowledgment was dropped and reached %s in %s\n' \
+        "$stuck" "$after" \
+        "$(awk '$1 == "recovered-in-seconds" { print $2 }' "$work/lost.txt")"
+    printf '    seconds once it stopped\n'
+}
+
 # ⚠ The half that stops the case above passing for a stack that never looked at
 # a checksum (hidetzu/tcpip-stack#44 AC 2, and `CLAUDE.md` §1).
 #
@@ -1612,6 +1738,9 @@ case_a_connection_carries_data_and_then_closes_properly() {
 case_an_acknowledgment_never_covers_an_octet_we_did_not_take() {
     in_namespace an_acknowledgment_never_covers_an_octet_we_did_not_take
 }
+case_a_peer_whose_acknowledgment_was_lost_recovers() {
+    in_namespace a_peer_whose_acknowledgment_was_lost_recovers
+}
 case_a_syn_whose_checksum_does_not_agree_is_not_answered() {
     in_namespace a_syn_whose_checksum_does_not_agree_is_not_answered
 }
@@ -1622,7 +1751,7 @@ case_the_kernel_believes_the_address_we_answered_for() {
     in_namespace the_kernel_believes_the_address_we_answered_for
 }
 
-ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_syn_whose_checksum_does_not_agree_is_not_answered"
+ALL_CASES="an_arp_request_the_kernel_generated_is_read_intact a_frame_larger_than_the_read_buffer_is_not_reported_as_a_known_length the_kernel_believes_the_address_we_answered_for ping_reports_no_loss_against_our_own_stack the_kernel_opens_a_connection_to_us a_fin_reaches_us_once_the_window_is_open the_kernel_stops_retransmitting_once_we_close_back the_kernel_reaches_time_wait_and_our_block_is_free_again a_fin_whose_sequence_number_we_do_not_expect_is_not_answered the_peers_send_queue_drains_once_we_acknowledge a_connection_carries_data_and_then_closes_properly an_acknowledgment_never_covers_an_octet_we_did_not_take a_peer_whose_acknowledgment_was_lost_recovers a_syn_whose_checksum_does_not_agree_is_not_answered"
 
 if [ "${1:-}" = "--inside" ]; then
     work=$(mktemp -d)

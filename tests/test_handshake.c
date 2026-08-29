@@ -773,13 +773,14 @@ static bool case_the_acknowledgment_for_data_is_the_one_the_document_describes(v
     return ok;
 }
 
-/* ⚠ AC 4. ⚠ **Nothing is acknowledged for data the window did not cover**, so
- * the change cannot pass for a stack that acknowledges everything that arrives.
+/* ⚠ **Data the window did not cover is never acknowledged AS TAKEN**, so the
+ * change cannot pass for a stack that claims everything that arrives.
  *
- * ⚠ RFC 793's first step does say "If an incoming segment is not acceptable, an
- * acknowledgment should be sent in reply". ⚠ **That is not implemented**, and
- * `docs/SPEC.md` §2 names it rather than leaving it silent — ⚠ this case pins
- * what the build actually does. */
+ * ⚠ Until hidetzu/tcpip-stack#80 this asserted that nothing was built at all.
+ * ⚠ **Something is built now** — RFC 793's first step asks for an
+ * acknowledgment saying where we are — ⚠ **and the case's real subject is
+ * unchanged: we do not pretend to have taken it.** ⚠ `RCV.NXT` does not move
+ * and the segment is not the one that accepts data. */
 static bool case_nothing_is_acknowledged_for_data_the_window_did_not_cover(void)
 {
     bool ok = true;
@@ -795,10 +796,13 @@ static bool case_nothing_is_acknowledged_for_data_the_window_did_not_cover(void)
         struct tcp_header first =
             carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u), 1);
         (void)receive(&world, &first);
+        uint32_t was = held->rcv_nxt;
         struct handshake_outcome again = receive(&world, &first);
-        if (again.reply_bytes != 0 || again.reply != HANDSHAKE_REPLY_NONE) {
-            fprintf(stderr, "  %zu octets were built for an octet taken already\n",
-                    again.reply_bytes);
+        if (again.reply != HANDSHAKE_REPLY_WHERE_WE_ARE || held->rcv_nxt != was ||
+            again.octets_taken != 0) {
+            fprintf(stderr, "  an octet taken already drew a reply of kind %d and "
+                            "moved RCV.NXT by %lu\n",
+                    (int)again.reply, (unsigned long)(held->rcv_nxt - was));
             ok = false;
         }
     }
@@ -811,12 +815,15 @@ static bool case_nothing_is_acknowledged_for_data_the_window_did_not_cover(void)
         if (!open_and_confirm(&world, &held)) {
             return false;
         }
+        uint32_t was = held->rcv_nxt;
         struct tcp_header ahead =
-            carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt + 4096u, held->iss + 1u), 1);
+            carrying(a_segment(TCP_CONTROL_ACK, was + 4096u, held->iss + 1u), 1);
         struct handshake_outcome outcome = receive(&world, &ahead);
-        if (outcome.reply_bytes != 0) {
-            fprintf(stderr, "  %zu octets were built for data past the window\n",
-                    outcome.reply_bytes);
+        if (outcome.reply != HANDSHAKE_REPLY_WHERE_WE_ARE || held->rcv_nxt != was ||
+            outcome.octets_taken != 0) {
+            fprintf(stderr, "  data past the window drew a reply of kind %d and moved "
+                            "RCV.NXT by %lu\n",
+                    (int)outcome.reply, (unsigned long)(held->rcv_nxt - was));
             ok = false;
         }
     }
@@ -837,6 +844,157 @@ static bool case_nothing_is_acknowledged_for_data_the_window_did_not_cover(void)
         if (outcome.reply != HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED) {
             fprintf(stderr, "  an octet inside the window was not acknowledged: kind %d\n",
                     (int)outcome.reply);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* ⚠ hidetzu/tcpip-stack#80. ⚠ **A segment we refuse draws the acknowledgment
+ * RFC 793 asks for**, and ⚠ **it says where we are without accepting
+ * anything.**
+ *
+ * ⚠ Verbatim, from the first step of SEGMENT ARRIVES: "If an incoming segment is
+ * not acceptable, an acknowledgment should be sent in reply ...
+ * <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>."
+ *
+ * ⚠ All four ways to be refused, and ⚠ **the numbers are asserted, not just the
+ * fact that something came back.** */
+static bool case_a_segment_we_refuse_draws_an_acknowledgment(void)
+{
+    static const struct { const char *what; bool a_fin; bool ahead; } ways[] = {
+        { "data we have taken already", false, false },
+        { "data that begins too far ahead", false, true },
+        { "a FIN we have read already", true, false },
+        { "a FIN that begins too far ahead", true, true },
+    };
+
+    bool ok = true;
+    for (size_t i = 0; i < sizeof ways / sizeof ways[0]; i++) {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        /* ⚠ Two octets taken first, so ⚠ **`RCV.NXT` is somewhere a wrong
+         * acknowledgment could not reach by accident.** */
+        struct tcp_header some =
+            carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u), 2);
+        if (receive(&world, &some).octets_taken != 2) {
+            fputs("  the first two octets were not taken\n", stderr);
+            return false;
+        }
+        uint32_t where_we_are = held->rcv_nxt;
+        uint32_t snd_nxt_before = held->snd_nxt;
+
+        uint32_t sits_at = ways[i].ahead ? where_we_are + 500u : where_we_are - 2u;
+        unsigned bits = TCP_CONTROL_ACK | (ways[i].a_fin ? TCP_CONTROL_FIN : 0u);
+        struct tcp_header refused =
+            carrying(a_segment(bits, sits_at, held->iss + 1u), ways[i].a_fin ? 0 : 2);
+        struct handshake_outcome outcome = receive(&world, &refused);
+
+        if (outcome.reply != HANDSHAKE_REPLY_WHERE_WE_ARE || outcome.reply_bytes == 0) {
+            fprintf(stderr, "  %s drew a reply of kind %d\n", ways[i].what,
+                    (int)outcome.reply);
+            ok = false;
+            continue;
+        }
+        /* ⚠ It accepted nothing: `RCV.NXT` where it was, `SND.NXT` where it was
+         * — ⚠ **an ACK occupies no sequence space.** */
+        if (held->rcv_nxt != where_we_are || held->snd_nxt != snd_nxt_before ||
+            outcome.octets_taken != 0 || outcome.the_fin_was_read) {
+            fprintf(stderr, "  %s moved something: RCV.NXT %lu of %lu, SND.NXT %lu\n",
+                    ways[i].what, (unsigned long)held->rcv_nxt,
+                    (unsigned long)where_we_are, (unsigned long)held->snd_nxt);
+            ok = false;
+            continue;
+        }
+
+        const unsigned char *datagram = world.reply + ETHERNET_HEADER_BYTES;
+        struct ipv4_header internet;
+        struct connection_id id = the_connection();
+        struct tcp_header ours;
+        if (ipv4_parse_header(datagram, outcome.reply_bytes - ETHERNET_HEADER_BYTES,
+                              &internet) != IPV4_PARSE_OK ||
+            tcp_parse_header(datagram + IPV4_FIXED_HEADER_BYTES,
+                             (size_t)internet.total_length - IPV4_FIXED_HEADER_BYTES,
+                             id.local.address, id.remote.address, &ours) != TCP_PARSE_OK) {
+            fprintf(stderr, "  what we built for %s did not read back\n", ways[i].what);
+            ok = false;
+            continue;
+        }
+        /* ⚠ `<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>`, every field of it. */
+        if (ours.control_bits != TCP_CONTROL_ACK ||
+            ours.sequence_number != snd_nxt_before ||
+            ours.acknowledgment_number != where_we_are) {
+            fprintf(stderr, "  for %s we sent bits 0x%02x seq %lu ack %lu, and SND.NXT "
+                            "is %lu with RCV.NXT %lu\n",
+                    ways[i].what, ours.control_bits,
+                    (unsigned long)ours.sequence_number,
+                    (unsigned long)ours.acknowledgment_number,
+                    (unsigned long)snd_nxt_before, (unsigned long)where_we_are);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* ⚠ AC 4. ⚠ **Nothing draws one that should not.** ⚠ Without this, "we answer a
+ * refused segment" would pass for a stack that answers everything. */
+static bool case_only_a_refused_data_segment_or_fin_draws_one(void)
+{
+    bool ok = true;
+
+    /* ⚠ A segment carrying no data and no FIN: ⚠ **nothing the sequence check
+     * ever looked at**, so nothing to say where we are about. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        struct tcp_header bare = a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u);
+        struct handshake_outcome outcome = receive(&world, &bare);
+        if (outcome.reply != HANDSHAKE_REPLY_NONE || outcome.reply_bytes != 0) {
+            fprintf(stderr, "  a bare acknowledgment drew a reply of kind %d\n",
+                    (int)outcome.reply);
+            ok = false;
+        }
+    }
+
+    /* ⚠ A connection we hold nothing for. ⚠ RFC 793: "Do not process the FIN if
+     * the state is CLOSED, LISTEN or SYN-SENT since the SEG.SEQ cannot be
+     * validated" — ⚠ **and an acknowledgment carrying RCV.NXT would need one to
+     * carry.** */
+    {
+        struct world world;
+        a_world(&world);
+        struct tcp_header fin =
+            a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, THEIR_ISN, 1);
+        struct handshake_outcome outcome = receive(&world, &fin);
+        if (outcome.reply != HANDSHAKE_REPLY_NONE || outcome.reply_bytes != 0) {
+            fprintf(stderr, "  a FIN with nothing held drew a reply of kind %d\n",
+                    (int)outcome.reply);
+            ok = false;
+        }
+    }
+
+    /* ⚠ The other half: ⚠ **a refused segment on a connection we do hold still
+     * draws one**, so this case is about which and not about refusing to
+     * answer at all. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        struct tcp_header ahead =
+            carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt + 9u, held->iss + 1u), 1);
+        if (receive(&world, &ahead).reply != HANDSHAKE_REPLY_WHERE_WE_ARE) {
+            fputs("  a refused segment on a held connection drew nothing\n", stderr);
             ok = false;
         }
     }
@@ -2774,6 +2932,10 @@ static const struct test_case cases[] = {
       case_the_acknowledgment_for_data_is_the_one_the_document_describes },
     { "nothing_is_acknowledged_for_data_the_window_did_not_cover",
       case_nothing_is_acknowledged_for_data_the_window_did_not_cover },
+    { "a_segment_we_refuse_draws_an_acknowledgment",
+      case_a_segment_we_refuse_draws_an_acknowledgment },
+    { "only_a_refused_data_segment_or_fin_draws_one",
+      case_only_a_refused_data_segment_or_fin_draws_one },
     { "an_acknowledgment_that_would_not_fit_is_counted_as_ours",
       case_an_acknowledgment_that_would_not_fit_is_counted_as_ours },
     { "data_outside_the_window_is_refused_and_nothing_moves",

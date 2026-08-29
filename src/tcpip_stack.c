@@ -532,6 +532,9 @@ int main(int argc, char **argv)
                                 case HANDSHAKE_REPLY_THE_DATA_IS_ACKNOWLEDGED:
                                     handshake_counts.data_acknowledged++;
                                     break;
+                                case HANDSHAKE_REPLY_WHERE_WE_ARE:
+                                    handshake_counts.told_them_where_we_are++;
+                                    break;
                                 case HANDSHAKE_REPLY_THE_ANSWER:
                                 case HANDSHAKE_REPLY_NONE:
                                     handshake_counts.answered++;
