@@ -36,6 +36,11 @@ static uint16_t the_window(void)
 }
 #define THE_WINDOW (the_window())
 
+/* ⚠ The same number as the window and ⚠ **from the same derivation** — the MSS
+ * and the window answer the same question (ADR 0029). ⚠ Written as its own name
+ * so a case reads as what it is about. */
+#define THE_MSS (the_window())
+
 #define OUR_PORT 80
 #define THEIR_PORT 50568
 #define THEIR_ISN 0x831b6b20u
@@ -108,7 +113,7 @@ static struct handshake_outcome receive(struct world *world,
 {
     struct connection_id id = the_connection();
     struct handshake_outcome outcome;
-    handshake_receive(header, &id, OUR_PORT, THE_WINDOW, world->now, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world->connections,
+    handshake_receive(header, &id, OUR_PORT, THE_WINDOW, THE_MSS, world->now, IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world->connections,
                       world->reply, sizeof world->reply, &world->counts, &outcome);
     return outcome;
 }
@@ -318,7 +323,7 @@ static bool case_the_window_still_works_where_the_sequence_space_wraps(void)
             a_segment(TCP_CONTROL_ACK, THEIR_ISN + 1u, around_the_wrap[i].ack);
         unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&ack, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
+        handshake_receive(&ack, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                           sizeof reply, &counts, &outcome);
 
         bool established = outcome.decision == HANDSHAKE_MOVED &&
@@ -406,14 +411,19 @@ static bool case_the_answer_is_the_one_the_document_describes(void)
     }
 
     bool ok = true;
+    /* ⚠ Repointed at hidetzu/tcpip-stack#123. ⚠ This read "a bare SYN-ACK" until
+     * the answer began carrying an MSS Option — ⚠ **the first segment this stack
+     * builds whose `Data Offset` is not 5.** ⚠ **The assertion did not weaken**:
+     * it still says the answer is exactly one header and nothing more, ⚠ **and
+     * it now names the option's own length constant** so it follows if that
+     * moves (`.claude/rules/testing.md`). */
     size_t expected = ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES +
-                      TCP_FIXED_HEADER_BYTES;
+                      TCP_FIXED_HEADER_BYTES + TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES;
     if (outcome.reply_bytes != expected) {
-        fprintf(stderr, "  the answer is %zu octets and a bare SYN-ACK is %zu\n",
-                outcome.reply_bytes, expected);
+        fprintf(stderr, "  the answer is %zu octets and a SYN-ACK with an MSS "
+                        "Option is %zu\n", outcome.reply_bytes, expected);
         return false;
     }
-
     /* The ethernet header. */
     if (memcmp(world.reply, THEIR_MAC, ETHERNET_ADDRESS_BYTES) != 0 ||
         memcmp(world.reply + ETHERNET_ADDRESS_BYTES, OUR_MAC, ETHERNET_ADDRESS_BYTES)
@@ -457,6 +467,28 @@ static bool case_the_answer_is_the_one_the_document_describes(void)
         return false;
     }
 
+    /* ⚠ The option, read back by our own parser. ⚠ **A build that dropped it
+     * would be four octets shorter and every other assertion here would still
+     * pass** (`verify` §5).
+     *
+     * ⚠ Not have stopped carrying it: ⚠ **a build that dropped the
+     * option would be four octets shorter and every other assertion here would
+     * still pass** (`verify` §5). */
+    if (answer.data_offset * 4u != TCP_FIXED_HEADER_BYTES +
+                                   TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES) {
+        fprintf(stderr, "  the answer's Data Offset is %u words, not %u\n",
+                (unsigned)answer.data_offset,
+                (unsigned)((TCP_FIXED_HEADER_BYTES +
+                            TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES) / 4u));
+        ok = false;
+    }
+    if (!answer.options.has_maximum_segment_size ||
+        answer.options.maximum_segment_size != THE_MSS) {
+        fprintf(stderr, "  the answer carried an MSS of %u, and we advertise %u\n",
+                (unsigned)answer.options.maximum_segment_size, (unsigned)THE_MSS);
+        ok = false;
+    }
+
     if (answer.control_bits != (TCP_CONTROL_SYN | TCP_CONTROL_ACK)) {
         fprintf(stderr, "  the answer's control bits are 0x%02x, not SYN|ACK\n",
                 answer.control_bits);
@@ -493,10 +525,21 @@ static bool case_the_answer_is_the_one_the_document_describes(void)
                 answer.window, (unsigned)THE_WINDOW);
         ok = false;
     }
-    /* ⚠ Owner Decision 2: no options at all. */
-    if (answer.data_offset != TCP_HEADER_LENGTH_MINIMUM) {
-        fprintf(stderr, "  the answer carries %u octets of options\n",
-                (answer.data_offset - TCP_HEADER_LENGTH_MINIMUM) * 4);
+    /* ⚠ Repointed at hidetzu/tcpip-stack#123. ⚠ This asserted "no options at
+     * all" — hidetzu/tcpip-stack#44 Owner Decision 2, on the grounds that
+     * ⚠ **sending something we cannot read would be a claim we cannot back.**
+     * ⚠ **That ground is gone for the MSS Option and for nothing else**: the
+     * walk reads one now.
+     *
+     * ⚠ **The assertion did not weaken.** ⚠ It still says exactly which options
+     * the answer carries, ⚠ **and it is the ONLY one** — a second slipping in
+     * fails here. */
+    if (answer.data_offset * 4u != TCP_FIXED_HEADER_BYTES +
+                                   TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES) {
+        fprintf(stderr, "  the answer carries %u octets of options, and the MSS "
+                        "Option is %u\n",
+                (unsigned)((answer.data_offset - TCP_HEADER_LENGTH_MINIMUM) * 4),
+                (unsigned)TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES);
         ok = false;
     }
     return ok;
@@ -565,8 +608,11 @@ static bool case_an_answer_that_would_not_fit_is_counted_as_ours(void)
 {
     struct world world;
     a_world(&world);
-    size_t needed =
-        ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES + TCP_FIXED_HEADER_BYTES;
+    /* ⚠ Repointed at hidetzu/tcpip-stack#123: the answer carries an MSS Option
+     * now, ⚠ **so what "exactly enough room" means moved with it.** ⚠ The case
+     * is still about the boundary and not about a number. */
+    size_t needed = ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES +
+                    TCP_FIXED_HEADER_BYTES + TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES;
 
     bool ok = true;
     for (size_t room = 0; room < needed; room++) {
@@ -580,7 +626,7 @@ static bool case_an_answer_that_would_not_fit_is_counted_as_ours(void)
         struct connection_id id = the_connection();
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                           room, &counts, &outcome);
 
         if (outcome.decision != HANDSHAKE_STAYED ||
@@ -616,7 +662,7 @@ static bool case_an_answer_that_would_not_fit_is_counted_as_ours(void)
     struct connection_id id = the_connection();
     struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
     struct handshake_outcome outcome;
-    handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
+    handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                       needed, &counts, &outcome);
     if (outcome.decision != HANDSHAKE_MOVED || outcome.reply_bytes != needed) {
         fprintf(stderr, "  exactly %zu octets of room was declined, reason %d\n", needed,
@@ -1051,7 +1097,7 @@ static bool case_an_acknowledgment_that_would_not_fit_is_counted_as_ours(void)
     struct tcp_header data =
         carrying(a_segment(TCP_CONTROL_ACK, was, held->iss + 1u), 1);
     struct handshake_outcome outcome;
-    handshake_receive(&data, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world.connections,
+    handshake_receive(&data, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world.connections,
                       no_room, sizeof no_room, &world.counts, &outcome);
 
     if (outcome.reason != HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY ||
@@ -2002,6 +2048,119 @@ static bool case_the_window_is_what_one_frame_carries(void)
     return ok;
 }
 
+/* ⚠ hidetzu/tcpip-stack#123. ⚠ **What the MSS Option buys, and what it does
+ * NOT** — the two are asserted apart on purpose.
+ *
+ * ⚠ **What is proven here**: the option is sent on a `SYN,ACK` and on nothing
+ * else (`MUST-65`), its value is derived from the device (`MUST-67`), an
+ * arriving one is read (`MUST-14`'s receiving half), and ⚠ **an absent one gets
+ * RFC 9293 `MUST-15`'s default of 536** rather than a zero.
+ *
+ * ⚠ **What is NOT proven, and this case says so**: ⚠ `send_mss` reaches no
+ * consumer. ⚠ Nothing here sends data, so ⚠ **there is no segment whose size it
+ * constrains** — ⚠ **`MUST-14` stays not met and `MUST-16` stays does-not-arise**
+ * (hidetzu/tcpip-stack#123 Owner Decision, the standard #96 set for
+ * `MUST-20` R2). */
+static bool case_the_segment_size_we_are_told_is_kept_and_used_by_nothing(void)
+{
+    bool ok = true;
+
+    /* ⚠ Told. */
+    {
+        struct world world;
+        a_world(&world);
+        struct connection_id id = the_connection();
+        struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
+        syn.options.has_maximum_segment_size = true;
+        syn.options.maximum_segment_size = 1400;
+        struct handshake_outcome outcome;
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0),
+                          IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC,
+                          &world.connections, world.reply, sizeof world.reply,
+                          &world.counts, &outcome);
+        struct transmission_control_block *held =
+            connections_find(&world.connections, &id);
+        if (held == NULL || held->send_mss != 1400 || !held->send_mss_was_told_to_us) {
+            fputs("  a SYN carrying an MSS of 1400 did not leave one behind\n", stderr);
+            ok = false;
+        }
+        if (world.counts.they_told_us_their_segment_size != 1 ||
+            world.counts.they_told_us_nothing_so_we_assumed != 0) {
+            fputs("  the two counts did not tell being told from assuming apart\n", stderr);
+            ok = false;
+        }
+    }
+
+    /* ⚠ Not told. ⚠ **536 is the document's number, and `was_told_to_us` is what
+     * keeps "they said 536" apart from "they said nothing"** — ⚠ a reader that
+     * could not tell them apart would be guessing (`CLAUDE.md` §1). */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_one(&world, THEIR_ISN, &held) || held == NULL) {
+            fputs("  a plain SYN did not open a connection\n", stderr);
+            return false;
+        }
+        if (held->send_mss != CONNECTION_DEFAULT_SEND_MSS ||
+            held->send_mss_was_told_to_us) {
+            fprintf(stderr, "  a SYN with no MSS Option left %u, and MUST-15 asks "
+                            "for %u assumed\n",
+                    (unsigned)held->send_mss, (unsigned)CONNECTION_DEFAULT_SEND_MSS);
+            ok = false;
+        }
+        if (world.counts.they_told_us_nothing_so_we_assumed != 1 ||
+            world.counts.they_told_us_their_segment_size != 0) {
+            fputs("  the two counts did not tell assuming from being told apart\n", stderr);
+            ok = false;
+        }
+    }
+
+    /* ⚠ **The option rides a SYN and nothing else** — RFC 9293 `MUST-65`.
+     * ⚠ Asserted on the acknowledgment this stack sends for data, which is the
+     * only other segment it builds while a connection is open. */
+    {
+        struct world world;
+        a_world(&world);
+        struct transmission_control_block *held = NULL;
+        if (!open_and_confirm(&world, &held)) {
+            return false;
+        }
+        struct connection_id id = the_connection();
+        struct tcp_header data =
+            carrying(a_segment(TCP_CONTROL_ACK, held->rcv_nxt, held->iss + 1u), 1);
+        struct handshake_outcome outcome = receive(&world, &data);
+        /* ⚠ **A reply must have been built, or this block asserts nothing.**
+         * ⚠ Measured: with the assertions inside an `if (reply_bytes != 0)` and
+         * no such demand, ⚠ **a mutation putting the option on EVERY segment
+         * walked straight past this case** (2026-08-29). ⚠ A check that can
+         * silently assert nothing is not a check (`verify` §5). */
+        if (outcome.reply_bytes == 0) {
+            fputs("  no acknowledgment was built for data, so nothing was judged "
+                  "about MUST-65\n", stderr);
+            return false;
+        }
+        struct ipv4_header internet;
+        struct tcp_header sent;
+        const unsigned char *datagram = world.reply + ETHERNET_HEADER_BYTES;
+        if (ipv4_parse_header(datagram, outcome.reply_bytes - ETHERNET_HEADER_BYTES,
+                              &internet) != IPV4_PARSE_OK ||
+            tcp_parse_header(datagram + IPV4_FIXED_HEADER_BYTES,
+                             (size_t)internet.total_length - IPV4_FIXED_HEADER_BYTES,
+                             id.local.address, id.remote.address, &sent) != TCP_PARSE_OK) {
+            fputs("  the acknowledgment we built could not be read back\n", stderr);
+            return false;
+        }
+        if (sent.options.has_maximum_segment_size ||
+            sent.data_offset != TCP_HEADER_LENGTH_MINIMUM) {
+            fputs("  an acknowledgment for data carried an MSS Option, and "
+                  "MUST-65 says it rides the initial request only\n", stderr);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 /* ⚠ hidetzu/tcpip-stack#75 AC 2, the side the trimming case does not cover:
  * ⚠ **a segment carrying the window exactly, or less, is taken whole.**
  *
@@ -2194,7 +2353,7 @@ static bool case_the_time_to_live_we_send_with_is_the_callers(void)
         struct connection_id id = the_connection();
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), values[i], THEIR_MAC, OUR_MAC,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), values[i], THEIR_MAC, OUR_MAC,
                           &world.connections, world.reply, sizeof world.reply,
                           &world.counts, &outcome);
         if (outcome.reply_bytes == 0) {
@@ -2248,7 +2407,7 @@ static bool case_a_syn_from_an_impossible_source_is_refused(void)
         memcpy(id.remote.address, from[i].address, CONNECTION_ADDRESS_BYTES);
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
                           THEIR_MAC, OUR_MAC, &world.connections, world.reply,
                           sizeof world.reply, &world.counts, &outcome);
 
@@ -2312,7 +2471,7 @@ static bool case_a_syn_from_an_impossible_source_is_refused(void)
             memcpy(id.remote.address, still[i].address, CONNECTION_ADDRESS_BYTES);
             struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
             struct handshake_outcome outcome;
-            handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+            handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
                               THEIR_MAC, OUR_MAC, &world.connections, world.reply,
                               sizeof world.reply, &world.counts, &outcome);
             if (outcome.reason == HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE ||
@@ -2336,7 +2495,7 @@ static bool case_a_syn_from_an_impossible_source_is_refused(void)
         id.remote.address[3] = 255;
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
                           THEIR_MAC, OUR_MAC, &world.connections, world.reply,
                           sizeof world.reply, &world.counts, &outcome);
         if (outcome.reason == HANDSHAKE_REASON_FROM_AN_IMPOSSIBLE_SOURCE) {
@@ -2373,7 +2532,7 @@ static bool case_a_segment_addressed_to_everyone_is_refused(void)
         memcpy(id.local.address, to[i].address, CONNECTION_ADDRESS_BYTES);
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
                           THEIR_MAC, OUR_MAC, &world.connections, world.reply,
                           sizeof world.reply, &world.counts, &outcome);
 
@@ -2419,7 +2578,7 @@ static bool case_a_segment_addressed_to_everyone_is_refused(void)
         id.local.address[3] = 255;
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND,
                           THEIR_MAC, OUR_MAC, &world.connections, world.reply,
                           sizeof world.reply, &world.counts, &outcome);
         if (outcome.reason == HANDSHAKE_REASON_ADDRESSED_TO_EVERYONE) {
@@ -3034,7 +3193,7 @@ static bool case_a_close_that_would_not_fit_is_counted_as_ours(void)
     struct tcp_header fin =
         a_segment(TCP_CONTROL_FIN | TCP_CONTROL_ACK, their_fin, held->iss + 1u);
     struct handshake_outcome outcome;
-    handshake_receive(&fin, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world.connections,
+    handshake_receive(&fin, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &world.connections,
                       no_room, sizeof no_room, &world.counts, &outcome);
 
     if (outcome.reason != HANDSHAKE_REASON_WE_COULD_NOT_BUILD_THE_REPLY ||
@@ -3137,7 +3296,7 @@ static bool case_each_reason_moves_only_its_own_count(void)
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
+        handshake_receive(&syn, &id, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                           sizeof reply, &counts, &outcome);
         if (outcome.reason != HANDSHAKE_REASON_NO_ROOM ||
             counts.room.refused_for_want_of_room != 1 || counts.opened != 0) {
@@ -3157,7 +3316,7 @@ static bool case_each_reason_moves_only_its_own_count(void)
         struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
         unsigned char reply[256];
         struct handshake_outcome outcome;
-        handshake_receive(&syn, &id, OUR_PORT + 1, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections,
+        handshake_receive(&syn, &id, OUR_PORT + 1, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections,
                           reply, sizeof reply, &counts, &outcome);
         if (outcome.reason != HANDSHAKE_REASON_NO_CONNECTION_HELD ||
             counts.opened != 0) {
@@ -3184,7 +3343,7 @@ static bool case_a_block_taken_again_holds_none_of_the_last_connections_numbers(
     struct tcp_header syn = a_segment(TCP_CONTROL_SYN, THEIR_ISN, 0);
     unsigned char reply[256];
     struct handshake_outcome outcome;
-    handshake_receive(&syn, &first, OUR_PORT, THE_WINDOW, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
+    handshake_receive(&syn, &first, OUR_PORT, THE_WINDOW, THE_MSS, at(0), IPV4_TIME_TO_LIVE_WE_SEND, THEIR_MAC, OUR_MAC, &connections, reply,
                       sizeof reply, &counts, &outcome);
 
     struct transmission_control_block *block = connections_find(&connections, &first);
@@ -3621,6 +3780,8 @@ static const struct test_case cases[] = {
       case_our_close_is_the_segment_the_document_describes },
     { "every_segment_we_build_carries_the_same_window",
       case_every_segment_we_build_carries_the_same_window },
+    { "the_segment_size_we_are_told_is_kept_and_used_by_nothing",
+      case_the_segment_size_we_are_told_is_kept_and_used_by_nothing },
     { "the_window_is_what_one_frame_carries",
       case_the_window_is_what_one_frame_carries },
     { "a_segment_the_window_covers_is_taken_whole",

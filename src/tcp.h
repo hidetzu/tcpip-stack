@@ -125,6 +125,15 @@
 #define TCP_OPTION_END_OF_OPTION_LIST 0u
 #define TCP_OPTION_NO_OPERATION 1u
 
+/* RFC 9293 §3.2, quoted: "Maximum Segment Size Option Data: 16 bits ... Kind: 2,
+ * Length: 4".
+ *
+ * ⚠ Four octets is exactly one 32-bit word, ⚠ **so a header carrying only this
+ * option needs no padding and no End of Option List** — `Data Offset` goes from
+ * 5 to 6 and nothing else moves (hidetzu/tcpip-stack#123). */
+#define TCP_OPTION_MAXIMUM_SEGMENT_SIZE 2u
+#define TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES 4u
+
 /* Why a segment was not accepted. ⚠ An enum never reaches a human
  * (`CLAUDE.md` §4). */
 enum tcp_parse {
@@ -156,6 +165,28 @@ enum tcp_parse {
     TCP_PARSE_CHECKSUM_DISAGREES
 };
 
+/* What the options said, in host terms.
+ *
+ * ⚠ **This is the Parse layer's answer, not the octets** — a caller never sees
+ * the option list (`.claude/rules/layers.md`).
+ *
+ * ⚠ **A struct rather than a field**, because ⚠ the next option to be given a
+ * meaning must not change every signature again. ⚠ It holds one today and that
+ * is not an abstraction for a case that might appear — ⚠ **`MUST-4`'s mandatory
+ * set is exactly `{MSS}` for this build**, and the walk already refuses what it
+ * cannot read. */
+struct tcp_options {
+    /* ⚠ Whether one was there at all, ⚠ **separately from its value.**
+     *
+     * ⚠ RFC 9293 `MUST-15`: "If an MSS Option is not received at connection
+     * setup, TCP implementations MUST assume a default send MSS of 536".
+     * ⚠ **Absent and zero are different answers**, and a caller that could not
+     * tell them apart would have to guess which
+     * (`CLAUDE.md` §1). */
+    bool has_maximum_segment_size;
+    uint16_t maximum_segment_size;
+};
+
 struct tcp_header {
     uint16_t source_port;
     uint16_t destination_port;
@@ -185,6 +216,11 @@ struct tcp_header {
     uint16_t window;
     uint16_t checksum;     /* ⚠ carried, never verified here */
     uint16_t urgent_pointer;
+
+    /* ⚠ What the option list meant. ⚠ Filled by the walk, and ⚠ **empty when
+     * `Data Offset` is 5** — which is not the same as an option list that said
+     * nothing. */
+    struct tcp_options options;
 
     /* ⚠ Where the data begins, counted from the start of the segment.
      * ⚠ This is what walking the options buys, and ⚠ it is the only thing the
@@ -264,18 +300,24 @@ enum tcp_build {
     TCP_BUILD_BUFFER_TOO_SMALL
 };
 
-/* Build a segment with no options and no data, into a caller's buffer.
+/* Build a segment with no data, into a caller's buffer.
  *
- * ⚠ `fields` supplies the ports, the two sequence numbers, the `Control Bits`
- * and the `Window`. ⚠ `Data Offset`, `Reserved`, `Urgent Pointer` and `Checksum`
- * are this function's, ⚠ **not the caller's to get wrong**: the first is five
- * because there are no options, the next two are zero, and the last is computed.
+ * ⚠ `fields` supplies the ports, the two sequence numbers, the `Control Bits`,
+ * the `Window` — ⚠ **and, since hidetzu/tcpip-stack#123, `fields->options`.**
+ * ⚠ `Data Offset`, `Reserved`, `Urgent Pointer` and `Checksum` are this
+ * function's, ⚠ **not the caller's to get wrong**: ⚠ **the first now follows the
+ * options**, the next two are zero, and the last is computed over whatever
+ * length resulted.
  *
- * ⚠ No options are sent (hidetzu/tcpip-stack#44 Owner Decision 2). ⚠ The Parse
- * side walks options without reading one, and ⚠ **sending something we cannot
- * read would be a claim we cannot back.** ⚠ The Linux kernel's own SYN carries
- * five; ⚠ what its answer to none of them is was measured after this was
- * written, not assumed before (ADR 0017).
+ * ⚠ **Until hidetzu/tcpip-stack#123 no option was sent** (hidetzu/tcpip-stack#44
+ * Owner Decision 2), on the grounds that ⚠ **sending something we cannot read
+ * would be a claim we cannot back.** ⚠ **That ground is gone for this one
+ * option**: the walk reads an MSS Option now, so ⚠ **the same option is
+ * understood in both directions** (ADR 0029).
+ *
+ * ⚠ **Only the MSS Option, and only when `fields->options` asks for it.**
+ * ⚠ `Data Offset` stays 5 when it does not, so ⚠ **every segment built before
+ * this change is byte for byte what it was.**
  *
  * `source_address` and `destination_address` are the internet header's, ⚠ in the
  * order they will be on the wire — ⚠ **ours first**, which is the reverse of

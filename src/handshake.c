@@ -34,6 +34,15 @@ enum handshake_window handshake_window_for_mtu(unsigned int mtu, uint16_t *windo
     return HANDSHAKE_WINDOW_OK;
 }
 
+/* ⚠ The same arithmetic as the window, and ⚠ **written once**: two functions
+ * performing it separately would be two copies of one decision, and they would
+ * diverge the first time either moved (`CLAUDE.md` §3). */
+enum handshake_window handshake_maximum_segment_size_for_mtu(unsigned int mtu,
+                                                             uint16_t *mss)
+{
+    return handshake_window_for_mtu(mtu, mss);
+}
+
 uint32_t handshake_initial_send_sequence(struct moment now)
 {
     /* ⚠ Truncated to 32 bits on purpose: ⚠ **the document's clock IS a 32-bit
@@ -137,6 +146,19 @@ static size_t build_the_answer(const struct transmission_control_block *block,
     /* ⚠ A promise of exactly this many octets, and ⚠ `take_the_data` is what
      * backs it (hidetzu/tcpip-stack#64 Owner Decision 1). */
     fields.window = block->rcv_wnd;
+
+    /* ⚠ RFC 9293 `MUST-65`: the MSS Option ⚠ **"is only used in the initial
+     * connection request"** — so it rides the `SYN,ACK` and nothing else.
+     * ⚠ `what` is what decides, and ⚠ **the two shapes that carry `SYN` are the
+     * two above.**
+     *
+     * ⚠ `MAY-3` — "send it always" — ⚠ **is not taken**, and `SHLD-5` is met by
+     * the same line: the document asks for it "when its receive MSS differs from
+     * the default 536", ⚠ **and it always does here** unless the device carries
+     * frames of exactly 576. */
+    fields.options.has_maximum_segment_size =
+        (what == HANDSHAKE_REPLY_THE_ANSWER || what == HANDSHAKE_REPLY_NONE);
+    fields.options.maximum_segment_size = block->mss_we_advertise;
 
     uint8_t *segment = reply + ETHERNET_HEADER_BYTES + IPV4_FIXED_HEADER_BYTES;
     size_t segment_bytes = 0;
@@ -416,7 +438,8 @@ static enum handshake_reply what_is_owed(const struct transmission_control_block
 }
 
 void handshake_receive(const struct tcp_header *header, const struct connection_id *id,
-                       uint16_t listening_port, uint16_t window, struct moment now,
+                       uint16_t listening_port, uint16_t window,
+                       uint16_t maximum_segment_size, struct moment now,
                        uint8_t time_to_live,
                        const uint8_t *requester_hardware_address,
                        const uint8_t *our_hardware_address,
@@ -737,6 +760,27 @@ void handshake_receive(const struct tcp_header *header, const struct connection_
      * when the peer retransmits its `SYN`, and ⚠ the value is the same either
      * way. */
     taken->rcv_wnd = window;
+    taken->mss_we_advertise = maximum_segment_size;
+
+    /* ⚠ RFC 9293 `MUST-15`: "If an MSS Option is not received at connection
+     * setup, TCP implementations MUST assume a default send MSS of 536 (576 -
+     * 40) for IPv4". ⚠ **Absent and zero are different answers**, and the Parse
+     * layer keeps them apart, so ⚠ **the default is applied here rather than
+     * guessed from a value.**
+     *
+     * ⚠ Written on every arrival, not only the first: a retransmitted `SYN`
+     * carries the option again and ⚠ **the answer is the same either way.** */
+    if (carries_syn) {
+        if (header->options.has_maximum_segment_size) {
+            taken->send_mss = header->options.maximum_segment_size;
+            taken->send_mss_was_told_to_us = true;
+            counts->they_told_us_their_segment_size++;
+        } else {
+            taken->send_mss = CONNECTION_DEFAULT_SEND_MSS;
+            taken->send_mss_was_told_to_us = false;
+            counts->they_told_us_nothing_so_we_assumed++;
+        }
+    }
 
     /* ⚠ RFC 793, verbatim: "Set RCV.NXT to SEG.SEQ+1, IRS is set to SEG.SEQ ...
      * ISS should be selected and a SYN segment sent of the form:

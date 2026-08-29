@@ -46,7 +46,8 @@ static uint32_t read_32(const uint8_t *at)
  *
  * `options` is the octets between the fixed fields and where the data begins.
  * Returns false when the list does not walk. */
-static bool options_walk(const uint8_t *options, size_t options_bytes)
+static bool options_walk(const uint8_t *options, size_t options_bytes,
+                         struct tcp_options *meaning)
 {
     size_t at = 0;
     while (at < options_bytes) {
@@ -81,6 +82,28 @@ static bool options_walk(const uint8_t *options, size_t options_bytes)
         if (length > options_bytes - at) {
             return false;
         }
+
+        /* ⚠ The one option this file gives a meaning to. ⚠ RFC 9293 §3.2:
+         * "Kind: 2, Length: 4" — ⚠ **the length is checked against the
+         * document's, not assumed from the kind** (`.claude/rules/c.md`: a
+         * length in a packet is an assertion by whoever sent it).
+         *
+         * ⚠ **A wrong length is not malformed.** ⚠ The walk goes on by what the
+         * sender said, and ⚠ **the option is simply not read** — the same answer
+         * every other kind gets. ⚠ Refusing the segment would make an option we
+         * do not have to act on into a reason to drop it
+         * (`.claude/rules/layers.md`: malformed and unsupported are different
+         * answers). */
+        if (kind == TCP_OPTION_MAXIMUM_SEGMENT_SIZE &&
+            length == TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES) {
+            /* ⚠ Read one octet at a time. ⚠ **Nothing here assumes the option
+             * begins on a word boundary** — RFC 9293 `MUST-64`, and ⚠ this is
+             * the line that makes it true rather than incidental. */
+            meaning->has_maximum_segment_size = true;
+            meaning->maximum_segment_size =
+                (uint16_t)(((uint16_t)options[at + 2] << 8) | options[at + 3]);
+        }
+
         at += length;
     }
     return true;
@@ -224,7 +247,7 @@ enum tcp_parse tcp_parse_header(const uint8_t *segment, size_t segment_bytes,
      * back to a plain SYN.** */
 
     if (!options_walk(segment + TCP_FIXED_HEADER_BYTES,
-                      header_bytes - TCP_FIXED_HEADER_BYTES)) {
+                      header_bytes - TCP_FIXED_HEADER_BYTES, &header->options)) {
         return TCP_PARSE_MALFORMED;
     }
 
@@ -254,9 +277,18 @@ enum tcp_build tcp_build_segment(const struct tcp_header *fields,
                                  uint8_t *segment, size_t segment_bytes,
                                  size_t *built_bytes)
 {
+    /* ⚠ How long the header will be, decided before anything is written.
+     * ⚠ The MSS Option is four octets — exactly one 32-bit word — ⚠ **so no
+     * padding and no End of Option List are needed**, and `Data Offset` goes
+     * from 5 to 6 (RFC 9293 §3.2: "Kind: 2, Length: 4"). */
+    size_t option_bytes = fields->options.has_maximum_segment_size
+                              ? TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES : 0u;
+    size_t header_bytes = TCP_FIXED_HEADER_BYTES + option_bytes;
+    uint8_t words = (uint8_t)(header_bytes / 4u);
+
     /* ⚠ Decided before a single octet is written, so a refused build leaves the
      * caller's buffer exactly as it was. */
-    if (segment_bytes < TCP_FIXED_HEADER_BYTES) {
+    if (segment_bytes < header_bytes) {
         return TCP_BUILD_BUFFER_TOO_SMALL;
     }
 
@@ -265,9 +297,10 @@ enum tcp_build tcp_build_segment(const struct tcp_header *fields,
     write_32(segment + SEQUENCE_NUMBER_OFFSET, fields->sequence_number);
     write_32(segment + ACKNOWLEDGMENT_NUMBER_OFFSET, fields->acknowledgment_number);
 
-    /* ⚠ Five 32-bit words, because there are no options — and ⚠ `Reserved` is
-     * zero, which is what this file calls malformed on the way in. */
-    segment[OFFSET_AND_RESERVED_OFFSET] = (uint8_t)(TCP_HEADER_LENGTH_MINIMUM << 4);
+    /* ⚠ `Reserved` is zero, which is what this file calls malformed on the way
+     * in. ⚠ `Data Offset` follows the options rather than being five always
+     * (hidetzu/tcpip-stack#123). */
+    segment[OFFSET_AND_RESERVED_OFFSET] = (uint8_t)(words << 4);
     segment[CONTROL_BITS_OFFSET] = (uint8_t)(fields->control_bits & 0x3fu);
 
     write_16(segment + WINDOW_OFFSET, fields->window);
@@ -275,17 +308,32 @@ enum tcp_build tcp_build_segment(const struct tcp_header *fields,
      * RFC 793's "Urgent Pointer field significant" does not apply. */
     write_16(segment + URGENT_POINTER_OFFSET, 0);
 
+    /* ⚠ Written after the fixed fields and before the checksum, ⚠ **because the
+     * checksum covers it.** ⚠ One octet at a time, in the order the wire wants:
+     * kind, length, then the value most significant octet first. */
+    if (fields->options.has_maximum_segment_size) {
+        uint8_t *option = segment + TCP_FIXED_HEADER_BYTES;
+        option[0] = TCP_OPTION_MAXIMUM_SEGMENT_SIZE;
+        option[1] = TCP_OPTION_MAXIMUM_SEGMENT_SIZE_BYTES;
+        write_16(option + 2, fields->options.maximum_segment_size);
+    }
+
     /* ⚠ RFC 793: "While computing the checksum, the checksum field itself is
      * replaced with zeros." ⚠ The same one loop the Parse side uses, over the
-     * same pseudo-header (`CLAUDE.md` §3). */
+     * same pseudo-header (`CLAUDE.md` §3).
+     *
+     * ⚠ **The length is the header's, not the fixed header's.** ⚠ A pseudo-header
+     * naming twenty octets over a twenty-four octet segment is a checksum the
+     * peer computes differently, ⚠ **and the only thing that would come back is
+     * "it does not agree".** */
     write_16(segment + CHECKSUM_OFFSET, 0);
     uint8_t pseudo_header[PSEUDO_HEADER_BYTES];
     build_the_pseudo_header(pseudo_header, source_address, destination_address,
-                            TCP_FIXED_HEADER_BYTES);
+                            header_bytes);
     write_16(segment + CHECKSUM_OFFSET,
              internet_checksum_of_two(pseudo_header, sizeof pseudo_header, segment,
-                                      TCP_FIXED_HEADER_BYTES, CHECKSUM_OFFSET));
+                                      header_bytes, CHECKSUM_OFFSET));
 
-    *built_bytes = TCP_FIXED_HEADER_BYTES;
+    *built_bytes = header_bytes;
     return TCP_BUILD_OK;
 }
